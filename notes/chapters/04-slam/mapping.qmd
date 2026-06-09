@@ -1,0 +1,520 @@
+# Mapping & Data Association
+
+## Introduction
+
+This chapter addresses the **mapping problem**: given a known robot trajectory, estimate the structure of the environment. While earlier chapters focused on state estimation (where is the robot?), mapping answers: what is around the robot?
+
+Mapping is fundamentally the *inverse* of localization:
+- **Localization**: Given a known map, estimate robot position
+- **Mapping**: Given a known robot trajectory, estimate the environment structure
+
+---
+
+## 1. The Inverse Problem: From Measurements to Maps
+
+### 1.1 Problem Formulation
+
+Given:
+- Precise trajectory: $x_{1:t} = \{x_1, x_2, \ldots, x_t\}$
+- Measurements from each position: $z_{1:t} = \{z_1, z_2, \ldots, z_t\}$
+
+Estimate:
+- The environment map: $m$
+
+The mapping problem is to compute the posterior distribution over maps:
+$$p(m | z_{1:t}, x_{1:t})$$
+
+**Key insight**: Unlike localization (where we have only measurements and need to solve for position), in mapping we have both measurements *and* trajectory. This makes mapping much more constrained.
+
+### 1.2 Bayesian Mapping
+
+Using Bayes' rule:
+$$p(m | z_{1:t}, x_{1:t}) = \frac{p(z_{1:t} | m, x_{1:t}) p(m)}{p(z_{1:t} | x_{1:t})}$$
+
+Assuming **conditional independence** of measurements given the map:
+$$p(z_{1:t} | m, x_{1:t}) = \prod_{k=1}^{t} p(z_k | m, x_k)$$
+
+This gives:
+$$p(m | z_{1:t}, x_{1:t}) \propto p(m) \prod_{k=1}^{t} p(z_k | m, x_k)$$
+
+The map posterior is proportional to the prior times the likelihood of all measurements.
+
+---
+
+## 2. Occupancy Grid Mapping
+
+### 2.1 Occupancy Grid Representation
+
+An **occupancy grid** divides the environment into discrete cells arranged in a 2D grid. Each cell $m_i$ stores a binary or probabilistic value:
+
+$$m_i \in \{0, 1\} \text{ or } m_i \in [0, 1]$$
+
+where:
+- $m_i = 1$ (or near 1): cell is occupied (contains an obstacle)
+- $m_i = 0$ (or near 0): cell is free (passable)
+
+The full map is: $m = \{m_1, m_2, \ldots, m_N\}$ with $N$ cells.
+
+**Spatial extent and resolution**:
+- **Physical extent**: $X_{\max} - X_{\min}$, $Y_{\max} - Y_{\min}$ (dimensions of mapped area)
+- **Cell size**: $\Delta x$ (e.g., 0.1 m per cell)
+- **Number of cells**: $N = \frac{(X_{\max} - X_{\min})(Y_{\max} - Y_{\min})}{\Delta x^2}$
+
+### 2.2 Occupancy Grid Posterior
+
+Assuming **conditional independence** between cells (each cell's occupancy is independent given measurements and trajectory):
+$$p(m | z_{1:t}, x_{1:t}) = \prod_{i=1}^{N} p(m_i | z_{1:t}, x_{1:t})$$
+
+This is a key simplification: instead of estimating $2^N$ possible configurations, we estimate $N$ independent Bernoulli distributions.
+
+For each cell $i$:
+$$p(m_i | z_{1:t}, x_{1:t}) = \frac{p(z_{1:t} | m_i, x_{1:t}) p(m_i)}{p(z_{1:t} | x_{1:t})}$$
+
+### 2.3 Log-Odds Representation
+
+Working directly with probabilities leads to numerical underflow (products of small numbers become extremely small). Instead, we use the **log-odds** representation:
+
+$$L(m_i) = \log \frac{p(m_i)}{1 - p(m_i)}$$
+
+This converts probabilities to the range $(-\infty, +\infty)$, making multiplication become addition.
+
+**Key identity**: From log-odds, recover probability via:
+$$p(m_i) = \frac{e^{L(m_i)}}{1 + e^{L(m_i)}} = \frac{1}{1 + e^{-L(m_i)}}$$
+
+This is the **logistic function** (sigmoid).
+
+### 2.4 Log-Odds Update Rule
+
+Using Bayes' rule with log-odds:
+
+$$L(m_i | z_{1:t}) = \log \frac{p(m_i | z_{1:t})}{1 - p(m_i | z_{1:t})}$$
+
+By expanding using Bayes' rule and applying the log-odds identity:
+
+$$L(m_i | z_{1:t}) = L(m_i | z_{1:t-1}) + L(m_i | z_t) - L(m_i)$$
+
+**Explanation**:
+- $L(m_i | z_{1:t-1})$: previous log-odds estimate (from all prior measurements)
+- $L(m_i | z_t)$: log-odds from current measurement
+- $L(m_i)$: prior log-odds (usually 0, corresponding to $p(m_i) = 0.5$)
+
+**Derivation**:
+
+Starting with:
+$$p(m_i | z_{1:t}) = \frac{p(z_t | m_i) p(m_i | z_{1:t-1})}{p(z_t | z_{1:t-1})}$$
+
+Taking log-odds of both sides:
+$$L(m_i | z_{1:t}) = \log \frac{p(z_t | m_i)}{1 - p(z_t | m_i)} + \log \frac{p(m_i | z_{1:t-1})}{1 - p(m_i | z_{1:t-1})} - \log \frac{p(m_i)}{1 - p(m_i)}$$
+
+Which simplifies to:
+$$L(m_i | z_{1:t}) = L(m_i | z_t) + L(m_i | z_{1:t-1}) - L(m_i)$$
+
+This is elegant: updates are simply **additions** of log-odds terms.
+
+### 2.5 Inverse Sensor Models
+
+To apply the log-odds update, we need $p(z_t | m_i)$ for each cell, given the measurement. This is the **inverse sensor model**: given a measurement, what does it tell us about cell occupancy?
+
+Different sensors require different inverse models:
+
+#### Beam Model (Range Sensor)
+
+A range sensor (lidar, sonar) measures distance to the nearest obstacle in a beam direction.
+
+**Given**:
+- Robot position: $(x_r, y_r)$
+- Robot orientation: $\theta_r$
+- Measurement: distance $d$ and beam direction $\phi$ (relative to robot)
+
+**Absolute measurement direction**: $\theta_{\text{abs}} = \theta_r + \phi$
+
+**Model**:
+
+For a cell $(x_i, y_i)$:
+
+1. **Compute range to cell**: $r_i = \sqrt{(x_i - x_r)^2 + (y_i - y_r)^2}$
+
+2. **Compute angle to cell**: $\theta_i = \text{atan2}(y_i - y_r, x_i - x_r)$
+
+3. **Check if cell is in beam**:
+   - If $|\theta_i - \theta_{\text{abs}}| > \beta/2$ (outside beam width), return prior $p(m_i)$
+   - Otherwise, cell is in the beam
+
+4. **Occupied or free**?
+   - If $r_i < d - \alpha/2$ (before obstacle), mark as **free**: $p(m_i | z) = p_{\text{free}}$ (low)
+   - If $|r_i - d| < \alpha/2$ (near measurement range), mark as **occupied**: $p(m_i | z) = p_{\text{occ}}$ (high)
+   - If $r_i > d + \alpha/2$ (beyond measurement), return prior
+
+where $\alpha$ is the measurement noise width and $\beta$ is the beam width.
+
+#### Likelihood Field Model
+
+The **likelihood field** is an alternative to the beam model, often more robust:
+
+$$p(z | m, x) = \prod_{\text{measurement rays}} p(z_{\text{ray}} | m, x)$$
+
+For each measurement ray at range $d$:
+$$p(d | m, x) = p_{\text{hit}} \mathcal{N}(d_{\text{expected}}; d, \sigma^2) + p_{\text{max}} \cdot \mathbb{1}(d = d_{\text{max}}) + p_{\text{random}} \cdot \text{uniform} + p_{\text{fail}}$$
+
+where:
+- $d_{\text{expected}}$: expected range if map is correct
+- $p_{\text{hit}}, p_{\text{max}}, p_{\text{random}}, p_{\text{fail}}$: mixture weights for different measurement modes
+- Accounts for hits, max-range, random noise, and sensor failures
+
+#### Sonar/Radar Model
+
+For conical measurements (wider angular uncertainty):
+
+$$p(m_i | z_{\text{range}}, z_{\text{bearing}}) = p_{\text{occ}} \text{ if } |r_i - d_{\text{range}}| < \sigma_r \text{ AND } |\theta_i - \theta_{\text{bearing}}| < \sigma_\theta$$
+
+More complex models account for specular reflections and multipath.
+
+---
+
+## 3. Practical Implementation of Occupancy Grid Mapping
+
+### 3.1 Algorithm: Occupancy Grid Update
+
+**Input**:
+- Previous map $m_{t-1}$ (as log-odds)
+- Robot pose: $x_t = (x, y, \theta)$
+- Measurement(s): $z_t$ (ranges and angles)
+
+**Output**:
+- Updated map $m_t$ (as log-odds)
+
+**Algorithm**:
+
+```
+For each measurement ray with range d and angle φ:
+    θ_abs = θ + φ  // absolute direction
+
+    For each grid cell (x_i, y_i):
+        r_i = distance from robot to cell
+        θ_i = angle from robot to cell
+
+        If cell is in beam:
+            If r_i < d:        // cell is before measurement
+                L(m_i) += L_free
+            Else if |r_i - d| < α:  // cell is at measurement
+                L(m_i) += L_occ
+            End if
+        End if
+    End for
+End for
+```
+
+Where $L_{\text{free}}$ and $L_{\text{occ}}$ are the log-odds contributions for free and occupied cells.
+
+### 3.2 Computational Considerations
+
+**Memory complexity**: $O(N)$ where $N$ is the number of cells. For fine resolution over large areas, this can be prohibitive.
+
+**Update complexity**: $O(N \cdot R)$ where $R$ is the number of measurement rays.
+
+**Optimization strategies**:
+1. **Spatial hashing**: Only store cells that have been visited
+2. **Hierarchical grids**: Use coarse resolution for far regions
+3. **Compressed representations**: Use run-length encoding or quadtrees
+4. **Lazy evaluation**: Only update cells within sensor range
+
+### 3.3 Cell Size Selection
+
+**Trade-off**: Fine resolution (small $\Delta x$) gives detail but requires more memory and computation.
+
+**Rule of thumb**:
+- $\Delta x \approx \frac{\sigma_{\text{sensor}}}{2}$ (sensor noise standard deviation)
+- Finer resolution is wasted (can't resolve features smaller than measurement uncertainty)
+- Coarser resolution loses map details
+
+For a 0.1 m range noise standard deviation, use $\Delta x = 0.05$ m cells.
+
+---
+
+## 4. Feature-Based (Landmark) Maps
+
+### 4.1 Representation
+
+Instead of a dense grid, represent the map as a sparse set of **landmarks** (features):
+$$m = \{\ell_1, \ell_2, \ldots, \ell_M\}$$
+
+where each landmark has:
+- **Position**: $(x_j, y_j)$ or $(x_j, y_j, z_j)$ in 3D
+- **Signature**: Feature descriptor (visual feature, reflectance, etc.)
+
+**Advantages**:
+- Very memory efficient (sparse representation)
+- Allows for feature-based loop closure detection
+- Supports feature-level uncertainty
+
+**Disadvantages**:
+- Requires reliable feature extraction
+- Cannot represent featureless regions well
+- Difficult with ambiguous or repetitive features
+
+### 4.2 Landmark Initialization
+
+When a new feature is observed for the first time:
+
+1. **Extract feature from measurement**: Compute signature (e.g., ORB descriptor for visual features)
+2. **Estimate position**: Use inverse measurement model
+   - For range-bearing: $x_j = x_r + d \cos(\theta_r + \phi_j)$, $y_j = y_r + d \sin(\theta_r + \phi_j)$
+3. **Estimate uncertainty**: Usually high initially
+4. **Add to map**: Store landmark with uncertainty covariance
+
+---
+
+## 5. Data Association
+
+### 5.1 The Data Association Problem
+
+In feature-based mapping, when a measurement is received, we must determine:
+- **Is this a new landmark** (not previously seen)?
+- **Or does this correspond to an existing landmark**?
+
+If we wrongly associate a measurement with the wrong landmark, the filter diverges catastrophically.
+
+**The problem is hard because**:
+- Features can look similar
+- Sensor noise creates ambiguity
+- In large maps, many landmarks are plausible associations
+
+### 5.2 Nearest Neighbor Association
+
+The simplest approach: associate measurement with the closest (in state space) landmark.
+
+**Algorithm**:
+1. For each measurement $z_k$:
+   - Compute predicted measurement for each landmark: $\hat{z}_{j} = h(x_k, \ell_j)$
+   - Find closest landmark: $j^* = \arg\min_j \|z_k - \hat{z}_j\|$
+2. If distance is below threshold, associate; otherwise, treat as new landmark
+
+**Problem**: Fails in cluttered environments where multiple landmarks are nearby.
+
+### 5.3 Mahalanobis Distance Association
+
+Account for measurement uncertainty using the **Mahalanobis distance**:
+
+$$D_j^2 = (z_k - \hat{z}_j)^T S_j^{-1} (z_k - \hat{z}_j)$$
+
+where $S_j = H_j P_k H_j^T + R$ is the predicted measurement covariance for landmark $j$.
+
+**Interpretation**: Measure distance in units of measurement uncertainty. A Mahalanobis distance of 3 means the measurement is 3 standard deviations away from the prediction.
+
+**Association rule**:
+$$j^* = \arg\min_j D_j^2$$
+
+Associate if $D_j^2 < \chi^2_{\alpha, n_z}$ (chi-squared threshold for $n_z$ degrees of freedom).
+
+### 5.4 Joint Compatibility and Multi-Hypothesis Tracking
+
+For complex scenarios, consider all possible associations as hypotheses:
+- Each hypothesis assigns all measurements to landmarks (or marks them as new)
+- Score each hypothesis by likelihood
+- Keep only high-probability hypotheses
+
+**Gating**: Pre-filter implausible associations using Mahalanobis distance to reduce search space.
+
+**Joint compatibility**: Require not just individual compatibility, but compatibility of the entire association set.
+
+---
+
+## 6. Implementation Example: Occupancy Grid with Range Sensor
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+class OccupancyGridMapper:
+    """Occupancy grid mapping with range sensor"""
+
+    def __init__(self, x_min=-10, x_max=10, y_min=-10, y_max=10, resolution=0.1):
+        """
+        Initialize occupancy grid
+        resolution: cell size in meters
+        """
+        self.x_min, self.x_max = x_min, x_max
+        self.y_min, self.y_max = y_min, y_max
+        self.resolution = resolution
+
+        # Grid dimensions
+        self.nx = int((x_max - x_min) / resolution)
+        self.ny = int((y_max - y_min) / resolution)
+
+        # Log-odds representation
+        self.log_odds = np.zeros((self.nx, self.ny))
+
+        # Prior log-odds (0 = equal probability of free/occupied)
+        self.L_prior = 0.0
+        self.L_occ = np.log(0.9 / 0.1)    # log-odds for occupied cell
+        self.L_free = np.log(0.1 / 0.9)   # log-odds for free cell
+
+    def world_to_grid(self, x, y):
+        """Convert world coordinates to grid indices"""
+        i = int((x - self.x_min) / self.resolution)
+        j = int((y - self.y_min) / self.resolution)
+        return i, j
+
+    def grid_to_world(self, i, j):
+        """Convert grid indices to world coordinates"""
+        x = self.x_min + (i + 0.5) * self.resolution
+        y = self.y_min + (j + 0.5) * self.resolution
+        return x, y
+
+    def update_with_scan(self, robot_x, robot_y, robot_theta, ranges, angle_min, angle_max, num_rays):
+        """
+        Update map with a range scan
+        ranges: array of range measurements
+        angle_min, angle_max: field of view
+        num_rays: number of rays in scan
+        """
+        angles = np.linspace(angle_min, angle_max, num_rays)
+
+        # Update each cell
+        for i in range(self.nx):
+            for j in range(self.ny):
+                # World coordinates of cell
+                cell_x, cell_y = self.grid_to_world(i, j)
+
+                # Distance and angle from robot to cell
+                dx = cell_x - robot_x
+                dy = cell_y - robot_y
+                dist = np.sqrt(dx**2 + dy**2)
+                angle = np.arctan2(dy, dx) - robot_theta
+
+                # Normalize angle to [-π, π]
+                while angle > np.pi:
+                    angle -= 2 * np.pi
+                while angle < -np.pi:
+                    angle += 2 * np.pi
+
+                # Find closest ray
+                ray_idx = np.argmin(np.abs(angles - angle))
+
+                if ray_idx >= 0 and ray_idx < len(ranges):
+                    measured_range = ranges[ray_idx]
+
+                    # Beam model
+                    beam_width = 0.05  # radians
+                    range_noise = 0.2  # meters
+
+                    if abs(angle - angles[ray_idx]) > beam_width:
+                        # Outside beam, no update
+                        continue
+
+                    if dist < measured_range - range_noise:
+                        # Cell is before measurement → free
+                        self.log_odds[i, j] += self.L_free
+                    elif abs(dist - measured_range) < range_noise:
+                        # Cell is at measurement range → occupied
+                        self.log_odds[i, j] += self.L_occ
+
+        # Clamp log-odds to reasonable range
+        self.log_odds = np.clip(self.log_odds, -5, 5)
+
+    def get_probability_grid(self):
+        """Convert log-odds to occupancy probability"""
+        return 1.0 / (1.0 + np.exp(-self.log_odds))
+
+    def get_occupancy_grid(self, threshold=0.5):
+        """Get binary occupancy grid"""
+        prob = self.get_probability_grid()
+        return (prob > threshold).astype(int)
+
+
+# Example: Simulate a simple environment
+if __name__ == "__main__":
+    # Create mapper
+    mapper = OccupancyGridMapper(x_min=-5, x_max=5, y_min=-5, y_max=5, resolution=0.1)
+
+    # Simulate robot moving in a circle, scanning an L-shaped obstacle
+    n_poses = 36
+    circle_radius = 3.0
+    scan_range = 4.0  # max range
+
+    for pose_idx in range(n_poses):
+        angle = 2 * np.pi * pose_idx / n_poses
+        robot_x = circle_radius * np.cos(angle)
+        robot_y = circle_radius * np.sin(angle)
+        robot_theta = angle + np.pi / 2
+
+        # Simulate range scan to L-shaped obstacle at origin
+        num_rays = 180
+        angles_local = np.linspace(-np.pi/2, np.pi/2, num_rays)
+        ranges = np.ones(num_rays) * scan_range
+
+        # L-shaped obstacle: vertical line at x=0, y in [0, 1.5]
+        #                   horizontal line at y=0, x in [0, 1.5]
+        for ray_idx, ray_angle in enumerate(angles_local):
+            ray_x = np.cos(robot_theta + ray_angle)
+            ray_y = np.sin(robot_theta + ray_angle)
+
+            # Ray-obstacle intersection
+            for t in np.linspace(0, scan_range, 100):
+                x = robot_x + t * ray_x
+                y = robot_y + t * ray_y
+
+                # Check if ray hits obstacle
+                if (abs(x) < 0.1 and 0 < y < 1.5) or (abs(y) < 0.1 and 0 < x < 1.5):
+                    ranges[ray_idx] = t
+                    break
+
+        # Update map
+        mapper.update_with_scan(robot_x, robot_y, robot_theta, ranges, -np.pi/2, np.pi/2, num_rays)
+
+    # Visualize result
+    prob_grid = mapper.get_probability_grid()
+    occ_grid = mapper.get_occupancy_grid()
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+    # Probability grid
+    im0 = axes[0].imshow(prob_grid.T, extent=[-5, 5, -5, 5], origin='lower', cmap='RdYlGn_r')
+    axes[0].set_title('Occupancy Probability')
+    axes[0].set_xlabel('X (m)')
+    axes[0].set_ylabel('Y (m)')
+    plt.colorbar(im0, ax=axes[0], label='P(occupied)')
+
+    # Binary occupancy
+    axes[1].imshow(occ_grid.T, extent=[-5, 5, -5, 5], origin='lower', cmap='gray')
+    axes[1].set_title('Occupancy Grid (binary)')
+    axes[1].set_xlabel('X (m)')
+    axes[1].set_ylabel('Y (m)')
+
+    # Draw simulated robot poses
+    for pose_idx in range(n_poses):
+        angle = 2 * np.pi * pose_idx / n_poses
+        x = 3.0 * np.cos(angle)
+        y = 3.0 * np.sin(angle)
+        axes[1].plot(x, y, 'b.', markersize=3)
+
+    plt.tight_layout()
+    plt.show()
+```
+
+---
+
+## 7. Summary
+
+**Occupancy Grid Mapping** provides:
+- Dense, intuitive representation of the environment
+- Simple Bayesian update rules (log-odds addition)
+- Works with any sensor type (range, vision, etc.)
+
+**Key concepts**:
+- Log-odds representation avoids numerical underflow
+- Inverse sensor models convert measurements to cell updates
+- Beam model and likelihood field are common for range sensors
+- Cell independence assumption simplifies computation
+
+**Data association** is critical for feature-based mapping:
+- Nearest neighbor is simple but can fail
+- Mahalanobis distance accounts for uncertainty
+- Multi-hypothesis tracking is more robust but computationally expensive
+
+**Trade-offs**:
+- Fine resolution → memory and computation intensive, but detailed maps
+- Coarse resolution → efficient, but loses detail
+- Occupancy grids work well for obstacle detection; feature maps are more compact
+
+In Chapter 6, we combine localization and mapping into the **SLAM** problem, where both the robot trajectory and the map are unknown.

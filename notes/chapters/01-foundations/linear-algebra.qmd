@@ -1,0 +1,514 @@
+# Linear Algebra Refresher
+
+Navigation math is, at its core, a linear algebra problem. State vectors, sensor models, covariance propagation, coordinate transforms — every algorithm in this course is built from a small set of linear algebra operations. This chapter is a concise refresher of those operations, pairing each definition with its `NumPy` equivalent. If a topic feels unfamiliar, treat this as a starting point and consult a dedicated reference; if it feels obvious, use this chapter as a quick-reference card.
+
+## Vectors
+
+A **vector** $\mathbf{v} \in \mathbb{R}^n$ is an ordered list of $n$ real numbers, written as a column:
+
+$$
+\mathbf{v} = \begin{bmatrix} v_1 \\ v_2 \\ \vdots \\ v_n \end{bmatrix}
+$$
+
+typically with a bold-faced lowercase Latin or Greek letter.
+
+In navigation, vectors represent positions, velocities, accelerations, angular rates, and state estimates. A vector can also be represented as a row, but the column convention is more common in linear algebra and navigation. In `NumPy`, 1-D arrays are neither strictly row nor column vectors; they are just 1-D sequences. 
+
+A vector's magnitude is defined by the Euclidean norm:
+
+$$
+\|\mathbf{v}\| = \sqrt{v_1^2 + v_2^2 + \cdots + v_n^2}
+$$
+
+Thus for a a vector $\mathbf{v} = [3, 4]^T$, we have $\|\mathbf{v}\| = 5$.
+
+Vectors with a magnitude of 1 are called **unit vectors**. They frequently represent pure directions without scaling. They can also be used to compare directions. To normalize any nonzero vector:
+
+$$
+\hat{\mathbf{v}} = \frac{\mathbf{v}}{\|\mathbf{v}\|}
+$$
+
+Vectors can be added together and scaled by a scalar:
+
+$$
+\mathbf{a} + \mathbf{b} = \begin{bmatrix} a_1 + b_1 \\ \vdots \\ a_n + b_n \end{bmatrix}
+\qquad
+c\,\mathbf{v} = \begin{bmatrix} c\,v_1 \\ \vdots \\ c\,v_n \end{bmatrix}
+$$
+
+```{python}
+import numpy as np
+
+a = np.array([1.0, 2.0, 3.0])
+b = np.array([4.0, 5.0, 6.0])
+
+print("a + b       =", a + b)
+print("2 * a       =", 2 * a)
+print("‖a‖         =", np.linalg.norm(a))
+print("â (unit)    =", a / np.linalg.norm(a))
+```
+
+### Indexing and slicing
+
+Vectors are mathematically indexed from 1 to $n$, frequently using a subscript: $v_i$ is the $i$-th component. However, in many programming language, indexing (for all such containers) begins at 0. While using index 0 to refer to the first component may feel awkward at first, it is a standard convention in programming as it allows for more efficient memory addressing and is consistent across all data structures. In Python arrays and `NumPy` vectors, indexing starts at 0, so the $i$-th component is accessed as `v[i-1]`. For example, `v[0]` gives the first component $v_1$.
+
+We can also refer to sub-vectors. In mathematical notation, we might write $\mathbf{v}_{1:3}$ to mean the first three components (e.g. $v_1$, $v_2$, and $v_3$). In `NumPy`, slicing syntax is `v[0:3]` which includes indices 0, 1, and 2. `NumPy` also supports some convient shorthand slicing conventions: `v[:3]` means the first three components, and `v[3:]` means all components from index 3 to the end. `NumPy` also supports negative indexing: `v[-1]` gives the last component, `v[-2]` gives the second-to-last, and so on. You can also slice with negative indices: `v[-3:-1]` gives the third-to-last and second-to-last components.
+
+```{python}
+v = np.array([10, 20, 30, 40, 50])
+print("v          =", v)
+print("v[0]       =", v[0])        # v1
+print("v[0:3]     =", v[0:3])      # v1, v2, v3
+print("v[:3]      =", v[:3])
+print("v[3:]      =", v[3:])
+print("v[-1]      =", v[-1])       # v5
+print("v[-3:-1]   =", v[-3:-1])    # v3, v4
+```
+
+### Dot Product (Inner Product)
+
+The **dot product** of two vectors of equal length is:
+
+$$
+\mathbf{a} \cdot \mathbf{b} = \sum_{i=1}^n a_i b_i = \|\mathbf{a}\|\,\|\mathbf{b}\|\cos\theta
+$$
+
+where $\theta$ is the angle between them.
+
+Key facts:
+
+- $\mathbf{a} \cdot \mathbf{b} = 0$ iff $\mathbf{a}$ and $\mathbf{b}$ are **orthogonal** (perpendicular).
+- The scalar projection of $\mathbf{b}$ onto $\mathbf{a}$ is $\dfrac{\mathbf{a} \cdot \mathbf{b}}{\|\mathbf{a}\|}$.
+- $\mathbf{a} \cdot \mathbf{a} = \|\mathbf{a}\|^2$.
+
+```{python}
+dot = np.dot(a, b)          # or a @ b for 1-D arrays
+cos_theta = dot / (np.linalg.norm(a) * np.linalg.norm(b))
+theta_deg = np.degrees(np.arccos(cos_theta))
+
+print("a · b        =", dot)
+print("angle (deg)  =", round(theta_deg, 2))
+
+# Orthogonality check
+x = np.array([1.0, 0.0, 0.0])
+y = np.array([0.0, 1.0, 0.0])
+print("x · y        =", np.dot(x, y), "  (orthogonal)")
+```
+
+### Cross Product
+
+The **cross product** is defined only in $\mathbb{R}^3$ or $\mathbb{R}^3$. $\mathbb{R}^3$ vectors are most relevant for navigation, representing 3D positions, velocities, and angular rates. The cross product of $\mathbf{a}$ and $\mathbf{b}$ is a vector perpendicular to both, with magnitude equal to the area of the parallelogram they span:
+
+$$
+\mathbf{a} \times \mathbf{b} =
+\begin{vmatrix}
+\hat{\mathbf{i}} & \hat{\mathbf{j}} & \hat{\mathbf{k}} \\
+a_1 & a_2 & a_3 \\
+b_1 & b_2 & b_3
+\end{vmatrix}
+=
+\begin{bmatrix}
+a_2 b_3 - a_3 b_2 \\
+a_3 b_1 - a_1 b_3 \\
+a_1 b_2 - a_2 b_1
+\end{bmatrix}
+$$
+
+Key facts:
+
+- $\mathbf{a} \times \mathbf{b}$ is perpendicular to both $\mathbf{a}$ and $\mathbf{b}$ (right-hand rule).
+- $\|\mathbf{a} \times \mathbf{b}\| = \|\mathbf{a}\|\,\|\mathbf{b}\|\sin\theta$ — the area of the parallelogram spanned by $\mathbf{a}$ and $\mathbf{b}$.
+- Anti-commutative: $\mathbf{a} \times \mathbf{b} = -\mathbf{b} \times \mathbf{a}$.
+
+```{python}
+cross = np.cross(a, b)
+print("a × b =", cross)
+print("a · (a × b) =", np.dot(a, cross), "  (orthogonal)")
+```
+
+### Skew-symmetric matrix form
+
+The cross product can be written as a matrix-vector product $\mathbf{a} \times \mathbf{b} = [\mathbf{a}]_\times \mathbf{b}$, where:
+
+$$
+[\mathbf{a}]_\times = \begin{bmatrix}\mathbf{a} & \wedge\end{bmatrix} =
+\begin{bmatrix}
+0 & -a_3 & a_2 \\
+a_3 & 0 & -a_1 \\
+-a_2 & a_1 & 0
+\end{bmatrix}
+$$
+
+This skew-symmetric form appears throughout rotation kinematics and IMU modeling. Three-dimensional rotation rates are sometimes represented as skew-symmetric matrices to express cross products as matrix multiplications, which is more efficient and numerically stable. For example: $\boldsymbol{\omega} \times \mathbf{v} = \begin{bmatrix}\boldsymbol{\omega} & \wedge\end{bmatrix} \cdot \mathbf{v}$.
+
+```{python}
+a3 = np.array([1.0, 2.0, 3.0])  # x-axis
+b3 = np.array([0.1, 0.2, 0.3])  # y-axis
+
+cross = np.cross(a3, b3)
+print("x × y =", cross)
+
+def skew(v):
+    return np.array([
+        [ 0,    -v[2],  v[1]],
+        [ v[2],  0,    -v[0]],
+        [-v[1],  v[0],  0   ]
+    ])
+
+print("Skew-symmetric [a]× @ b =", skew(a3) @ b3)
+
+# Confirm equivalence
+print("Cross product equals skew-symmetric multiplication form:", np.allclose(cross, skew(a3) @ b3))
+```
+
+
+## Matrices
+
+A **matrix** has $m$ rows and $n$ columns and is typically written with a capital boldface letter: $\mathbf{A} \in \mathbb{R}^{m \times n}$ Entry in row $i$, column $j$ is written $A_{ij}$ or $[\mathbf{A}]_{ij}$. A **tensor** is a generalization of matrices to higher dimensions, but we will only need two dimensional matrices in this course. Matrices can be sliced and indexed similarly to vectors, but with two indices: $A_{ij}$ is the element in the $i$-th row and $j$-th column, and we can refer to sub-matrices with slicing: $\mathbf{A}_{1:3, 2:4}$ is the $2 \times 2$ block formed by rows 1-2 and columns 2-3. Slicing matrices in `NumPy` uses the same syntax: `A[0:2, 1:3]` for the same block.
+
+Matrices represent linear transformations or systems of linear equations. For example, a sensor model $\mathbf{z} = \mathbf{H}\mathbf{x} + \mathbf{v}$ uses the matrix $\mathbf{H}$ to map the state vector $\mathbf{x}$ to the measurement space. 
+
+### Special matrices
+
+There are two special types of matrices that appear frequently in linear algebra and navigation: the identity matrix and the zero matrix. The identity matrix $\mathbf{I}_n$ is a square $n \times n$ matrix with ones on the diagonal and zeros elsewhere. It serves as the multiplicative identity for matrix multiplication: $\mathbf{AI} = \mathbf{IA} = \mathbf{A}$ for any compatible $\mathbf{A}$. The zero matrix $\mathbf{0}_{m \times n}$ has all entries equal to zero and serves as the additive identity: $\mathbf{A} + \mathbf{0} = \mathbf{A}$.
+
+Both of these special matrices can be easily created in `NumPy` using `np.eye(n)` for the identity matrix and `np.zeros((m, n))` for the zero matrix.
+
+### Transpose
+
+The **transpose** of $\mathbf{A}$, denoted $\mathbf{A}^T$, $\mathbf{A}^\top$, $\mathbf{A}^{\mathrm{T}}$, or $\mathbf{A}^{\intercal}$, is the matrix obtained by swapping rows and columns:
+
+$$
+[\mathbf{A}^T]_{ij} = A_{ji}
+$$
+
+Matrix transpose has the important properties:
+$$
+(\mathbf{AB})^T = \mathbf{B}^T\mathbf{A}^T
+\qquad
+(\mathbf{A}^T)^T = \mathbf{A}
+$$
+
+The transpose can be accessed with `.T` for `NumPy` matrices:
+
+```{python}
+A = np.array([[1, 2, 3],
+              [4, 5, 6]])
+print("A shape:", A.shape)
+print("A:\n", A)
+print("A.T shape:", A.T.shape)
+print("A.T:\n", A.T)
+```
+
+### Matrix multiplication
+
+For $\mathbf{A} \in \mathbb{R}^{m \times k}$ and $\mathbf{B} \in \mathbb{R}^{k \times n}$, the product $\mathbf{C} = \mathbf{AB} \in \mathbb{R}^{m \times n}$ has entries:
+
+$$
+C_{ij} = \sum_{l=1}^k A_{i l}\,B_{l j}
+$$
+
+The inner dimensions must match: $(m \times k)(k \times n) = (m \times n)$.
+
+Python supports matrix multiplication with the `@` operator or `np.dot` function. 
+
+```{python}
+A = np.array([[1, 2, 3],
+              [4, 5, 6]])   # 2x3
+
+B = np.array([[7,  8],
+              [9,  10],
+              [11, 12]])    # 3x2
+
+C = A @ B                   # 2x2
+print("A @ B =\n", C)
+print("A.T shape:", A.T.shape)
+print("(A @ B).T == B.T @ A.T:", np.allclose((A @ B).T, B.T @ A.T))
+```
+
+## Determinant and Rank
+
+### Determinant
+
+For a square matrix $\mathbf{A} \in \mathbb{R}^{n \times n}$, the **determinant** $\det(\mathbf{A})$ is a scalar measuring the signed volume scaling of the linear transformation. The determinant calculation for an arbitrary $n \times n$ matrix is complex, but it can be computed using various algorithms (e.g. LU decomposition). For a simple $2 \times 2$ matrix:
+$$
+\mathbf{A} = \begin{bmatrix}a & b \\ c & d\end{bmatrix}
+\qquad
+\det(\mathbf{A}) = ad - bc
+$$
+
+and for a $3 \times 3$ matrix: 
+$$
+\mathbf{A} = \begin{bmatrix}a & b & c \\
+d & e & f \\
+g & h & i\end{bmatrix}
+\qquad
+\det(\mathbf{A}) = a(ei - fh) - b(di - fg) + c(dh - eg)
+$$
+
+Key properties:
+
+$$
+\det(\mathbf{AB}) = \det(\mathbf{A})\det(\mathbf{B})
+\qquad
+\det(\mathbf{A}^T) = \det(\mathbf{A})
+$$
+
+$\det(\mathbf{A}) = 0$ iff $\mathbf{A}$ is **singular** (not invertible).
+
+`NumPy` provides `np.linalg.det` to compute the determinant of a square matrix:
+
+```{python}
+A = np.array([[4, 2],
+              [1, 3]])
+print(f"det(A) = {np.linalg.det(A):f}")
+```
+
+### Rank
+
+The **rank** of $\mathbf{A}$ is the number of linearly independent rows (or columns). For $\mathbf{A} \in \mathbb{R}^{m \times n}$:
+
+- Full rank: $\text{rank}(\mathbf{A}) = \min(m,n)$
+- $\text{rank}(\mathbf{A}) < n$ means some columns are redundant — the matrix has a nontrivial **null space**: vectors $\mathbf{x}$ such that $\mathbf{Ax} = \mathbf{0}$.
+
+In filtering, a null space in the observation matrix $\mathbf{H}$ means some state components are unobservable.
+
+```{python}
+M_full = np.array([[1, 0], [0, 1]])
+M_sing = np.array([[1, 2], [2, 4]])   # row 2 = 2 * row 1
+
+print("det(full rank):     ", np.linalg.det(M_full))
+print("det(singular):      ", round(np.linalg.det(M_sing), 10))
+print("rank(full rank):    ", np.linalg.matrix_rank(M_full))
+print("rank(singular):     ", np.linalg.matrix_rank(M_sing))
+```
+
+## Matrix Inverse
+
+For a square, full-rank $\mathbf{A} \in \mathbb{R}^{n \times n}$, the **inverse** $\mathbf{A}^{-1}$ satisfies:
+
+$$
+\mathbf{A}\mathbf{A}^{-1} = \mathbf{A}^{-1}\mathbf{A} = \mathbf{I}
+$$
+
+Useful identities:
+
+$$
+(\mathbf{AB})^{-1} = \mathbf{B}^{-1}\mathbf{A}^{-1}
+\qquad
+(\mathbf{A}^T)^{-1} = (\mathbf{A}^{-1})^T
+\qquad
+(\mathbf{A}^{-1})^{-1} = \mathbf{A}
+$$
+
+For non-square or rank-deficient $\mathbf{A}$, the **Moore–Penrose pseudoinverse** $\mathbf{A}^+$ generalizes the inverse and appears in least-squares solutions.
+
+
+`NumPy` has the following functions for matrix inversion:
+
+- `np.linalg.inv(A)` computes the inverse of a square matrix.
+- `np.linalg.solve(A, b)` solves the linear system $\mathbf{Ax} = \mathbf{b}$ without explicitly computing the inverse, which can be more efficient and numerically stable.
+- `np.linalg.pinv(A)` computes the pseudoinverse, which generalizes the inverse to non-square or rank-deficient matrices.
+
+The `SciPy` library also provides `scipy.linalg.inv` and `scipy.linalg.pinv` with additional options for handling singular matrices and improving numerical stability. 
+
+Practical rule: **don't** compute $\mathbf{A}^{-1}\mathbf{b}$ explicitly when you need to solve $\mathbf{Ax} = \mathbf{b}$. Use a linear solve instead — it is faster and more numerically stable.
+
+```{python}
+A = np.array([[4.0, 2.0],
+              [1.0, 3.0]])
+
+b = np.array([10.0, 7.0])
+
+# Avoid:  x = np.linalg.inv(A) @ b
+# Prefer:
+x = np.linalg.solve(A, b)
+print("Solution x =", x)
+print("Residual   =", np.linalg.norm(A @ x - b))
+
+# Pseudoinverse for non-square
+A_rect = np.array([[1, 2], [3, 4], [5, 6]])   # 3x2
+print("Pseudoinverse shape:", np.linalg.pinv(A_rect).shape)
+```
+
+## Eigenvalues and Eigenvectors
+
+For a square matrix $\mathbf{A} \in \mathbb{R}^{n \times n}$, a nonzero vector $\mathbf{v}$ is an **eigenvector** with **eigenvalue** $\lambda$ if:
+
+$$
+\mathbf{A}\mathbf{v} = \lambda\mathbf{v}
+$$
+
+The eigenvalues are roots of the characteristic polynomial $\det(\mathbf{A} - \lambda\mathbf{I}) = 0$.
+
+**Geometric interpretation:** eigenvectors are directions the transformation does not rotate — it only scales them by $\lambda$.
+
+### Symmetric matrices (spectral theorem)
+
+For $\mathbf{A} = \mathbf{A}^T$:
+
+- All eigenvalues are **real**.
+- Eigenvectors from distinct eigenvalues are **orthogonal**.
+- $\mathbf{A}$ is **diagonalizable**: $\mathbf{A} = \mathbf{V}\mathbf{\Lambda}\mathbf{V}^T$, where columns of $\mathbf{V}$ are orthonormal eigenvectors and $\mathbf{\Lambda} = \text{diag}(\lambda_1, \ldots, \lambda_n)$.
+
+### Navigation connection
+
+A covariance matrix $\mathbf{P}$ is symmetric positive semidefinite. Its eigenvectors are the **principal axes of uncertainty**, and its eigenvalues are the **variances along those axes** — the geometry of the uncertainty ellipse.
+
+```{python}
+# Symmetric covariance-like matrix
+P = np.array([[3.0, 1.0],
+              [1.0, 2.0]])
+
+eigenvalues, eigenvectors = np.linalg.eigh(P)   # eigh for symmetric
+print("Eigenvalues:  ", eigenvalues)
+print("Eigenvectors:\n", eigenvectors)
+
+# Verify: A v = lambda v
+for i in range(len(eigenvalues)):
+    lhs = P @ eigenvectors[:, i]
+    rhs = eigenvalues[i] * eigenvectors[:, i]
+    print(f"λ{i+1}: Av ≈ λv:", np.allclose(lhs, rhs))
+```
+
+---
+
+## Norms
+
+### Vector norms
+
+| Norm | Formula | Use |
+|------|---------|-----|
+| $\ell_1$ | $\sum_i \|v_i\|$ | Sparse solutions |
+| $\ell_2$ (Euclidean) | $\sqrt{\sum_i v_i^2}$ | Standard distance |
+| $\ell_\infty$ | $\max_i \|v_i\|$ | Worst-case error |
+
+### Matrix norms
+
+| Norm | Formula |
+|------|---------|
+| Frobenius | $\|\mathbf{A}\|_F = \sqrt{\sum_{i,j} A_{ij}^2}$ |
+| Induced 2-norm | $\|\mathbf{A}\|_2 = \sigma_\max(\mathbf{A})$ |
+
+### Condition number
+
+$$
+\kappa(\mathbf{A}) = \frac{\sigma_{\max}(\mathbf{A})}{\sigma_{\min}(\mathbf{A})}
+$$
+
+A large condition number ($\gg 1$) signals numerical sensitivity: small perturbations in $\mathbf{b}$ cause large changes in the solution $\mathbf{x}$ to $\mathbf{Ax}=\mathbf{b}$.
+
+```{python}
+v = np.array([3.0, -4.0, 0.0])
+print("ℓ1 norm:  ", np.linalg.norm(v, 1))
+print("ℓ2 norm:  ", np.linalg.norm(v, 2))
+print("ℓ∞ norm:  ", np.linalg.norm(v, np.inf))
+
+A = np.array([[1.0, 2.0], [3.0, 4.0]])
+print("Frobenius: ", np.linalg.norm(A, 'fro'))
+print("Condition: ", np.linalg.cond(A))
+```
+
+## Matrix Decompositions
+
+Decompositions factor a matrix into structured pieces that are easier to work with numerically. They are the workhorses of linear algebra algorithms, underlying everything from solving linear systems to computing eigenvalues. 
+
+### LU decomposition
+
+$\mathbf{A} = \mathbf{LU}$ (lower × upper triangular, with permutation in practice). Used internally by most square-system solvers.
+
+### QR decomposition
+
+$\mathbf{A} = \mathbf{QR}$ ($\mathbf{Q}$ orthogonal, $\mathbf{R}$ upper triangular). Preferred over normal equations for numerically stable least-squares.
+
+### Singular Value Decomposition (SVD)
+
+The most general factorization, valid for any $m \times n$ matrix:
+
+$$
+\mathbf{A} = \mathbf{U}\mathbf{\Sigma}\mathbf{V}^T
+$$
+
+- $\mathbf{U} \in \mathbb{R}^{m \times m}$, $\mathbf{V} \in \mathbb{R}^{n \times n}$: orthogonal matrices.
+- $\mathbf{\Sigma} \in \mathbb{R}^{m \times n}$: diagonal with non-negative **singular values** $\sigma_1 \ge \sigma_2 \ge \cdots \ge 0$.
+- $\text{rank}(\mathbf{A})$ = number of nonzero singular values.
+- The pseudoinverse is $\mathbf{A}^+ = \mathbf{V}\mathbf{\Sigma}^+\mathbf{U}^T$.
+
+```{python}
+A = np.array([[1, 2, 3],
+              [4, 5, 6],
+              [7, 8, 9]])   # rank-deficient (rank 2)
+
+U, s, Vt = np.linalg.svd(A)
+print("Singular values:", np.round(s, 4))
+print("Effective rank  :", np.sum(s > 1e-10))
+```
+
+## Least Squares
+
+Many navigation problems reduce to minimizing a sum of squared residuals. Given an overdetermined system ($m > n$):
+
+$$
+\min_{\mathbf{x}} \|\mathbf{Ax} - \mathbf{b}\|_2^2
+$$
+
+The solution satisfies the **normal equations**:
+
+$$
+\mathbf{A}^T\mathbf{A}\,\mathbf{x} = \mathbf{A}^T\mathbf{b}
+\implies
+\mathbf{x}^* = (\mathbf{A}^T\mathbf{A})^{-1}\mathbf{A}^T\mathbf{b} = \mathbf{A}^+\mathbf{b}
+$$
+
+In practice, use `np.linalg.lstsq` (which uses QR/SVD internally) rather than forming the normal equations explicitly.
+
+### Weighted least squares
+
+When residuals have known covariance $\mathbf{\Sigma}$, down-weight noisy measurements:
+
+$$
+\min_{\mathbf{x}}\; \mathbf{r}^T \mathbf{\Sigma}^{-1} \mathbf{r}
+\qquad
+\mathbf{r} = \mathbf{Ax} - \mathbf{b}
+$$
+
+This is equivalent to transforming $\tilde{\mathbf{A}} = \mathbf{\Sigma}^{-1/2}\mathbf{A}$, $\tilde{\mathbf{b}} = \mathbf{\Sigma}^{-1/2}\mathbf{b}$ and solving the ordinary least-squares problem. Weighted least squares is the backbone of sensor fusion and will appear in every filter chapter.
+
+```{python}
+# Overdetermined system: 4 equations, 2 unknowns
+A = np.array([[1, 1],
+              [1, 2],
+              [1, 3],
+              [1, 4]], dtype=float)
+b = np.array([2.1, 3.9, 6.2, 7.8], dtype=float)
+
+x, residuals, rank, sv = np.linalg.lstsq(A, b, rcond=None)
+print("Least-squares solution:", np.round(x, 4))
+print("Fit: intercept =", round(x[0], 3), "  slope =", round(x[1], 3))
+```
+
+## Quick Reference
+
+| Operation | Math | NumPy |
+|-----------|------|-------|
+| Dot product | $\mathbf{a}\cdot\mathbf{b}$ | `np.dot(a, b)` or `a @ b` |
+| Cross product | $\mathbf{a}\times\mathbf{b}$ | `np.cross(a, b)` |
+| Matrix multiply | $\mathbf{AB}$ | `A @ B` |
+| Transpose | $\mathbf{A}^T$ | `A.T` |
+| Inverse | $\mathbf{A}^{-1}$ | `np.linalg.inv(A)` |
+| Solve $\mathbf{Ax}=\mathbf{b}$ | — | `np.linalg.solve(A, b)` |
+| Pseudoinverse | $\mathbf{A}^+$ | `np.linalg.pinv(A)` |
+| Eigendecomposition | $\mathbf{Av}=\lambda\mathbf{v}$ | `np.linalg.eigh(A)` (symmetric) |
+| SVD | $\mathbf{U\Sigma V}^T$ | `np.linalg.svd(A)` |
+| Vector norm | $\|\mathbf{v}\|_p$ | `np.linalg.norm(v, p)` |
+| Determinant | $\det(\mathbf{A})$ | `np.linalg.det(A)` |
+| Rank | $\text{rank}(\mathbf{A})$ | `np.linalg.matrix_rank(A)` |
+| Condition number | $\kappa(\mathbf{A})$ | `np.linalg.cond(A)` |
+
+## Common Mistakes
+
+- **Dimension mismatch.** Check shapes before multiplying: $(m \times k)(k \times n)$ is valid; $(m \times k)(m \times k)$ is not unless $m=k$.
+- **Row vs. column vector conventions.** NumPy 1-D arrays are neither; use `reshape(-1, 1)` when shape matters.
+- **Explicit inverse.** $\mathbf{A}^{-1}\mathbf{b}$ is slower and less stable than `solve(A, b)`.
+- **Forgetting the transpose in covariance propagation.** $\mathbf{APA}^T$, not $\mathbf{APA}$.
+- **Trusting poorly-conditioned results.** Check `np.linalg.cond(A)` before interpreting solutions.

@@ -1,0 +1,558 @@
+# Visual Navigation and Visual SLAM
+
+## Introduction
+
+Vision is one of the richest sensors in robotics: a camera captures detailed spatial information in a small, low-power package. However, extracting navigation information from images is fundamentally different from gyroscope and accelerometer integration.
+
+**This chapter covers**:
+- Camera models: how pixels relate to 3D space
+- Feature detection: finding repeatable, distinctive points in images
+- Visual odometry: estimating motion from sequential frames
+- Structure from motion: reconstructing 3D geometry from images
+- Bundle adjustment: joint optimization of cameras and 3D points
+- Visual SLAM systems: the ORB-SLAM pipeline and modern systems
+
+---
+
+## 1. Camera Models and Calibration
+
+### 1.1 Pinhole Camera Model
+
+The simplest and most common model: light rays pass through a point (the **optical center**) before hitting the image plane.
+
+**Projection equation** (world point to image pixel):
+
+$$\begin{bmatrix} u \\ v \\ 1 \end{bmatrix} = \frac{1}{Z_c} K \begin{bmatrix} X_c \\ Y_c \\ Z_c \end{bmatrix}$$
+
+where:
+- $(X_c, Y_c, Z_c)$: 3D point in camera frame
+- $(u, v)$: pixel coordinates (row, column)
+- $K$: **camera intrinsic matrix**
+- $Z_c$: depth (distance to camera)
+- Normalization by $1/Z_c$ accounts for perspective
+
+**Camera intrinsic matrix**:
+$$K = \begin{bmatrix}
+f_x & 0 & c_x \\
+0 & f_y & c_y \\
+0 & 0 & 1
+\end{bmatrix}$$
+
+where:
+- $f_x, f_y$: focal lengths (in pixels)
+- $(c_x, c_y)$: principal point (usually image center)
+
+**Complete projection** (world to image):
+$$\mathbf{p} = K [R | \mathbf{t}] \mathbf{P}$$
+
+where:
+- $\mathbf{P}$: world point
+- $[R | \mathbf{t}]$: extrinsic matrix (rotation and translation)
+- $\mathbf{p}$: image point (homogeneous coordinates)
+
+### 1.2 Distortion Models
+
+Real lenses introduce distortion. Common model: **radial and tangential**:
+
+$$u_{\text{dist}} = u_{\text{ideal}} + (u_{\text{ideal}} - c_x) (k_1 r^2 + k_2 r^4 + k_3 r^6) + (p_1(r^2 + 2(u_{\text{ideal}} - c_x)^2) + 2p_2(u_{\text{ideal}} - c_x)(v_{\text{ideal}} - c_y))$$
+
+where:
+- $r^2 = (u_{\text{ideal}} - c_x)^2 + (v_{\text{ideal}} - c_y)^2$: squared radius from principal point
+- $k_1, k_2, k_3$: radial distortion coefficients
+- $p_1, p_2$: tangential distortion coefficients
+
+**Undistortion**: Apply inverse mapping to raw image pixels to get rectified image.
+
+### 1.3 Camera Calibration
+
+**Goal**: Determine $K$ (and distortion coefficients) from observations.
+
+**Method**: Photograph a checkerboard pattern at known positions
+
+```python
+import cv2
+import numpy as np
+
+def calibrate_camera(images_with_corners, checkerboard_size):
+    """
+    Calibrate camera from checkerboard images
+
+    images_with_corners: list of images containing checkerboard
+    checkerboard_size: (rows, cols) of checkerboard
+    """
+    objp = np.zeros((checkerboard_size[0] * checkerboard_size[1], 3), np.float32)
+    objp[:, :2] = np.mgrid[0:checkerboard_size[0], 0:checkerboard_size[1]].T.reshape(-1, 2)
+
+    object_points = []
+    image_points = []
+
+    for img in images_with_corners:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        ret, corners = cv2.findChessboardCorners(gray, checkerboard_size, None)
+
+        if ret:
+            object_points.append(objp)
+            image_points.append(corners)
+
+    # Calibrate
+    ret, K, distortion, rvecs, tvecs = cv2.calibrateCamera(
+        object_points, image_points, gray.shape[::-1], None, None
+    )
+
+    return K, distortion, rvecs, tvecs
+```
+
+---
+
+## 2. Feature Detection and Descriptors
+
+### 2.1 Why Features?
+
+Images are high-dimensional (640×480 = 307,200 pixels). Directly matching pixels fails due to:
+- Small changes in viewpoint produce large pixel changes
+- Photometric variation (lighting, exposure)
+- Repetitive patterns
+
+**Solution**: Extract distinctive **keypoints** and compute compact **descriptors**.
+
+### 2.2 Feature Detectors
+
+**Harris Corner Detector**: Finds corners (high curvature in both directions)
+
+**Scale-Invariant Feature Transform (SIFT)**:
+- Detects interest points at multiple scales
+- Invariant to rotation and scale
+- Very robust but computationally expensive
+- Patented; not always available
+
+**Oriented FAST and Rotated BRIEF (ORB)**:
+- FAST: Fast corner detection
+- BRIEF: Fast descriptor (binary)
+- Rotation invariance via orientation estimation
+- Free, fast, good performance
+- **Recommended for real-time applications**
+
+**Speeded Up Robust Features (SURF)**:
+- Approximation of SIFT
+- Faster but still complex
+
+### 2.3 Feature Descriptors
+
+A descriptor is a compact representation of the region around a keypoint.
+
+**SIFT descriptor**: 128-dimensional vector of gradient orientations (slow to compute/match)
+
+**BRIEF descriptor**: 256-bit binary string (very fast matching via Hamming distance)
+
+**ORB descriptor**: Rotation-invariant BRIEF (rotated according to keypoint orientation)
+
+**Comparison**:
+| Detector | Descriptor | Speed | Robustness | Notes |
+|----------|-----------|-------|-----------|-------|
+| Harris | SIFT | Slow | Very high | Classical, benchmarks |
+| FAST | BRIEF | Fast | Good | ORB variant |
+| FAST | ORB | Very fast | Good | Real-time capable |
+
+### 2.4 Feature Matching
+
+**Brute-force matching**: Compare descriptor of each keypoint in image 1 to all keypoints in image 2.
+
+**Lowe's ratio test**: For each keypoint in image 1:
+- Find 2 nearest descriptors in image 2 (distances $d_1, d_2$)
+- If $d_1 / d_2 < \text{threshold}$ (typically 0.7), accept match
+- Rejects ambiguous matches
+
+```python
+import cv2
+
+def detect_and_match_features(img1, img2):
+    """Detect features and match between two images"""
+    # Initialize ORB detector
+    orb = cv2.ORB_create(nfeatures=500)
+
+    # Detect keypoints and descriptors
+    kp1, des1 = orb.detectAndCompute(img1, None)
+    kp2, des2 = orb.detectAndCompute(img2, None)
+
+    # Match features
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+    matches = bf.knnMatch(des1, des2, k=2)
+
+    # Lowe's ratio test
+    good_matches = []
+    for pair in matches:
+        if len(pair) == 2:
+            m, n = pair
+            if m.distance < 0.7 * n.distance:
+                good_matches.append(m)
+
+    return kp1, kp2, good_matches
+```
+
+---
+
+## 3. Visual Odometry
+
+### 3.1 Concept
+
+**Visual odometry**: Estimate camera motion between consecutive frames using feature correspondences.
+
+**Process**:
+1. Detect features in frame $t-1$ and frame $t$
+2. Match features between frames (data association)
+3. Compute camera motion: rotation $R$ and translation $\mathbf{t}$
+
+### 3.2 Motion Estimation from Two Views
+
+**Given**: Matched features $(u_{t-1}^i, u_t^i)$ in two frames.
+
+**Goal**: Find camera motion (extrinsic change) between frames.
+
+**Approach**: Essential matrix $E$ encodes geometric constraint
+
+$$\mathbf{p}_t^T E \mathbf{p}_{t-1} = 0$$
+
+where $\mathbf{p} = K^{-1} [u, v, 1]^T$ is the **normalized** image point.
+
+**Solving for E**:
+1. Normalize image coordinates using $K$
+2. Use RANSAC to robustly estimate $E$ (many outliers in feature matching)
+3. Decompose $E = U \Sigma V^T$ using SVD
+4. Extract 4 possible [R, t] solutions
+5. Choose physically valid solution (positive depth)
+
+```python
+def compute_essential_matrix_and_motion(kp1, kp2, K, matches):
+    """
+    Compute essential matrix and camera motion
+
+    Returns: R, t (rotation and translation of camera 2 relative to camera 1)
+    """
+    # Get matched points
+    pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
+    pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
+
+    # Normalize using intrinsic matrix
+    pts1_norm = cv2.undistortPoints(pts1.reshape(1, -1, 2), K, None).reshape(-1, 2)
+    pts2_norm = cv2.undistortPoints(pts2.reshape(1, -1, 2), K, None).reshape(-1, 2)
+
+    # Compute essential matrix with RANSAC
+    E, mask = cv2.findEssentialMat(pts1_norm, pts2_norm, focal=1.0, pp=(0, 0), method=cv2.RANSAC, prob=0.999, threshold=0.001)
+
+    # Decompose to get R and t
+    _, R, t, mask = cv2.recoverPose(E, pts1_norm, pts2_norm, mask=mask)
+
+    return R, t, mask
+```
+
+### 3.3 Triangulation: 3D Point Reconstruction
+
+Once we have camera motion, we can reconstruct 3D points via **triangulation**.
+
+**Given**:
+- Point $\mathbf{p}_1 = (u_1, v_1)$ in camera 1
+- Point $\mathbf{p}_2 = (u_2, v_2)$ in camera 2 (matched feature)
+- Camera 1 pose: identity $(R_1 = I, \mathbf{t}_1 = \mathbf{0})$
+- Camera 2 pose: $(R_2, \mathbf{t}_2)$ relative to camera 1
+
+**Find**: 3D point $\mathbf{P}$ such that both cameras project to $(u_1, v_1)$ and $(u_2, v_2)$ respectively.
+
+**Linear method**: Set up linear least-squares problem
+$$A \lambda = 0$$
+
+where $A$ is constructed from projection equations, and $\lambda$ contains unknown 3D coordinates and depths.
+
+Solve via SVD for optimal $\mathbf{P}$.
+
+```python
+def triangulate_points(pts1, pts2, P1, P2):
+    """
+    Triangulate 3D points from two views
+
+    pts1, pts2: matched points in image 1 and 2
+    P1, P2: camera projection matrices (3×4)
+
+    Returns: 3D points
+    """
+    points_3d = cv2.triangulatePoints(P1, P2, pts1.T, pts2.T)
+    points_3d = points_3d[:3] / points_3d[3]  # convert from homogeneous
+    return points_3d.T
+```
+
+### 3.4 Visual Odometry Pipeline
+
+```
+Initialize: Set frame t-1 as reference
+
+For each new frame t:
+    1. Detect features in frame t
+    2. Match features with frame t-1
+    3. Estimate motion (R, t)
+    4. Triangulate matched points → 3D map
+    5. Estimate scale (if monocular, scale is ambiguous)
+    6. Update camera pose: T_t = T_{t-1} * [R | t]
+    7. Accumulate pose estimate for trajectory
+    8. Discard old frame, set t as new reference
+```
+
+**Challenges**:
+- **Scale ambiguity** (monocular camera)
+- **Motion degenerate** (pure rotation, forward motion)
+- **Drift** accumulates over time
+- **Outliers** in feature matching
+
+---
+
+## 4. Bundle Adjustment
+
+### 4.1 Concept
+
+**Bundle adjustment** jointly optimizes:
+- Camera poses: $(R_1, \mathbf{t}_1), (R_2, \mathbf{t}_2), \ldots$
+- 3D point positions: $\mathbf{P}_1, \mathbf{P}_2, \ldots$
+
+Such that reprojection errors are minimized.
+
+**Cost function**:
+$$\min_{poses, points} \sum_{i,j} \|\mathbf{p}_{ij} - \pi(K R_i \mathbf{P}_j + K \mathbf{t}_i)\|^2$$
+
+where:
+- $\mathbf{p}_{ij}$: observed image point
+- $\pi$: projection function (divide by depth)
+- Sum over all observations $(i,j)$
+
+### 4.2 Structure
+
+Sparsity pattern: Each observation depends on only one camera pose and one 3D point.
+
+**Jacobian**: Has block structure (sparse):
+$$J = \begin{bmatrix}
+\frac{\partial residual_1}{\partial pose_1} & 0 & \cdots & \frac{\partial residual_1}{\partial point_1} & \cdots \\
+0 & \frac{\partial residual_2}{\partial pose_2} & \cdots & \cdots & \frac{\partial residual_2}{\partial point_1} \\
+\vdots & & \ddots & & \vdots
+\end{bmatrix}$$
+
+Exploiting sparsity enables efficient optimization even with thousands of cameras and points.
+
+### 4.3 Optimization Solvers
+
+**Ceres Solver**: Google's optimization library
+- Handles sparsity automatically
+- Supports manifold constraints (SO(3) for rotations, etc.)
+- Very efficient for bundle adjustment
+
+**g2o (General Graph Optimization)**:
+- Graph-based optimization
+- Widely used in SLAM
+
+**GTSAM** (Georgia Tech Smoothing and Mapping):
+- Factor graphs
+- Incremental updating
+
+```python
+# Pseudo-code (using Ceres in C++ or similar)
+problem = Problem()
+
+# Add residuals for each observation
+for observation (camera_id, point_id, measured_pixel):
+    cost_function = CameraProjectionError(measured_pixel, K)
+    problem.AddResidualBlock(
+        cost_function,
+        loss_function,
+        camera_poses[camera_id],
+        points_3d[point_id]
+    )
+
+# Solve
+options.linear_solver_type = SPARSE_NORMAL_CHOLESKY
+options.trust_region_strategy = DOGLEG
+solver.Solve(options, problem, summary)
+```
+
+---
+
+## 5. Visual SLAM: The ORB-SLAM Pipeline
+
+### 5.1 System Overview
+
+**ORB-SLAM** (oriented FAST and rotated BRIEF SLAM) is a complete visual SLAM system:
+1. **Tracking**: Feature detection and matching for pose estimation
+2. **Local Mapping**: Structure from motion, bundle adjustment
+3. **Loop Closing**: Place recognition and pose graph optimization
+
+### 5.2 Tracking Thread
+
+```
+For each new frame:
+    1. Detect ORB features
+    2. Attempt to match with previous frame (motion model)
+    3. If successful: Estimate camera pose via PnP
+    4. If tracking lost: Try global place recognition
+    5. Create new keyframes if needed (when motion is sufficient)
+```
+
+**Keyframe decision**: Create new keyframe if:
+- Sufficient translation/rotation since last keyframe
+- Current frame has >90% feature matches with last keyframe
+
+### 5.3 Local Mapping Thread
+
+```
+While keyframes arrive:
+    1. Process new keyframe
+    2. Create new 3D points via triangulation
+    3. Cull bad points (low confidence)
+    4. Optimize local bundle (recent keyframes + their points)
+    5. Search for matches with neighboring keyframes
+```
+
+### 5.4 Loop Closing Thread
+
+```
+For each new keyframe:
+    1. Query place recognition (bag-of-words)
+    2. If potential loop closure found:
+        - Verify correspondence with geometric checks
+        - Compute pose constraint (similarity transform)
+        - Optimize global pose graph with loop edges
+```
+
+### 5.5 Key Components
+
+**Bag-of-Words for Place Recognition**:
+- Vocabulary: 30k most common ORB descriptors
+- Each image: frequency histogram over vocabulary (30k-dimensional vector)
+- Place recognition: Find images with similar histogram
+
+**Covisibility Graph**:
+- Nodes: keyframes
+- Edges: share observed 3D points
+- Used to define local optimization neighborhoods
+
+**Essential Graph**:
+- Subset of covisibility graph edges
+- Sufficient to maintain consistency
+
+---
+
+## 6. Monocular vs. Stereo vs. RGB-D
+
+### 6.1 Monocular SLAM
+
+**Advantages**:
+- Cheap (single camera)
+- Lightweight
+
+**Disadvantages**:
+- **Scale ambiguity**: Cannot determine absolute scale from images alone
+- Requires sufficient feature diversity for triangulation
+- Drift still accumulates without loop closure
+
+**Solution**: Use IMU or odometry for scale estimation
+
+### 6.2 Stereo SLAM
+
+**Advantages**:
+- Known stereo baseline provides metric scale
+- Dense depth from feature matching
+- More robust (redundant measurements)
+
+**Disadvantages**:
+- Requires stereo calibration
+- Baseline limits range
+- Both images must be acquired simultaneously
+
+### 6.3 RGB-D SLAM (Depth Cameras)
+
+**Advantages**:
+- Direct depth measurements (no triangulation needed)
+- Dense reconstruction
+- More robust tracking (can use photometric consistency)
+
+**Disadvantages**:
+- Limited range (typically <5m for indoor sensors)
+- Fails on reflective surfaces
+- Higher power consumption
+
+---
+
+## 7. Comparison: ORB-SLAM vs. Modern Visual SLAM
+
+| System | Type | Robustness | Speed | Loop Closure | Real-time |
+|--------|------|-----------|-------|--------------|-----------|
+| ORB-SLAM | Monocular | High | Fast | Yes (BoW) | Yes |
+| ORB-SLAM2 | Stereo/Mono | Very high | Fast | Yes | Yes |
+| LSD-SLAM | Semi-dense | Medium | Medium | No | Yes |
+| ORB-SLAM3 | Visual-Inertial | Excellent | Fast | Yes | Yes |
+
+**Modern Trends**:
+- Visual-inertial fusion (ORB-SLAM3, OKVIS, VINS-Mono)
+- Semantic understanding of scenes
+- Learned features (CNNs replacing hand-crafted descriptors)
+- Neural depth estimation
+
+---
+
+## 8. Implementation Considerations
+
+### 8.1 Feature Tracking Failures
+
+**Scenarios**:
+1. **Low texture** (blank walls, sky)
+2. **High motion blur**
+3. **Illumination change**
+4. **Moving objects** (people, vehicles)
+
+**Recovery**:
+- Use IMU prediction to bootstrap next frame search region
+- Fallback to coarser feature matching
+- Reset and relocalize when tracking is lost
+
+### 8.2 Initialization (Monocular)
+
+Monocular systems cannot determine scale without motion. Two approaches:
+
+**Homography initialization** (planar scene):
+- Assume initial scene is planar
+- Decompose homography to get rotation and translation (relative)
+- Estimate scale from baseline
+
+**Fundamental matrix initialization** (general scene):
+- Use fundamental matrix to decompose camera motion
+- Triangulate points
+- Choose solution with most points in front of cameras
+- Estimate scale from odometry or IMU
+
+### 8.3 Drift Management
+
+**Inherent to monocular SLAM**: Drift accumulates continuously.
+
+**Mitigation**:
+1. **Loop closure**: Explicitly detect and correct drift
+2. **IMU fusion**: Use accelerometer/gyro to constrain drift
+3. **Global optimization**: Periodically re-optimize entire pose graph
+4. **Periodic resets**: Reinitialize against absolute measurements
+
+---
+
+## 9. Summary and Practical Guide
+
+**Visual navigation capabilities**:
+1. **Visual odometry**: Short-term incremental motion (seconds to minutes)
+2. **Visual SLAM**: Long-term mapping with loop closure (hours+)
+3. **Place recognition**: Detecting previously visited locations
+4. **Dense reconstruction**: 3D scene geometry
+
+**Choosing a system**:
+- **Real-time indoor robot**: ORB-SLAM2 (stereo) or ORB-SLAM3 (with IMU)
+- **Drone/outdoor**: Visual-inertial fusion (scale and drift control)
+- **Mapping**: ORB-SLAM + post-processing bundle adjustment
+- **Constraints**: Low power → lighter algorithms; high accuracy → loop closure essential
+
+**Integration with inertial navigation**:
+- **Monocular vision** + **IMU**: Excellent combination (complements each other)
+  - IMU provides scale and short-term drift control
+  - Vision provides absolute position correction and loop closure
+- **GNSS + Vision**: Vision in GNSS-denied areas, GNSS for scale and absolute position
+
+The next chapter covers loop closure detection in detail—the mechanism that makes long-term visual SLAM possible.

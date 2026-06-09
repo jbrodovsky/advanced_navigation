@@ -1,0 +1,54 @@
+# The Unscented Kalman Filter (UKF)
+
+## Beyond Linearization
+
+In the previous chapter, we saw how the EKF linearizes nonlinear functions using Jacobians. While powerful, this "first-order" approximation has flaws:
+1. **Jacobian Complexity**: Deriving Jacobians for complex systems is error-prone.
+2. **Linearization Error**: For highly nonlinear functions or large uncertainties, the first-order approximation can lead to filter divergence.
+
+The **Unscented Kalman Filter (UKF)** addresses these by using a deterministic sampling approach known as the **Unscented Transform**.
+
+## The Unscented Transform (UT)
+
+Instead of linearizing the function, the UKF linearizes the *distribution*. 
+
+It picks a small set of sample points, called **Sigma Points**, that capture the mean and covariance of the state. These points are passed through the true nonlinear function, and the new mean and covariance are calculated from the transformed points.
+
+### Advantages of the UKF
+- **No Jacobians**: You only need the nonlinear functions $f(x)$ and $h(x)$.
+- **Higher Accuracy**: The UT captures the mean and covariance correctly to at least the second order (Taylor series) for any nonlinearity.
+- **Robustness**: Better performance in systems with "highly curved" dynamics or measurements.
+
+## Sigma Point Selection
+
+For a state of dimension $n$, the UKF typically uses $2n + 1$ sigma points. The points are distributed around the mean $\bar{x}$ at a distance proportional to the square root of the covariance $P$.
+
+$$ \mathcal{X}_0 = \bar{x} $$
+$$ \mathcal{X}_i = \bar{x} + \sqrt{(n + \lambda)P}_i \quad \text{for } i=1 \dots n $$
+$$ \mathcal{X}_i = \bar{x} - \sqrt{(n + \lambda)P}_{i-n} \quad \text{for } i=n+1 \dots 2n $$
+
+## EKF vs. UKF: A Practical Comparison
+
+In industry, the choice between EKF and UKF often comes down to computational budget:
+- **EKF**: Faster, but requires manual derivation of Jacobians.
+- **UKF**: More computationally expensive (running the model $2n+1$ times), but easier to implement and generally more accurate.
+
+```python
+import numpy as np
+from advnav.filters import UKF
+
+# Define a highly nonlinear transition
+def f_nonlinear(x, u=None):
+    return np.array([[x[0,0] + np.sin(x[1,0])], 
+                     [x[1,0]**2]])
+
+# Initialize UKF
+ukf = UKF(dim_x=2, dim_z=1)
+ukf.x = np.array([[1.0, 0.5]]).T
+ukf.P *= 0.1
+
+# Predict
+ukf.predict(f_nonlinear)
+
+print(f"UKF Predicted Mean:\n{ukf.x}")
+```

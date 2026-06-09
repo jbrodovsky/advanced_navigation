@@ -1,0 +1,730 @@
+---
+title: "Assignment 2: Victoria Park SLAM"
+subtitle: "Laser-Based Feature SLAM with Loop Closure Detection"
+author: "Advanced Navigation Course"
+date: "2026-05-19"
+---
+
+# Assignment 2: Victoria Park SLAM
+
+## Overview
+
+In this project, you will implement a complete Simultaneous Localization and Mapping (SLAM) system using the Victoria Park dataset. A utility vehicle was driven through a park in Sydney, Australia, collecting wheel odometry and SICK laser scanner data over several kilometers.
+
+Your system will incrementally build a map of the park's trees while simultaneously estimating the vehicle's trajectory, culminating in the detection and exploitation of a significant loop closure event.
+
+**Estimated time:** 25 hours
+**Learning outcomes:**
+- Extract features from laser range data (Chapter 10)
+- Implement robust data association (Chapter 9)
+- Choose and implement a SLAM backend (Chapter 6)
+- Detect and verify loop closures (Chapter 11)
+- Analyze computational scaling (Chapter 13)
+
+---
+
+## Project Architecture
+
+```
+Laser Scans → Feature Extraction → Landmark Database
+                  ↓
+          Data Association
+                  ↓
+            EKF-SLAM Backend
+           (or FastSLAM)
+                  ↓
+          Pose Graph Optimization
+                  ↓
+          Loop Closure Detection
+                  ↓
+        Final Map & Trajectory
+```
+
+---
+
+## Part A: Feature Extraction from Laser Data
+
+### Learning Objectives
+- Process raw 2D laser range measurements
+- Detect tree trunks using clustering and circle fitting
+- Represent features in a global (map) frame
+
+### Background
+
+The Victoria Park dataset contains 2D laser scans from a SICK LMS200 scanner. Each scan is 180° field-of-view with ~180 range measurements. Tree trunks appear as distinctive, circular arcs in the range data.
+
+**Relevant chapters:**
+- Chapter 10 (Visual Navigation) — feature detection principles; applies to laser features
+- Chapter 9 (Data Association) — downstream matching of extracted features
+
+### Specification
+
+Implement a `LaserFeatureExtractor` class:
+
+```python
+class LaserFeatureExtractor:
+    def __init__(self, angle_min=-np.pi/2, angle_max=np.pi/2,
+                 num_rays=180, max_range=81.0):
+        """
+        angle_min, angle_max: angular bounds of scanner
+        num_rays: number of range measurements per scan
+        max_range: maximum reliable range (meters)
+        """
+        self.angle_min = angle_min
+        self.angle_max = angle_max
+        self.num_rays = num_rays
+        self.max_range = max_range
+
+        # Precompute ray angles
+        self.angles = np.linspace(angle_min, angle_max, num_rays)
+
+    def extract_features(self, ranges, vehicle_pose):
+        """
+        Extract circular features (tree trunks) from a laser scan.
+
+        Args:
+            ranges: [num_rays] array of range measurements (meters)
+            vehicle_pose: [x, y, theta] vehicle position in world frame
+
+        Returns:
+            features: list of dicts, each with:
+                - 'center': [x, y] in world frame
+                - 'radius': estimated trunk radius (meters)
+                - 'confidence': fit quality [0, 1]
+                - 'num_points': number of range points in feature
+        """
+        # Step 1: Remove invalid measurements
+        valid_idx = np.where((ranges > 0) & (ranges < self.max_range))[0]
+        valid_ranges = ranges[valid_idx]
+        valid_angles = self.angles[valid_idx]
+
+        if len(valid_ranges) < 20:
+            return []  # Not enough data
+
+        # Step 2: Convert polar to Cartesian in vehicle frame
+        x_vehicle = valid_ranges * np.cos(valid_angles)
+        y_vehicle = valid_ranges * np.sin(valid_angles)
+        points_vehicle = np.column_stack([x_vehicle, y_vehicle])
+
+        # Step 3: Transform to world frame
+        R = np.array([
+            [np.cos(vehicle_pose[2]), -np.sin(vehicle_pose[2])],
+            [np.sin(vehicle_pose[2]), np.cos(vehicle_pose[2])]
+        ])
+        points_world = points_vehicle @ R.T + vehicle_pose[:2]
+
+        # Step 4: Segment points using angular continuity
+        segments = self._segment_scan(points_world, valid_angles)
+
+        # Step 5: Fit circles to each segment
+        features = []
+        for segment in segments:
+            if len(segment) >= 5:  # Need at least 5 points for circle fit
+                feature = self._fit_circle(segment)
+                if feature is not None:
+                    features.append(feature)
+
+        return features
+
+    def _segment_scan(self, points, angles):
+        """
+        Segment points into clusters based on angular separation.
+        Large angle jumps indicate different objects.
+        """
+        segments = []
+        current_segment = [points[0]]
+
+        for i in range(1, len(points)):
+            # Angular difference between consecutive rays
+            dangle = angles[i] - angles[i-1]
+
+            # Range difference: large jumps indicate different objects
+            drange = np.linalg.norm(points[i] - points[i-1])
+
+            if dangle > np.deg2rad(2) or drange > 1.5:  # Object boundary
+                if len(current_segment) >= 5:
+                    segments.append(np.array(current_segment))
+                current_segment = [points[i]]
+            else:
+                current_segment.append(points[i])
+
+        # Finalize last segment
+        if len(current_segment) >= 5:
+            segments.append(np.array(current_segment))
+
+        return segments
+
+    def _fit_circle(self, points):
+        """
+        Fit a circle to a set of 2D points using least-squares.
+
+        Returns:
+            feature dict with 'center', 'radius', 'confidence'
+        """
+        # Least-squares circle fitting (algebraic method)
+        # Minimize: sum((||p_i - c||^2 - r^2)^2)
+
+        # Use closed-form solution: solve A x = b
+        x = points[:, 0]
+        y = points[:, 1]
+        A = np.column_stack([x, y, np.ones(len(x))])
+        b = x**2 + y**2
+
+        try:
+            # Normal equations: A^T A p = A^T b
+            coeffs = np.linalg.lstsq(A, b, rcond=None)[0]
+        except np.linalg.LinAlgError:
+            return None
+
+        cx = coeffs[0] / 2
+        cy = coeffs[1] / 2
+        r = np.sqrt(coeffs[2] + cx**2 + cy**2)
+
+        # Compute residuals for confidence
+        dists = np.linalg.norm(points - np.array([cx, cy]), axis=1)
+        residuals = np.abs(dists - r)
+        rmse = np.sqrt(np.mean(residuals**2))
+        confidence = 1.0 / (1.0 + rmse)  # Higher confidence for tighter fit
+
+        # Filter by radius (tree trunks typically 0.1 - 0.3 m)
+        if r < 0.05 or r > 1.0:
+            return None
+
+        return {
+            'center': np.array([cx, cy]),
+            'radius': r,
+            'confidence': confidence,
+            'num_points': len(points)
+        }
+```
+
+### Deliverables for Part A
+
+1. **Feature Extraction:**
+   - Implement `LaserFeatureExtractor` above
+   - Test on sample laser scans from Victoria Park dataset
+   - Visualize extracted features overlaid on range image
+
+2. **Parameter Tuning:**
+   - Tune segmentation threshold (angle and range jumps)
+   - Tune circle fitting thresholds (min radius, max radius)
+   - Report statistics: mean number of trees per scan, false positive rate
+
+3. **Visualization:**
+   - Plot raw range measurements as polar plot
+   - Show segmented clusters in different colors
+   - Show fitted circles over point clouds
+   - Overlay extracted features in world coordinates
+
+---
+
+## Part B: Data Association
+
+### Learning Objectives
+- Implement robust measurement-to-landmark association
+- Use Mahalanobis distance gating for outlier rejection
+- Manage landmark initialization and track states
+
+### Background
+
+As the vehicle moves and scans repeatedly, we must decide: is each newly detected feature a new tree, or one we've already mapped? This is the **data association** problem. An error here corrupts the entire SLAM system.
+
+**Relevant chapters:**
+- Chapter 9 (Data Association) — Nearest Neighbor, Mahalanobis gating, PDA
+- Chapter 6 (SLAM) — landmark management in EKF-SLAM
+- Chapter 15 (Practical Guide) — failure modes and recovery
+
+### Specification
+
+Implement a `LandmarkTracker` class to manage landmarks and their association:
+
+```python
+class LandmarkTracker:
+    def __init__(self, gate_threshold=9.0):
+        """
+        gate_threshold: chi-squared threshold for Mahalanobis gating
+                        9.0 ≈ 99% confidence for 2D measurement
+        """
+        self.landmarks = []  # List of LandmarkTrack objects
+        self.gate_threshold = gate_threshold
+
+    def associate_measurements(self, features, filter_state):
+        """
+        Match newly detected features to existing landmarks.
+
+        Args:
+            features: list of feature dicts from LaserFeatureExtractor
+            filter_state: current EKF state with position and covariance
+
+        Returns:
+            associations: list of (feature_idx, landmark_idx) pairs
+            unmatched_features: list of feature indices that found no match
+        """
+        associations = []
+        matched_features = set()
+
+        # For each landmark, find best matching feature
+        for land_idx, landmark in enumerate(self.landmarks):
+            best_feature_idx = None
+            best_distance = self.gate_threshold
+
+            for feat_idx, feature in enumerate(features):
+                if feat_idx in matched_features:
+                    continue
+
+                # Compute Mahalanobis distance
+                z = feature['center']  # Measurement
+                zhat = landmark.expected_measurement(filter_state)
+                H = landmark.jacobian(filter_state)
+
+                # Innovation covariance
+                S = H @ filter_state['covariance'] @ H.T + \
+                    np.eye(2) * 0.1  # Assume small measurement noise
+
+                innovation = z - zhat
+                mahal_dist = innovation.T @ np.linalg.inv(S) @ innovation
+
+                # Gating: only consider if within threshold
+                if mahal_dist < best_distance:
+                    best_distance = mahal_dist
+                    best_feature_idx = feat_idx
+
+            # Associate best match
+            if best_feature_idx is not None:
+                associations.append((best_feature_idx, land_idx))
+                matched_features.add(best_feature_idx)
+
+        # Unmatched features are new landmarks
+        unmatched_features = [i for i in range(len(features))
+                             if i not in matched_features]
+
+        return associations, unmatched_features
+
+    def add_new_landmarks(self, features, unmatched_indices, filter_state):
+        """Initialize new landmarks from unmatched measurements."""
+        for idx in unmatched_indices:
+            feature = features[idx]
+            landmark = LandmarkTrack(
+                initial_position=feature['center'],
+                initial_covariance=np.eye(2) * feature['radius']**2
+            )
+            self.landmarks.append(landmark)
+
+    def update_landmarks(self, associations, features, filter_state):
+        """Update existing landmark estimates with measurements."""
+        for feat_idx, land_idx in associations:
+            feature = features[feat_idx]
+            landmark = self.landmarks[land_idx]
+            landmark.update(feature['center'], filter_state)
+
+    def get_state_vector(self):
+        """Return all landmark positions as a column vector."""
+        positions = [lm.position for lm in self.landmarks]
+        return np.concatenate(positions) if positions else np.array([])
+
+
+class LandmarkTrack:
+    """Represents a tracked tree in the map."""
+
+    def __init__(self, initial_position, initial_covariance):
+        self.position = initial_position  # [x, y]
+        self.covariance = initial_covariance  # 2x2
+        self.num_observations = 1
+        self.confidence = 0.5  # Low confidence initially
+
+    def expected_measurement(self, filter_state):
+        """Predicted feature center in world frame."""
+        return self.position  # Direct measurement of position
+
+    def jacobian(self, filter_state):
+        """Measurement Jacobian (how measurement varies with state)."""
+        # For range-bearing measurements, would be more complex
+        # For direct position measurement, it's identity
+        return np.eye(2)
+
+    def update(self, measurement, filter_state):
+        """Update landmark position and covariance with new measurement."""
+        innovation = measurement - self.position
+        # Simple EKF update
+        K = self.covariance @ np.linalg.inv(
+            self.covariance + np.eye(2) * 0.1
+        )
+        self.position += K @ innovation
+        self.covariance = (np.eye(2) - K) @ self.covariance
+
+        self.num_observations += 1
+        self.confidence = min(1.0, self.confidence + 0.1)
+```
+
+### Deliverables for Part B
+
+1. **Data Association Implementation:**
+   - Implement `LandmarkTracker` and `LandmarkTrack` above
+   - Verify Mahalanobis distance computation
+   - Test on sample dataset with known associations
+
+2. **Association Evaluation:**
+   - Compute association accuracy (true matches vs. false matches)
+   - Plot landmark positions as the trajectory evolves
+   - Quantify growth in map size (number of landmarks vs. distance traveled)
+
+3. **Tuning Report:**
+   - Justify choice of gate threshold
+   - Show effect of threshold on false positive/negative rates
+   - Discuss when and why association fails
+
+---
+
+## Part C: SLAM Backend
+
+### Learning Objectives
+- Implement a complete SLAM algorithm (EKF-SLAM or FastSLAM)
+- Manage the growing state vector
+- Optimize computational complexity
+
+### Background
+
+The SLAM backend maintains the joint state of vehicle pose and all landmark positions. Two main approaches exist:
+
+1. **EKF-SLAM:** Augment state with all landmarks. Simple but O(n²) covariance complexity.
+2. **FastSLAM:** Particle filter with per-particle EKFs for landmarks. O(n log n) for n landmarks.
+
+Choose one approach and implement thoroughly.
+
+**Relevant chapters:**
+- Chapter 6 (SLAM Algorithms) — EKF-SLAM, FastSLAM, GraphSLAM
+- Chapter 2 (EKF) — filtering mathematics
+- Chapter 15 (Practical Guide) — numerical stability, performance optimization
+
+### Option 1: EKF-SLAM Implementation
+
+```python
+class EKFSLAM:
+    def __init__(self, initial_pose, process_noise_q, measurement_noise_r):
+        """
+        State: [x, y, theta, x_l1, y_l1, x_l2, y_l2, ...]
+               vehicle pose + all landmark positions
+        """
+        self.state = np.concatenate([initial_pose, []])  # Start empty landmarks
+        self.covariance = np.eye(3) * 0.1  # Initial 3x3 for pose only
+
+        self.Q = process_noise_q  # 3x3 process noise
+        self.R = measurement_noise_r  # 2x2 measurement noise
+
+        self.landmarks = []  # Track landmark indices
+        self.trajectory = []
+
+    def predict(self, u, dt):
+        """
+        Prediction: apply odometry control u = [v, omega] for dt seconds.
+        Assume nonholonomic vehicle model.
+        """
+        x, y, theta = self.state[:3]
+        v, omega = u
+
+        # Kinematic update (bicycle model)
+        if abs(omega) < 1e-6:  # Straight line
+            dx = v * np.cos(theta) * dt
+            dy = v * np.sin(theta) * dt
+            dtheta = 0
+        else:  # Circular arc
+            dx = (v / omega) * (np.sin(theta + omega*dt) - np.sin(theta))
+            dy = (v / omega) * (-np.cos(theta + omega*dt) + np.cos(theta))
+            dtheta = omega * dt
+
+        # Update state
+        self.state[0] += dx
+        self.state[1] += dy
+        self.state[2] += dtheta
+        self.state[2] = self._normalize_angle(self.state[2])
+
+        # Landmarks don't move (stationary world assumption)
+        # But covariance grows due to odometry error
+
+        # Compute Jacobian of motion model
+        F = np.eye(len(self.state))
+        F[0, 2] = -v * np.sin(theta) * dt
+        F[1, 2] = v * np.cos(theta) * dt
+
+        # Expand Q to full state dimension
+        Q_full = np.zeros((len(self.state), len(self.state)))
+        Q_full[:3, :3] = self.Q
+
+        # Propagate covariance
+        self.covariance = F @ self.covariance @ F.T + Q_full
+
+    def update(self, associations, features, measurements):
+        """
+        Correction: fuse landmark measurements.
+
+        Args:
+            associations: list of (feature_idx, landmark_idx) pairs
+            features: list of feature dicts
+            measurements: list of measurement vectors (e.g., [x, y])
+        """
+        for feat_idx, land_idx in associations:
+            z = features[feat_idx]['center']
+
+            # Expected measurement
+            land_state_idx = 3 + 2 * land_idx
+            zhat = self.state[land_state_idx:land_state_idx+2]
+
+            # Measurement Jacobian
+            H = np.zeros((2, len(self.state)))
+            H[0, land_state_idx] = 1
+            H[1, land_state_idx+1] = 1
+
+            # Innovation
+            innovation = z - zhat
+
+            # Innovation covariance
+            S = H @ self.covariance @ H.T + self.R
+
+            # Kalman gain
+            K = self.covariance @ H.T @ np.linalg.inv(S)
+
+            # Update state
+            self.state += K @ innovation
+
+            # Update covariance (Joseph form)
+            I_KH = np.eye(len(self.state)) - K @ H
+            self.covariance = I_KH @ self.covariance @ I_KH.T + \
+                             K @ self.R @ K.T
+
+    def get_state(self):
+        """Return vehicle pose and all landmark positions."""
+        pose = self.state[:3]
+        landmarks = []
+        for i in range(3, len(self.state), 2):
+            landmarks.append(self.state[i:i+2])
+        return {'pose': pose, 'landmarks': landmarks}
+
+    def _normalize_angle(self, angle):
+        """Wrap angle to [-pi, pi]."""
+        while angle > np.pi:
+            angle -= 2*np.pi
+        while angle < -np.pi:
+            angle += 2*np.pi
+        return angle
+```
+
+### Option 2: FastSLAM Implementation (Brief)
+
+If you choose FastSLAM, implement a particle filter where each particle maintains:
+- A pose hypothesis
+- Per-landmark EKFs with low-dimensional covariances
+- Importance weights
+
+Refer to Chapter 6 for pseudocode.
+
+### Deliverables for Part C
+
+1. **SLAM Backend:**
+   - Choose and implement either EKF-SLAM or FastSLAM
+   - Verify state update mechanics
+   - Test on sample trajectory
+
+2. **Map Evolution:**
+   - Plot landmark map at several time points during trajectory
+   - Show pose uncertainty ellipses
+   - Track number of landmarks vs. distance traveled
+
+3. **Computational Analysis:**
+   - Measure execution time per prediction/update step
+   - Plot memory usage vs. map size
+   - Discuss scaling behavior:
+     - EKF-SLAM: O(n²) covariance growth
+     - FastSLAM: O(n log n) per particle
+   - Estimate maximum practical map size for real-time operation (20 Hz)
+
+---
+
+## Part D: Loop Closure Detection and Exploitation
+
+### Learning Objectives
+- Implement place recognition to detect revisited locations
+- Verify geometric consistency of loop closure hypotheses
+- Apply pose graph optimization to correct accumulated drift
+
+### Background
+
+As the vehicle travels long distances, odometry drift causes the estimated pose to diverge from ground truth. When the vehicle revisits a previously mapped area, we can detect this "loop closure" and use it to correct the drift.
+
+**Relevant chapters:**
+- Chapter 11 (Loop Closure Detection) — place recognition, verification, pose constraints
+- Chapter 6 (SLAM) — pose graph optimization
+- Chapter 14 (Mathematical Reference) — pose graph structure and optimization
+
+### Specification
+
+Implement a `LoopClosureDetector`:
+
+```python
+class LoopClosureDetector:
+    def __init__(self, vocabulary_size=1000, temporal_window=50):
+        """
+        vocabulary_size: number of visual words for Bag-of-Words
+        temporal_window: don't report loop closure closer than N frames
+        """
+        self.vocabulary_size = vocabulary_size
+        self.temporal_window = temporal_window
+        self.keyframes = []  # List of keyframe indices
+        self.descriptors = []  # Descriptors for each keyframe
+
+    def add_keyframe(self, scan_idx, features):
+        """
+        Add a new keyframe (scan) to the place recognition database.
+        """
+        # Create histogram of visual words from features
+        descriptor = self._create_bag_of_words(features)
+        self.keyframes.append(scan_idx)
+        self.descriptors.append(descriptor)
+
+    def query_place_recognition(self, features):
+        """
+        Find candidate loop closure keyframes for given features.
+
+        Returns:
+            candidates: list of (keyframe_idx, score) tuples, sorted by score
+        """
+        current_descriptor = self._create_bag_of_words(features)
+
+        candidates = []
+        for kf_idx, kf_descriptor in enumerate(self.descriptors):
+            # Don't match recent frames
+            if self.keyframes[kf_idx] > self.keyframes[-1] - self.temporal_window:
+                continue
+
+            # Compute cosine similarity
+            score = self._cosine_similarity(current_descriptor, kf_descriptor)
+
+            if score > 0.3:  # Threshold for place match
+                candidates.append((kf_idx, score))
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates
+
+    def verify_loop_closure(self, current_features, loop_candidate_features):
+        """
+        Geometrically verify a candidate loop closure.
+
+        Returns:
+            is_valid: bool, and estimated relative pose if valid
+        """
+        # Count feature matches using distance to nearest neighbor
+        matches = self._match_features(current_features, loop_candidate_features)
+
+        if len(matches) < 10:
+            return False, None
+
+        # Compute relative transform using matched features
+        # (In a real system, use more robust estimation like RANSAC)
+        relative_pose = self._estimate_relative_pose_from_matches(matches)
+
+        if relative_pose is None:
+            return False, None
+
+        return True, relative_pose
+
+    def _create_bag_of_words(self, features):
+        """
+        Create Bag-of-Words descriptor from features.
+        In a simple implementation, use feature sizes as a histogram.
+        """
+        sizes = np.array([f['radius'] for f in features])
+        histogram, _ = np.histogram(sizes, bins=self.vocabulary_size,
+                                   range=(0, 1))
+        return histogram / (np.sum(histogram) + 1e-10)
+
+    def _cosine_similarity(self, desc1, desc2):
+        """Cosine similarity between two BoW descriptors."""
+        return np.dot(desc1, desc2) / (np.linalg.norm(desc1) *
+                                       np.linalg.norm(desc2) + 1e-10)
+
+    def _match_features(self, features1, features2):
+        """Match features by proximity in feature space."""
+        matches = []
+        for f1 in features1:
+            best_dist = float('inf')
+            best_idx = -1
+            for j, f2 in enumerate(features2):
+                dist = np.linalg.norm(f1['center'] - f2['center'])
+                if dist < best_dist:
+                    best_dist = dist
+                    best_idx = j
+            if best_dist < 5.0:  # Distance threshold
+                matches.append((f1, features2[best_idx]))
+        return matches
+```
+
+### Deliverables for Part D
+
+1. **Loop Closure Detection:**
+   - Implement `LoopClosureDetector` above
+   - Apply to Victoria Park dataset
+   - Report detected loop closure event (keyframe pair)
+
+2. **Geometric Verification:**
+   - Verify matched features between loop closure keyframes
+   - Visualize feature correspondences
+   - Estimate relative pose
+
+3. **Pose Graph Correction:**
+   - Build pose graph including loop closure constraint
+   - Apply optimization (reference Chapter 6 or use g2o library)
+   - Compare trajectory before and after loop closure correction
+   - Quantify drift reduction
+
+4. **Results:**
+   - Plot final map with trajectory
+   - Show trajectory drift at loop closure point
+   - Show corrected trajectory post-optimization
+   - Compute improvement in map consistency
+
+---
+
+## Provided Data
+
+### Victoria Park Dataset
+
+- **victoria_park.zip** and **victoria_park_ascii.zip** from `data/`
+  - Contains: scans (SICK LMS200), odometry, manually labeled landmarks
+  - Multiple files for train/test split
+
+### Loading and Parsing
+
+```python
+import numpy as np
+# Refer to provided data format specification
+# Parse scan files (typically ASCII or binary range arrays)
+
+def load_scan(filename):
+    # Load range measurements [180] array
+    # Load odometry [x, y, theta]
+    pass
+```
+
+---
+
+## Grading Rubric
+
+| Component | Full (12) | Partial (6) | Minimal (2) | Missing (0) |
+|-----------|----------|-----------|-----------|-----------|
+| **Part A: Feature Extraction** | Robust circle fitting, tuned parameters, visualization | Circle fitting works but needs tuning | Basic clustering only | No feature extraction |
+| **Part B: Data Association** | Mahalanobis gating, landmark initialization, tracking | Working but threshold hardcoded | Nearest neighbor only | No association |
+| **Part C: SLAM Backend** | Complete EKF-SLAM or FastSLAM, covariance correct | Working but slow | Oversimplified (linear) | No SLAM |
+| **Part D: Loop Closure** | BoW recognition, geometric verification, pose graph optimization | Detection works but no verification | No loop closure | No loop closure |
+| **Results** | Final map correct, metrics computed, analysis thorough | Map present but metrics missing | Minimal results | No results |
+| **Code Quality** | Well-structured, modular, documented | Functional but tangled | Barely functional | Unrunnable |
+
+---
+
+## References
+
+- Chapter 6: SLAM Algorithms (EKF-SLAM, FastSLAM, GraphSLAM)
+- Chapter 9: Data Association and Multi-Hypothesis Tracking
+- Chapter 10: Visual Navigation (applies to feature extraction)
+- Chapter 11: Loop Closure Detection and Place Recognition
+- Chapter 14: Mathematical Reference (pose graphs, optimization)
+- Chapter 15: Practical Implementation Guide
+- Victoria Park Dataset Paper: (cite original 2003-2004 paper)

@@ -1,0 +1,57 @@
+# Particle Filters & Non-parametric Estimation
+
+## The Limitations of Gaussian Beliefs
+
+Both the EKF and UKF are **Parametric Filters**. They assume that the belief distribution is always a Gaussian (parameterized by a mean and covariance). 
+
+However, in many navigation scenarios, the distribution is **Multimodal** (multiple "peaks"). Consider a robot in a symmetrical hallway: it might believe it is at either end of the hall, but definitely not in the middle. A single Gaussian mean would erroneously place the robot in the middle of the hall.
+
+## Sequential Monte Carlo (Particle Filters)
+
+The **Particle Filter** is a **Non-parametric Filter**. Instead of a functional form (like a Gaussian), it represents the probability distribution using a collection of discrete samples called **Particles**.
+
+### Key Concept: The Importance Sampling
+Each particle represents a hypothesis of the robot's state. We move the particles according to the motion model (with noise) and then "weight" them based on how well they match the sensor measurements.
+
+### The Algorithm
+1. **Prediction**: Propagate each particle forward using the motion model: $x_t^{[i]} \sim p(x_t | x_{t-1}^{[i]}, u_t)$.
+2. **Weighting**: Update the weight of each particle based on the measurement likelihood: $w_t^{[i]} = w_{t-1}^{[i]} \cdot p(z_t | x_t^{[i]})$.
+3. **Resampling**: To prevent "particle depletion" (where all but one particle have near-zero weights), we periodically duplicate particles with high weights and discard those with low weights.
+
+## The Resampling Dilemma
+
+Resampling is a double-edged sword:
+- **Good**: It focuses computation on the most likely regions of the state space.
+- **Bad**: It reduces the diversity of the particles (the "sample impoverishment" problem). 
+
+In industry, we monitor the **Effective Number of Particles** ($N_{eff}$) and only resample when $N_{eff}$ falls below a threshold (usually $N/2$).
+
+## Example: Particle Filter in Python
+
+```python
+import numpy as np
+from advnav.filters import ParticleFilter
+
+# 1. Initialize 1000 particles in a 1D space
+pf = ParticleFilter(num_particles=1000, dim_x=1)
+pf.particles = np.random.uniform(-10, 10, (1000, 1))
+
+# 2. Define a simple 1D motion model
+def f_1d(x, u):
+    return x + u
+
+# 3. Define a likelihood function (Gaussian centered at z)
+def likelihood(z, x):
+    return np.exp(-0.5 * (z - x)**2 / 0.5**2)
+
+# Simulate a step
+pf.predict(f_1d, Q_std=[0.1], u=1.0)
+pf.update(z=1.1, likelihood_func=likelihood)
+
+# Resample if needed
+if pf.neff() < 500:
+    pf.resample()
+
+mean, var = pf.estimate()
+print(f"PF Estimated Mean: {mean[0]:.2f}, Variance: {var[0]:.2f}")
+```

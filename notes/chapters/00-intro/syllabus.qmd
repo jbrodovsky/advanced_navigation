@@ -1,0 +1,151 @@
+# Syllabus
+
+## Course Information
+
+RBE 595 Special Topics: Advanced Robot Navigation Robotics Engineering Spring 2025
+
+Instructor: James Brodovsky jbrodovsky\@wpi.edu
+
+## Course Description
+
+The Advanced Robot Navigation course delves into the sophisticated techniques and algorithms used by autonomous systems to navigate complex, real-world environments with precision and efficiency. Building upon fundamental concepts in robotics and navigation, this course equips students with advanced knowledge and practical skills necessary to develop cutting-edge navigation systems for autonomous robots operating in diverse scenarios. The curriculum begins with a review of foundational principles in robot perception and localization before examining modern techniques in nonlinear estimation, Simultaneous Localization and Mapping (SLAM), multi-sensor fusion, and inertial navigation. Students will deepen their understanding of these concepts through hands-on exercises and simulations.
+
+### Prerequisites
+
+-   Courses (or equivalent)
+    -   RBE 500 Foundations of Robotics
+    -   RBE 3002 Unified Robotics IV: Navigation
+-   Recommended Background
+    -   Intermediate knowledge of probability theory
+    -   Intermediate knowledge of functional and/or object-oriented programming in a modern programming language such as Java, Python \>3.7, Rust, C17, C++11 or newer
+    -   Knowledge of linear probabilistic estimation techniques (Bayes Filter, Kalman Filter)
+-   Suggested companion courses
+    -   RBE 549: Computer vision (or equivalent)
+    -   RBE 550: Motion planning (or equivalent)
+
+### Learning Outcomes
+
+The overall learning objective of this course is to develop an understanding of the mathematical foundations of modern probabilistic navigation techniques and accompanying subjects and to implement these methods in a suitable modern programming language. By the end of this course a student should be able to:
+
+1.  Demonstrate comprehension of the fundamental mathematical theory of probabilistic methods for robotic navigation by implementing navigation techniques that draw from Bayesian filtering, Monte Carlo methods, and Markov models in a modern programming language.
+
+2.  Write sensor models, propagation models, and data fusion methods to properly incorporate information from various sensor components into a dynamic model of the robot.
+
+3.  Analyze and evaluate the performance of various navigation algorithms and techniques by metrics such as accuracy, precision, certainty, and computational efficiency.
+
+4.  Apply probabilistic navigation techniques to a wide scope of situations ranging from indoor two-dimensional problems up to global three-dimensional strategic navigation.
+
+### Textbooks
+
+This course will cover several topics that span both planning and localization (or guidance and navigation). As such the material will be drawn from several sources.
+
+-   *Probabilistic Robotics* by Sebastian Thrun, Wolfram Burgard, and Dieter Fox - Springer Handbook of Robotics by Bruno Siciliano and Oussama Khatib
+
+-   *Robotics, Vision and Control* by Peter Corke (recommend the 3rd edition which is Python based)
+
+-   *Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems* – 2nd Edition by Paul D. Groves (required chapters provided)
+
+-   *Kalman and Bayesian Filters in Python* by Roger R. Labbe Jr: text and code examples
+
+While these references will not be required for completing the course (as in, I don’t assign homework problems from them), they are all exceptionally good references written and edited by some of the leading contributors to robotics and autonomous navigation over the past twenty years. I regularly refer to *Probabilistic Robotics* and it is a worthwhile purchase and should be the only one you need to buy. *Springer Handbook of Robotics* and *Robotics, Vision and Control* can be downloaded as a PDF for free with your WPI credentials via the library.
+
+I would further suggest investing in getting a copy of all the books except *Principles of GNSS* as you will, have, or are going to get significant usage out of them. *Robotics, Vision and Control*, *Spring Handbook of Robotics*, and *Probabilistic Robotics* are all required or recommended references throughout the undergraduate and graduate WPI Robotics Engineering program. So, if you don’t already have a copy of them and are familiar with them, I suggest getting one. If, after this course, you find yourself interested in global scale (strategic, marine, or aerospace-grade) inertial navigation, then get a copy of Principles of GNSS. I will provide copies of the needed chapters.
+
+## Communication
+
+For effective communication within the course, I encourage all students to utilize the Canvas discussion boards as the primary platform for asking questions, seeking clarifications, and engaging in course-related discussions. The discussion boards foster a collaborative learning environment where questions and their corresponding answers are accessible to the entire class, benefiting all students. This approach ensures that insights and solutions are shared widely, promoting a collective understanding of the course material. Please refrain from sending course-related inquiries directly via email or private messages unless it pertains to a personal matter.
+
+## Course Approach
+
+This course will run on a Monday to Sunday schedule. WPI (and myself) are based in Eastern Time (UTC -5/4 depending on daylight savings). The course is structured into several modules that culminate in a final module with a comprehensive project. These projects will be the main deliverables for the course. There will be some supplemental portions of your final grade that come from quizzes, discussions, et cetera, but this project-based curriculum is more reflective of actual professional work in the field. Course content will be conveyed using recorded lectures with accompanying slides, guided demonstrations in code, suggested weekly readings, and weekly discussions. I will be available for synchronous discussions on an as needed basis.
+
+## Course Requirements
+
+This course will be primarily centered around projects. Each module will culminate in a module project which will enable the student to demonstrate knowledge and understanding of the module by applying it. While each project is independent, the project's material will build on the previous modules and projects and are best attempted in order. Ultimately, all projects are due at the end of the semester, with the specific grading deadline posted for each semester. The due dates on the module project are *suggested* completion dates and are there to help keep students on schedule. Submissions will be the main mechanism by which students will receive feedback to improve their understanding and resubmit the assignment. Submissions will not be capped provided students do not abuse this policy.
+
+Programming will be a major component of this course. Each project will require you to submit your raw code as well as an accompanying report detailing your results and the approach you took with your code including code snippets and details in the write up where necessary. This report should resemble an academic report or journal article. While not required that you follow such a format precisely, you should generally have an introduction recapping the assignment and what you did, sections as appropriate detailing your response and approach to specific tasks asked in each assignment, and a conclusion or discussion section analyzing your results.
+
+Students are free to select the programming language that they are most comfortable working with and the method for preparing the accompanying document. Generally, the lecture material will present language-agnostic pseudocode. However, any demonstrations will be given in Python and as such it is strongly recommended that students work in Python.
+
+## Library Access
+
+As a student at WPI, you have access to a variety of resources through the library. Use the link here to access databases, e-journals, and/or e-books. You will be required to log in with your WPI username and password to access materials.
+
+## POLICIES
+
+### Academic Integrity
+
+You are expected to be familiar with the Student Guide to Academic Integrity at WPI that is downloadable from here. Consequences for violating the Academic Honest Policy range from earning a zero on the assignment, failing the course, or being suspended or expelled from WPI. Common examples of violations include: Copying and pasting text directly from a source without providing appropriately cited credit Paraphrasing, summarizing, or rephrasing from a source without providing appropriate citations Collaborating on individual assignments Turning in work where a good portion of the work is someone else’s, even if properly cited
+
+### Academic Accommodations
+
+Courses should be compliant with the American Disability Act. Provide the following statement or a similar variation. If you, as the instructor, have questions about making content accessible to all learners, reach out to the Office of Accessibility Services. We at WPI strive to create an inclusive environment where all students are valued members of the class community.
+
+If you need course adaptations or accommodations because of a disability, or if you have medical information to share with us that may impact your performance or participation in this course, please make an appointment with us as soon as possible.\
+Students with approved academic accommodations should plan to submit their accommodation letters through the Office of Accessibility Services Student Portal. Should you have any questions about how accommodations can be implemented in this particular course, please contact me as soon as possible.
+
+Students who are not currently registered with the Office of Accessibility Services (OAS) but who would like to find out more information regarding requesting accommodations and what that entails should plan to contact them via: Email: AccessibilityServices\@wpi.edu and/or Phone: (508) 831-4908. On Campus – Unity Hall
+
+### Mental Health
+
+WPI’s Student Development & Counseling Center (SDCC) staff are available for students in need of support: contact them directly and confidentially by phone at 508-831-5540 or email at SDCC\@wpi.edu; or stop by their office at 16 Einhorn Road.
+
+The I’m Concerned About a Student form provides a venue to connect with WPI services if you know of a student who is struggling and needs outreach.
+
+The National Suicide Prevention Lifeline is a free, 24/7 service that can provide individuals with support, information, and local resources regarding suicide. Call them at 1-800-273-TALK (8255) or visit www.suicidepreventionlifeline.org. There is also Suicide Awareness & Prevention information on the WPI website.
+
+If there is a chance someone is in imminent danger of suicidal action, WPI Campus Police can be reached at 508-831-5555 (or call 911 if off campus).
+
+### Grading Policy
+
+Final course grades are based on a student’s performance as follows:
+
+| Letter Grade | Percentage |
+|--------------|------------|
+| A            | 90 - 100   |
+| B            | 80 - 89    |
+| C            | 70 - 79    |
+| D            | 60 - 69    |
+| F            | \< 60      |
+
+Course grading will follow the standard A-F scale. Course incompletes and/or extensions will only be given in extreme circumstances and must be requested in writing prior to the end of the semester. As the online program is designed to be more flexible than a traditional on-campus program, I understand that many students are working full-time jobs, have families, and are juggling many other responsibilities. I too worked full time throughout graduate school. As such I understand that sometimes things come up and you may need more time to complete a project. I am willing to grant extensions to students experiencing such hardships, provided you have completed the majority of the projects. If you are facing such a situation, please reach out in writing to request an extension *prior to the end of the semester*. Requests received after the published class grading deadline for the semester will not be considered outside of extreme person or family emergencies.
+
+Project grading breakdown:
+
+- Project 1: Drone Navigation - 50%
+  - Project 1a: Drone Observation Models (25%)
+  - Project 1b: Drone kinematics (25%)
+  - Project 1c: Navigation filters(50%)
+- Project 2: Victoria Park SLAM - 25%
+- Project 3: INS/GNSS Integration - 25%
+
+### Course Schedule
+
+Course schedule is roughly outlined below based on a 16 week semester and shouldn't be considered final with respect to or superceded the official academic calendar published by WPI.
+
+Textbook abbreviations:
+
+-   Probabilistic Robotics: PR
+-   Springer Handbook of Robotics: SHR
+-   Robotics, Vision and Control: RVC
+-   Kalman and Bayesian Filters in Python: KBFP
+-   Principles of GNSS: GNSS
+
+| Week \# | Dates | Topics | Readings | Assignment |
+|------------|-------------------|---------------|--------------|------------|
+| Week 1 | 21 August – 23 August | Chapter | KBFP 0.6-0.9 |  |
+| Week 2 | 24 August – 30 August | Perception: Introduction; Robot Motion; Inertial Sensors | SHR 4, 20.1-20.4 RVC 6.0, 6.1, 6.8 PR 5 GNSS 4 |  |
+| Week 3 | 31 August – 6 September | Perception: Sensing, Estimation, and Maps; Basics of Computer Vision | PR 6 RVC 10-13 SHR 23 | Drone Observation Models |
+| Week 4 | 7 September – 13 September | Filtering: A brief review of Bayesian and Kalman Filtering | PR 1.1-1.3, 2, 3.1-3.2, 5, 7.1-7.3 RVC 6.2-6.3, Appendix H1 KBFP 0.1; 2-8 |  |
+| Week 5 | 14 September – 20 September | Filtering: Nonlinearities | GNSS: 2, 4 KBFP 9 |  |
+| Week 6 | 21 September – 27 September | Filtering: Extended Kalman Filter | PR 3.3, 7.4-7.5 RVC 6.2 KBFP 11 |  |
+| Week 7 | 28 September – 4 October | Filtering: Unscented Kalman Filter | PR 3.4, 7.7-7.8 KBFP 10 |  |
+| Week 8 | 5 October – 11 October | Filtering: Nonparametric (particle) filters | PR 4, 8.3-8.5 | Particle Filter Break Week |
+| Week 9 | 19 October – 25 October | Filtering: Inertial Navigation Introduction; Coordinate Frames; Dead Reckoning | GNSS 2, 5 |  |
+| Week 10 | 26 October – 1 November | Filtering: INS/GNSS Integration | GNSS 3, 14 | INS/GNSS Integration |
+| Week 11 | 2 November – 8 November | Integration: EKF SLAM | SHR 37 PR 10 RVC 6.3-6.4 |  |
+| Week 12 | 9 November – 15 November | Integration: GraphSLAM | PR 11 RVC 6.5 |  |
+| Week 13 | 16 November – 22 November | Integration: FastSLAM | PR 13 | Victoria Park SLAM |
+| Week 14 | 23 November – 29 November | Work week & supplemental topics |  |  |
+| Week 15 | 30 November – 6 December | Work week & supplemental topics |  |  |
+| Week 16 | 7 December – 13 December | Work week & supplemental topics |  | All project submissions due by Dec 13 |

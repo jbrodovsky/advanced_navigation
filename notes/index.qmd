@@ -1,0 +1,17 @@
+---
+title: ""
+title-block: false
+toc: false
+---
+
+# {.no-title .no-header .no-footer .unnumbered}
+
+*Advanced Robotic Navigation: A Practical Guide to State Estimation, Simultaneous Localization and Mapping (SLAM), and Inertial Navigation for Roboticists and Autonomous Vehicle Engineers*
+
+Text copyright © 2026 James Brodovsky. All rights reserved.
+
+No part of this publication may be reproduced, stored in a retrieval system, or transmitted in any form or by any means, electronic, mechanical, photocopying, recording, or otherwise, without prior written permission of the publisher, except for brief quotations used in reviews, criticism, or scholarly reference as permitted by applicable copyright law.
+
+These course materials are available in several formats. You can view them online, or download them for offline use, including as a PDF or an eBook.
+
+\tableofcontents

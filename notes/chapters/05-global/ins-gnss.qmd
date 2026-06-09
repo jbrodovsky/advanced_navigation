@@ -1,0 +1,565 @@
+# Curved Earth Kinematics & INS/GNSS Integration
+
+## Introduction
+
+The previous chapters focused on navigation over small regions where the Earth's curvature and rotation can be neglected. This assumption is valid for:
+- Drones operating within a few kilometers
+- Robots in indoor environments
+- Short-term vehicle navigation
+
+However, for **aircraft, ships, long-range missiles, and precision applications**, the Earth's curvature and rotation fundamentally change the navigation physics. This chapter covers:
+
+1. **Inertial Navigation Systems (INS)**: Integration of IMU data to estimate position and velocity
+2. **Frame definitions**: Inertial, Earth-centered, navigation (NED), and body frames
+3. **Strapdown mechanization**: The differential equations governing motion on a curved, rotating Earth
+4. **Sensor fusion**: Combining high-frequency IMU data with low-frequency GNSS (GPS) measurements
+
+---
+
+## 1. Reference Frames and Transformations
+
+### 1.1 Four Critical Frames
+
+Navigation requires transformations between multiple reference frames:
+
+**Inertial Frame (i)**:
+- Origin: Earth's center
+- X, Y axes: In the equatorial plane
+- Z axis: Along Earth's rotation axis
+- **Key property**: Non-rotating relative to distant stars (Newtonian mechanics applies directly)
+- Axes fixed as: X points to vernal equinox, Z to north pole
+
+**Earth-Centered Earth-Fixed (ECEF) Frame (e)**:
+- Origin: Earth's center
+- Rotates with the Earth
+- X: Intersection of equatorial plane and Prime Meridian (0° longitude)
+- Y: 90° east of X
+- Z: North pole
+- **Relationship to inertial**: Rotates at Earth's rotation rate $\omega_{ie} = 7.2921 \times 10^{-5}$ rad/s
+
+**Local Navigation Frame (n) - NED**:
+- **N** (North): Tangent to meridian, pointing north
+- **E** (East): Tangent to latitude circle, pointing east
+- **D** (Down): Radial direction (opposite gravity)
+- Origin: Vehicle location
+- **This frame is what navigation systems use** for vehicle state estimation
+
+**Body Frame (b)**:
+- **X**: Forward (along vehicle body)
+- **Y**: Right (starboard for aircraft)
+- **Z**: Down (toward ground)
+- Origin: Vehicle center
+- **IMUs measure in this frame**: accelerometers measure specific force (gravity-minus-acceleration), gyros measure body rate
+
+### 1.2 Transformation Between Frames
+
+**Inertial → ECEF**: Simple rotation at Earth rate
+$$\mathbf{C}_i^e(t) = \begin{bmatrix}
+\cos(\omega_{ie} t) & \sin(\omega_{ie} t) & 0 \\
+-\sin(\omega_{ie} t) & \cos(\omega_{ie} t) & 0 \\
+0 & 0 & 1
+\end{bmatrix}$$
+
+**ECEF → NED**: Depends on position (latitude $\phi$, longitude $\lambda$)
+$$\mathbf{C}_e^n = \begin{bmatrix}
+-\sin \phi \cos \lambda & -\sin \lambda & -\cos \phi \cos \lambda \\
+-\sin \phi \sin \lambda & \cos \lambda & -\cos \phi \sin \lambda \\
+\cos \phi & 0 & -\sin \phi
+\end{bmatrix}$$
+
+**Body → Navigation**: Described by attitude matrix (rotation matrix, or quaternion, or Euler angles)
+$$\mathbf{C}_b^n = \mathbf{C}_b^{\text{dcm}}$$
+
+This captures vehicle pitch, roll, and yaw.
+
+---
+
+## 2. IMU Measurement Models
+
+### 2.1 Accelerometer Model
+
+An accelerometer does **not** measure acceleration in the Newton sense. It measures **specific force**, the acceleration relative to a freely-falling reference frame:
+
+$$\mathbf{f}^b = \mathbf{a}_{inertial}^b - \mathbf{g}^b + \mathbf{noise}$$
+
+More precisely:
+
+$$\mathbf{f}^b = \mathbf{C}_i^b (\mathbf{a}^i - \mathbf{g}^i) + \mathbf{b}_a + \mathbf{M}_a \mathbf{f}_{\text{true}} + \mathbf{n}_a$$
+
+where:
+- $\mathbf{a}^i$: Inertial acceleration (in inertial frame)
+- $\mathbf{g}^i$: Gravitational acceleration (in inertial frame)
+- $\mathbf{b}_a$: Accelerometer bias (slowly time-varying)
+- $\mathbf{M}_a$: Scale factor and misalignment matrix
+- $\mathbf{n}_a$: High-frequency noise (white, zero-mean)
+
+**Simplified model** (assuming no scale factors or misalignment):
+$$\mathbf{f}^b = \mathbf{C}_i^b (\mathbf{a}^i - \mathbf{g}^i) + \mathbf{b}_a + \mathbf{n}_a$$
+
+In navigation frame:
+$$\mathbf{f}^b = \mathbf{C}_i^b \mathbf{C}_n^i (\mathbf{a}^n - \mathbf{g}^n) + \mathbf{b}_a + \mathbf{n}_a$$
+
+### 2.2 Gyroscope Model
+
+A gyroscope measures the angular rate of the body relative to an inertial frame:
+
+$$\boldsymbol{\omega}_{ib}^b = \boldsymbol{\omega}_{ib,\text{true}}^b + \mathbf{b}_g + \mathbf{M}_g \boldsymbol{\omega}_{ib,\text{true}}^b + \mathbf{n}_g$$
+
+**Simplified**:
+$$\boldsymbol{\omega}_{ib}^b = \boldsymbol{\omega}_{ib,\text{true}}^b + \mathbf{b}_g + \mathbf{n}_g$$
+
+where:
+- $\mathbf{b}_g$: Gyroscope bias (slowly time-varying, "random walk")
+- $\mathbf{n}_g$: High-frequency white noise
+
+### 2.3 Error Sources: Bias, Scale Factor, Misalignment, Noise
+
+**Accelerometer Errors**:
+- **Bias**: $\mathbf{b}_a \sim \text{random walk}$, typically $10-100$ mg (millig), changes slowly
+- **Scale factor**: Non-unity gain, e.g., true force is 1g but measured as 1.01g
+- **Misalignment**: Axes not perfectly orthogonal; rotation between true and sensor axes
+- **Noise**: White noise with spectral density ~0.1 mg/√Hz
+
+**Gyroscope Errors**:
+- **Bias**: $\mathbf{b}_g$, typically $0.01-0.1$ °/hr (degrees per hour), random walk
+- **Scale factor**: Similar to accelerometer
+- **Misalignment**: Non-orthogonal axes
+- **Noise**: White noise ~0.01 °/√hr
+
+**Allan Variance**: Standard method to characterize IMU errors over different time scales (bias instability vs. white noise vs. random walk)
+
+---
+
+## 3. Strapdown Mechanization Equations
+
+### 3.1 Problem Setup
+
+**Goal**: Integrate IMU measurements to estimate position, velocity, and attitude on a curved, rotating Earth.
+
+**Inputs**:
+- Specific force: $\mathbf{f}^b(t)$ from accelerometer
+- Angular rate: $\boldsymbol{\omega}_{ib}^b(t)$ from gyroscope
+- Initial position: $(\phi_0, \lambda_0, h_0)$ (latitude, longitude, altitude)
+- Initial velocity: $\mathbf{v}^n_0$ (in NED frame)
+- Initial attitude: $\mathbf{C}^n_b(0)$ (or quaternion/Euler angles)
+
+**Outputs**:
+- Position: $(\phi(t), \lambda(t), h(t))$
+- Velocity: $\mathbf{v}^n(t)$ in NED
+- Attitude: $\mathbf{C}^n_b(t)$
+
+### 3.2 Attitude Kinematics
+
+The body frame rotates relative to the navigation frame at rate:
+$$\boldsymbol{\omega}_{nb}^b = \boldsymbol{\omega}_{ib}^b - \mathbf{C}_b^n \boldsymbol{\omega}_{in}^n$$
+
+The rotation rates in the navigation frame:
+$$\boldsymbol{\omega}_{in}^n = \boldsymbol{\omega}_{ie}^n + \boldsymbol{\omega}_{en}^n$$
+
+**Earth rate** (fixed in navigation frame):
+$$\boldsymbol{\omega}_{ie}^n = \begin{bmatrix}
+\omega_{ie} \cos \phi \\
+0 \\
+-\omega_{ie} \sin \phi
+\end{bmatrix}$$
+
+where $\omega_{ie} = 7.2921 \times 10^{-5}$ rad/s is Earth's rotation rate.
+
+**Transport rate** (changes with position and velocity):
+$$\boldsymbol{\omega}_{en}^n = \begin{bmatrix}
+-v_E / (R_N + h) \\
+v_N / (R_M + h) \\
+v_E \tan \phi / (R_N + h)
+\end{bmatrix}$$
+
+where:
+- $v_N, v_E$: North and East velocity components
+- $R_M = \frac{a(1-e^2)}{(1-e^2 \sin^2 \phi)^{3/2}}$: Meridional radius of curvature
+- $R_N = \frac{a}{(1-e^2 \sin^2 \phi)^{1/2}}$: Prime vertical radius of curvature
+- $a = 6378137$ m: WGS84 semi-major axis
+- $e^2 = 0.00669437999$: WGS84 eccentricity squared
+
+**Attitude update** (using rotation matrix):
+$$\dot{\mathbf{C}}_b^n = \mathbf{C}_b^n \left[\boldsymbol{\omega}_{nb}^b\right]_\times$$
+
+where $[\cdot]_\times$ is the skew-symmetric matrix:
+$$[\mathbf{w}]_\times = \begin{bmatrix}
+0 & -w_z & w_y \\
+w_z & 0 & -w_x \\
+-w_y & w_x & 0
+\end{bmatrix}$$
+
+For quaternions, the update is:
+$$\dot{\mathbf{q}} = \frac{1}{2} \boldsymbol{\Omega}(\boldsymbol{\omega}_{nb}^b) \mathbf{q}$$
+
+where $\boldsymbol{\Omega}$ is the quaternion multiplication operator.
+
+### 3.3 Velocity Kinematics (The Key Equation)
+
+**Velocity in NED frame**:
+$$\dot{\mathbf{v}}^n = \mathbf{C}_b^n \mathbf{f}^b - (2\boldsymbol{\omega}_{ie}^n + \boldsymbol{\omega}_{en}^n) \times \mathbf{v}^n + \mathbf{g}^n$$
+
+Breaking down each term:
+
+1. **$\mathbf{C}_b^n \mathbf{f}^b$**: Transform specific force from body to navigation frame (the IMU measurement in NED)
+
+2. **$-(2\boldsymbol{\omega}_{ie}^n + \boldsymbol{\omega}_{en}^n) \times \mathbf{v}^n$**: Correction for Earth rotation and transport rate effects
+   - Earth rate effect: Gyroscopes are stationary on Earth, which itself is rotating
+   - Transport rate: As you move across the Earth, "down" changes direction
+   - These create fictitious centrifugal and Coriolis forces
+
+3. **$\mathbf{g}^n$**: Gravity in NED frame (varies with latitude and altitude per WGS84 model)
+
+**WGS84 Gravity Model**:
+$$g = 9.7803267714 \frac{1 + 0.0052790414 \sin^2\phi + 0.00000232718 \sin^4\phi}{(1 - 0.0066943640 \sin^2\phi)^{1/2}} - 3.086 \times 10^{-6} h$$
+
+where $\phi$ is latitude and $h$ is altitude in meters. This accounts for:
+- Latitude variation (Earth is oblate, moves through equator faster)
+- Altitude variation (farther from center = less gravity)
+
+### 3.4 Position Kinematics
+
+From velocity $\mathbf{v}^n = [v_N, v_E, v_D]^T$ in NED:
+
+**Latitude rate**:
+$$\dot{\phi} = \frac{v_N}{R_M + h}$$
+
+**Longitude rate**:
+$$\dot{\lambda} = \frac{v_E}{(R_N + h) \cos \phi}$$
+
+**Altitude rate**:
+$$\dot{h} = -v_D$$
+
+These relate velocity in NED coordinates to changes in geodetic position.
+
+### 3.5 Complete Strapdown Integration Algorithm
+
+**At each time step** $\Delta t$:
+
+1. **Read IMU**: Get $\mathbf{f}^b$ and $\boldsymbol{\omega}_{ib}^b$ (with biases removed or estimated)
+
+2. **Integrate attitude**:
+   ```
+   ω_nb_b = ω_ib_b - C_b_n * (ω_ie_n + ω_en_n)
+   C_b_n := C_b_n + C_b_n * [ω_nb_b]_x * Δt
+   ```
+
+3. **Integrate velocity**:
+   ```
+   a_coriolis = -(2*ω_ie_n + ω_en_n) × v_n
+   a_total = C_b_n * f_b + a_coriolis + g_n
+   v_n := v_n + a_total * Δt
+   ```
+
+4. **Integrate position**:
+   ```
+   φ := φ + (v_N / (R_M + h)) * Δt
+   λ := λ + (v_E / ((R_N + h) * cos(φ))) * Δt
+   h := h - v_D * Δt
+   ```
+
+5. **Optionally correct**:
+   - If GNSS measurement arrives: Run ESKF update to correct errors
+   - Update IMU bias estimates
+
+---
+
+## 4. IMU Error Effects on Navigation
+
+### 4.1 Accelerometer Bias Drift
+
+Constant accelerometer bias $\mathbf{b}_a$ leads to a linearly growing velocity error:
+$$\Delta \mathbf{v}(t) \approx \mathbf{b}_a \cdot t$$
+
+This creates quadratically growing position error:
+$$\Delta \mathbf{r}(t) \approx \frac{1}{2} \mathbf{b}_a \cdot t^2$$
+
+For a typical 100 mg bias, after 1 minute: position error = 180 meters!
+
+### 4.2 Gyroscope Bias Drift
+
+Constant gyroscope bias $\mathbf{b}_g$ (e.g., 0.1°/hr = 4.8×10⁻⁶ rad/s) causes attitude to diverge:
+$$\Delta \theta(t) \approx \mathbf{b}_g \cdot t$$
+
+This misaligns the transformation $\mathbf{C}_b^n$, making the attitude-dependent calculations (velocity integration) increasingly inaccurate.
+
+### 4.3 Random Walk Errors
+
+IMU biases themselves are not constant; they undergo **random walk**:
+$$\mathbf{b}_a(t) = \mathbf{b}_a(t-\Delta t) + \mathbf{w}_a$$
+$$\mathbf{b}_g(t) = \mathbf{b}_g(t-\Delta t) + \mathbf{w}_g$$
+
+where $\mathbf{w}_a, \mathbf{w}_g$ are zero-mean white noise.
+
+Position error grows as:
+$$\Delta \mathbf{r}(t) \sim O(t^{5/2})$$
+
+Over long durations (hours), INS becomes essentially useless without external corrections.
+
+---
+
+## 5. GNSS/INS Sensor Fusion Using ESKF
+
+### 5.1 Advantages of Fusion
+
+- **INS**: High frequency (100-400 Hz), precise short-term, drifts over time
+- **GNSS/GPS**: Low frequency (1-10 Hz), absolute measurements, vulnerable to outages/jamming
+
+**Fusion**:
+- INS provides smooth, high-rate estimates between GNSS updates
+- GNSS corrects INS drift and bias
+- Navigation continues if GNSS is temporarily unavailable
+
+### 5.2 Loosely-Coupled vs. Tightly-Coupled
+
+**Loosely-coupled**: Use GNSS position/velocity solutions directly
+- GNSS receiver outputs position $(x, y, z)^{\text{GNSS}}$ and velocity $(v_x, v_y, v_z)^{\text{GNSS}}$
+- INS provides position and velocity
+- Use ESKF to estimate and correct INS error state
+
+**Tightly-coupled**: Fuse raw GNSS measurements (satellite pseudoranges)
+- More computation, better accuracy
+- Can partially work with fewer satellites
+- Outside scope of this basic treatment
+
+### 5.3 ESKF for INS/GNSS
+
+Recall the error-state formulation from Chapter 2:
+
+**Nominal state**: Integrated using high-frequency INS
+$$\dot{\mathbf{x}}_{\text{nom}} = f(\mathbf{x}_{\text{nom}}, \mathbf{u})$$
+
+**Error state** (what the filter estimates):
+$$\delta \mathbf{x} = [\delta \mathbf{p}, \delta \mathbf{v}, \delta \boldsymbol{\theta}, \delta \mathbf{b}_a, \delta \mathbf{b}_g]^T$$
+
+where:
+- $\delta \mathbf{p}$: Position error (3D)
+- $\delta \mathbf{v}$: Velocity error (3D)
+- $\delta \boldsymbol{\theta}$: Attitude error (small rotation vector, 3D)
+- $\delta \mathbf{b}_a$: Accelerometer bias error
+- $\delta \mathbf{b}_g$: Gyroscope bias error
+
+**Error dynamics** (linearized):
+$$\delta \dot{\mathbf{p}} = \delta \mathbf{v}$$
+
+$$\delta \dot{\mathbf{v}} = -[\mathbf{C}_b^n \mathbf{f}^b]_\times \delta \boldsymbol{\theta} - \mathbf{C}_b^n \delta \mathbf{b}_a - \mathbf{C}_b^n \mathbf{w}_a$$
+
+$$\delta \dot{\boldsymbol{\theta}} = -[\boldsymbol{\omega}_{nb}^b]_\times \delta \boldsymbol{\theta} - \mathbf{C}_b^n \delta \mathbf{b}_g - \mathbf{C}_b^n \mathbf{w}_g$$
+
+$$\delta \dot{\mathbf{b}}_a = \mathbf{w}_{ba}$$
+
+$$\delta \dot{\mathbf{b}}_g = \mathbf{w}_{bg}$$
+
+**Measurement model**:
+$$\delta z_{\text{GNSS}} = \delta \mathbf{p} + \mathbf{v}_z$$
+
+where $z_{\text{GNSS}}$ is the GNSS position measurement.
+
+The ESKF applies standard Kalman equations to this error state, then **injects** the estimated error back into the nominal state.
+
+### 5.4 Implementation Pseudocode
+
+```
+Initialize: x_nom = [p_0, v_0, att_0], P = large diagonal
+
+For each IMU sample at rate 400 Hz:
+    Read: f_b, ω_ib_b
+    Integrate: x_nom := x_nom + f(x_nom) * Δt
+
+    (ESKF runs at lower rate, e.g., 10 Hz)
+    If GNSS measurement available:
+        // Prediction (since last update)
+        F = Jacobian of error dynamics
+        P := F * P * F' + Q
+
+        // Update
+        z_GNSS = GNSS position measurement
+        innovation = z_GNSS - x_nom_position
+        K = P * H' / (H * P * H' + R)
+        δx_est = K * innovation
+
+        // Inject correction
+        x_nom := x_nom ⊕ δx_est
+
+        // Reset error state
+        δx_est := 0
+        P := (I - K*H) * P
+```
+
+---
+
+## 6. Implementation Example: Simple Strapdown INS
+
+```python
+import numpy as np
+
+class StrapdownINS:
+    """Simplified strapdown inertial navigation system"""
+
+    def __init__(self, lat0, lon0, h0, v_north0=0, v_east0=0, v_down0=0):
+        """Initialize INS at given geodetic position and velocity"""
+        self.lat = lat0  # radians
+        self.lon = lon0  # radians
+        self.h = h0      # meters
+        self.v_n = v_north0
+        self.v_e = v_east0
+        self.v_d = v_down0
+
+        # Attitude (rotation matrix)
+        self.C_b_n = np.eye(3)
+
+        # IMU biases
+        self.b_a = np.array([0.0, 0.0, 0.0])
+        self.b_g = np.array([0.0, 0.0, 0.0])
+
+        # WGS84 parameters
+        self.a = 6378137.0  # semi-major axis
+        self.e2 = 0.00669437999  # eccentricity squared
+        self.omega_ie = 7.2921e-5  # Earth rotation rate
+
+    def compute_radii_of_curvature(self):
+        """Compute meridional and prime vertical radii"""
+        sin_lat = np.sin(self.lat)
+        cos_lat = np.cos(self.lat)
+
+        denom = 1 - self.e2 * sin_lat**2
+
+        R_N = self.a / np.sqrt(denom)  # prime vertical
+        R_M = self.a * (1 - self.e2) / (denom * np.sqrt(denom))  # meridional
+
+        return R_M, R_N
+
+    def compute_gravity(self):
+        """WGS84 gravity model"""
+        sin_lat = np.sin(self.lat)
+        sin2_lat = sin_lat**2
+
+        g = (9.7803267714 * (1 + 0.0052790414 * sin2_lat + 0.00000232718 * sin2_lat**2) /
+             np.sqrt(1 - 0.0066943640 * sin2_lat) - 3.086e-6 * self.h)
+
+        return np.array([0, 0, g])
+
+    def compute_earth_rate(self):
+        """Earth rate vector in NED frame"""
+        cos_lat = np.cos(self.lat)
+        sin_lat = np.sin(self.lat)
+
+        return np.array([self.omega_ie * cos_lat, 0, -self.omega_ie * sin_lat])
+
+    def compute_transport_rate(self, R_M, R_N):
+        """Transport rate vector in NED frame"""
+        tan_lat = np.tan(self.lat)
+        return np.array([-self.v_e / (R_N + self.h),
+                         self.v_n / (R_M + self.h),
+                         self.v_e * tan_lat / (R_N + self.h)])
+
+    def skew_symmetric(self, v):
+        """Create skew-symmetric matrix"""
+        return np.array([[0, -v[2], v[1]],
+                        [v[2], 0, -v[0]],
+                        [-v[1], v[0], 0]])
+
+    def update(self, f_b, omega_ib_b, dt):
+        """Integrate one time step
+        f_b: specific force in body frame
+        omega_ib_b: angular rate in body frame
+        dt: time step
+        """
+        R_M, R_N = self.compute_radii_of_curvature()
+
+        # Compute rotation rates
+        omega_ie_n = self.compute_earth_rate()
+        omega_en_n = self.compute_transport_rate(R_M, R_N)
+        omega_in_n = omega_ie_n + omega_en_n
+
+        # Attitude rate (NED frame)
+        omega_nb_b = omega_ib_b - self.C_b_n.T @ omega_in_n
+
+        # Update attitude
+        self.C_b_n += self.C_b_n @ self.skew_symmetric(omega_nb_b) * dt
+
+        # Velocity update
+        f_n = self.C_b_n @ f_b  # transform specific force to NED
+        coriolis = -np.cross(2 * omega_ie_n + omega_en_n, np.array([self.v_n, self.v_e, self.v_d]))
+        g_n = self.compute_gravity()
+
+        v_dot = f_n + coriolis + g_n
+        self.v_n += v_dot[0] * dt
+        self.v_e += v_dot[1] * dt
+        self.v_d += v_dot[2] * dt
+
+        # Position update
+        self.lat += (self.v_n / (R_M + self.h)) * dt
+        self.lon += (self.v_e / ((R_N + self.h) * np.cos(self.lat))) * dt
+        self.h -= self.v_d * dt
+
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize INS at 45°N, 0°E, sea level, moving north at 100 m/s
+    ins = StrapdownINS(lat0=np.radians(45), lon0=0, h0=0, v_north0=100)
+
+    # Simulate 1 minute of flight with constant acceleration
+    dt = 0.01  # 100 Hz update rate
+    n_steps = 6000  # 60 seconds
+
+    positions = []
+    velocities = []
+
+    for k in range(n_steps):
+        # Simulated IMU measurements
+        # Level flight with small northward acceleration
+        f_b = np.array([0.01, 0, 9.81])  # slight forward accel, gravity down
+        omega_ib_b = np.array([0, 0, 0])  # no rotation
+
+        # Update INS
+        ins.update(f_b, omega_ib_b, dt)
+
+        # Record
+        if k % 100 == 0:  # record every 1 second
+            positions.append([np.degrees(ins.lat), np.degrees(ins.lon), ins.h])
+            velocities.append([ins.v_n, ins.v_e, ins.v_d])
+
+    # Display results
+    positions = np.array(positions)
+    velocities = np.array(velocities)
+
+    print("Position (lat, lon, alt):")
+    print(f"Initial: {positions[0]}")
+    print(f"Final:   {positions[-1]}")
+    print(f"\nVelocity (N, E, D):")
+    print(f"Initial: {velocities[0]}")
+    print(f"Final:   {velocities[-1]}")
+
+    # IMU bias would accumulate, causing drift
+    print(f"\nNote: Without external corrections, INS drifts due to IMU biases")
+    print(f"Position error after 60s: ~{(ins.omega_ie * 100)**2 * 60**2 / 2:.1f} meters (from Coriolis)")
+```
+
+---
+
+## 7. Summary
+
+**Inertial Navigation on a Curved, Rotating Earth** requires:
+
+1. **Frame definitions**: Inertial, ECEF, NED, body—and transformations between them
+2. **Strapdown mechanization**: The nonlinear differential equations for attitude, velocity, position
+3. **Rate compensation**: Accounting for Earth rotation and transport rate effects
+4. **Sensor fusion**: Combining high-rate INS with low-rate GNSS to maintain long-term accuracy
+
+**Key equations to remember**:
+- Attitude: $\dot{\mathbf{C}}_b^n = \mathbf{C}_b^n [\boldsymbol{\omega}_{nb}^b]_\times$
+- Velocity: $\dot{\mathbf{v}}^n = \mathbf{C}_b^n \mathbf{f}^b - (2\boldsymbol{\omega}_{ie}^n + \boldsymbol{\omega}_{en}^n) \times \mathbf{v}^n + \mathbf{g}^n$
+- Position: $\dot{\phi} = v_N / (R_M + h)$, $\dot{\lambda} = v_E / ((R_N + h) \cos \phi)$, $\dot{h} = -v_D$
+
+**IMU Integration Error Growth**:
+- Accelerometer bias: Position error ~ $t^2$
+- Gyroscope bias: Attitude error ~ $t$
+- Random walk: Position error ~ $t^{5/2}$ over long durations
+
+**GNSS/INS Fusion** via ESKF provides:
+- Continuous navigation during GNSS outages
+- Automatic bias estimation and correction
+- Optimal blending of two sensors with different characteristics
+
+Modern navigation systems (aircraft, ships, guided missiles) rely critically on this tight fusion of INS and GNSS data, often augmented with visual odometry, barometric altitude, and magnetometer heading for robustness.

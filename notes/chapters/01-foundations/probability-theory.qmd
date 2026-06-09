@@ -1,0 +1,293 @@
+# Probability Theory Refresher
+
+This chapter refreshes the probability concepts required to model uncertainty in state estimation. Students should already know these ideas; this chapter aligns notation and emphasizes navigation-specific usage. The other major underlying component of state estimation and modern navigation system is probability theory, which provides the mathematical framework for modeling uncertainty in state estimation. This chapter serves as a refresher on key probability concepts, with a focus on their application to navigation problems. It is assumed that students are already familiar with these ideas from prior coursework, but this chapter will align notation and emphasize the aspects most relevant to navigation.
+
+## Random Variables
+
+A random variable is a function that maps outcomes of a random process to numerical values. For example, the position of a robot at time $t$ can be modeled as a random variable $\mathbf{x}_t$. Random variables can be discrete (taking on countable values) or continuous (taking on values in a continuum). In modern inertial navigation, we typically use some sort of digital computer to estimate state work with discrete time intervals. Digital computers are also discrete, so we often model states as discrete random variables. However, the underlying physical processes are continuous, and we often use continuous probability distributions derived, simplified, or discretized to model uncertainty in state estimation.
+
+For our purposes, we will give a brief refresher on both continuous and discrete random variables, but the focus and assumption in the course materials will be on discrete random variables, since that is the most common case in modern navigation systems. Let $X$ be a random variable with density $p(x)$.
+
+Some basic properties of a random variable are based around the concept of **expectation** or **expected value** which is a weighted average of the possible values of the random variable, where the weights are given by the probability density function. Plainly, the expectation of a random variavle is the value you would expect to see most often or on average.
+
+For a continuous random variable the expectation is defined as:
+$$
+\mathbb{E}[X] = \int_{-\infty}^{\infty} x p(x) dx \approx \mu
+$$
+
+For a discrete random variable, the expectation is defined as:
+$$
+\mathbb{E}[X] = \sum_{x} x p(x) \approx \mu
+$$
+
+The expected value or expectation is analogous to the **statistical mean** of a dataset. In fact, in engineering literature, the terms "mean" and "expected value" are often used interchangeably. However, the mathematicians and statisticians will look at you with disapproving looks if you mix up the terms: expected value is a theoretical concept defined in terms of the probability distribution, while mean is often used to refer to the sample average computed from data. In practice, we often use the sample mean as an estimate of the expected value when we have data.
+
+From the expected value, we can define the variance of a random variable, which measures the spread or dispersion of the values around the mean. The variance is defined as:
+$$
+\text{Var}(X) = \mathbb{E}[(X - \mathbb{E}[X])^2] = \mathbb{E}[X^2] - (\mathbb{E}[X])^2 \approx \sigma^2
+$$
+
+The variance is analogous to the **statistical variance** of a dataset, which measures how much the data points deviate from the mean. It is also related to the **standard deviation**, which is the square root of the variance and has the same units as the random variable itself. The standard deviation is often more interpretable than the variance, since it is in the same units as the data.
+
+For a multivariate random variable $\mathbf{x} \in \mathbb{R}^n$, we can define the mean vector ($\boldsymbol{\mu}$) and covariance matrix ($\mathbf{\Sigma}$) as follows:
+
+$$
+\boldsymbol{\mu} = \mathbb{E}[\mathbf{x}]
+$$
+$$
+\mathbf{\Sigma} = \mathbb{E}\left[(\mathbf{x}-\boldsymbol{\mu})(\mathbf{x}-\boldsymbol{\mu})^T\right]
+$$
+
+## Conditional Probability and Bayes' Rule
+
+All of the algorithms used in navigation are realization of Bayesian Filters. Bayesian Filter rely on Bayes rule which is a fundamental result in probability theory that relates the conditional and marginal probabilities of random variables. It allows us to update our beliefs about the state of a system based on new evidence or measurements. Bayes' rule can be expressed mathematically as:
+
+$$
+p(\mathbf{x}|\mathbf{z}) = \frac{p(\mathbf{z}|\mathbf{x})p(\mathbf{x})}{p(\mathbf{z})}
+$$
+
+Interpretation in filtering:
+
+- Prior $p(\mathbf{x})$: model-based belief before seeing new measurement
+- Likelihood $p(\mathbf{z}|\mathbf{x})$: measurement consistency with candidate state
+- Posterior $p(\mathbf{x}|\mathbf{z})$: updated belief
+
+Recursive form used in Bayes filters:
+
+1. Prediction: $p(\mathbf{x}_k|\mathbf{z}_{1:k-1})$
+2. Update: $p(\mathbf{x}_k|\mathbf{z}_{1:k})$
+
+
+## Cross-Covariance, Independence, and Correlation
+
+We can compare two random variables $X$ and $Y$ using the **cross-covariance** which measures how much the two variables vary together. The cross-covariance is defined as:
+$$
+\text{Cov}(X,Y) = \mathbb{E}[(X - \mathbb{E}[X])(Y - \mathbb{E}[Y])]
+$$
+
+**Independent** variables have zero cross-covariance. However, zero covariance does not necessarily imply independence unless the variables are jointly Gaussian. In navigation systems, we often assume that process and measurement noise are independent for simplicity, but in reality, there may be correlations due to shared environmental factors or sensor characteristics. Ignoring these correlations can lead to inconsistent estimates and overconfident uncertainty bounds. Therefore, it is important to carefully consider the covariance structure of the noise when designing filters and interpreting their outputs.
+
+## A Case Study in Probability Theory: Why you should never gamble against the house
+
+Probability theory is abstract. Betting is concrete. The gambling industry has spent centuries engineering systems that are mathematically guaranteed to extract money from participants, and those systems are a beautiful — if sobering — application of everything in this chapter. Understanding them will also sharpen your intuition for why an imperfect prior or a biased likelihood function corrupts your state estimate in exactly the same way a crooked bookie corrupts your payout.
+
+### Odds and What They Mean
+
+At its core, an **odds** quote is a compressed representation of a probability. Bookmakers express the same underlying number in three different formats depending on the market, and understanding the conversions is the first step.
+
+**Decimal odds** (dominant in Europe and online markets) express the total return per unit staked, including your stake back:
+
+$$
+d = \frac{1}{p}
+$$
+
+so a true probability of $p = 0.5$ (a fair coin) corresponds to decimal odds $d = 2.0$. If you bet \$1 at $d = 2.0$ and win, you receive \$2 back (\$1 profit + \$1 stake returned).
+
+**Fractional odds** (traditional in UK and US horse racing) express profit relative to stake. The quote $n/m$ means you profit \$n for every \$m staked. The implied probability is:
+
+$$
+p = \frac{m}{n + m}
+$$
+
+So 1/1 (read "evens") implies $p = 0.5$. A odds quote of 5/1 implies $p = 1/6 \approx 0.167$.
+
+**American Moneyline odds** (traditional in US sports betting) are expressed as signed integers relative to a \$100 unit:
+
+- A **positive** line (e.g. +150) means a \$100 bet profits \$150 if you win. Implied probability: $p = \frac{100}{o + 100}$
+- A **negative** line (e.g. −200) means you must stake \$200 to profit \$100. Implied probability: $p = \frac{|o|}{|o| + 100}$
+
+So if the line is +150, the implied probability is $p = 100 / (150 + 100) = 0.4$. If the line is −200, the implied probability is $p = 200 / (200 + 100) = 0.6667$.
+
+All three formats encode identical information. The Python block below provides conversion utilities so we can work in whichever format is convenient.
+
+```{python}
+#| label: odds-conversions
+#| code-fold: true
+
+def decimal_to_implied_prob(d: float) -> float:
+    """Implied probability from decimal odds."""
+    return 1.0 / d
+
+def fractional_to_decimal(n: float, m: float) -> float:
+    """Convert fractional odds n/m to decimal."""
+    return (n / m) + 1.0
+
+def american_to_decimal(o: float) -> float:
+    """Convert American moneyline to decimal odds."""
+    if o > 0:
+        return (o / 100.0) + 1.0
+    else:
+        return (100.0 / abs(o)) + 1.0
+
+def decimal_to_american(d: float) -> float:
+    """Convert decimal odds to American moneyline."""
+    if d >= 2.0:
+        return (d - 1.0) * 100.0
+    else:
+        return -100.0 / (d - 1.0)
+
+# Demonstration — a coin flip in all three formats
+p_true = 0.5
+d_fair = 1.0 / p_true       # 2.0 (fair)
+
+print("=== Fair coin flip ===")
+print(f"  True probability : {p_true:.4f}")
+print(f"  Decimal odds     : {d_fair:.4f}")
+print(f"  Fractional       : {fractional_to_decimal(1, 1):.4f}  (1/1, i.e. 'evens')")
+print(f"  American         : {decimal_to_american(d_fair):+.1f}")
+```
+
+### Expected Value of a Bet
+
+A wager is a discrete random variable. If you stake \$1 at decimal odds $d$ on an outcome with true probability $p$, your profit $W$ takes two values:
+
+$$
+W = \begin{cases} d - 1 & \text{with probability } p \\ -1 & \text{with probability } 1-p \end{cases}
+$$
+
+The expected profit is therefore:
+
+$$
+\mathbb{E}[W] = p(d - 1) + (1-p)(-1) = pd - 1
+$$
+
+For **fair odds** ($d = 1/p$) this equals exactly zero — you neither gain nor lose in the long run regardless of which side of the bet you take. Not exactly a good way to run a business. This means that for simple you against the house bets (e.g. roll a die, flip a coin) with truly random and fair outcomes, the bookmaker or casino cannot make a *profit* if they offer *fair* odds. 
+
+For fair random variables, in order to make a profit the bookmaker must offer unfair payouts — that is, they must shade the odds below the fair level. This is the mathematical basis for the house edge in gambling. Take a simple coin flip with true probability $p = 0.5$. If the bookmaker offers fair odds of $d = 2.0$, the expected profit is zero. If the bookmaker offers $d = 1.95$, the expected profit is negative for the bettor.
+
+```{python}
+#| label: expected-value
+#| code-fold: true
+
+def expected_profit(stake: float, decimal_odds: float, true_prob: float) -> float:
+    """Expected profit per bet given true probability."""
+    profit_if_win  =  stake * (decimal_odds - 1)
+    profit_if_lose = -stake
+    return true_prob * profit_if_win + (1 - true_prob) * profit_if_lose
+
+# Coin flip — fair vs. vig-adjusted book
+p_true = 0.5
+print("=== Expected value, $1 stake on a fair coin ===")
+print(f"  Decimal 2.00 (fair odds)  : EV = ${expected_profit(1, 2.00, p_true):+.4f}")
+print(f"  Decimal 1.95 (vig baked in): EV = ${expected_profit(1, 1.95, p_true):+.4f}")
+print(f"  Decimal 1.90              : EV = ${expected_profit(1, 1.90, p_true):+.4f}")
+```
+
+To further complicate matters, we can take an example where the house, casino, or bookmaker does not automatically take the other side of the bet. This is the case in many sports betting markets, where you can bet on either side of the outcome (e.g. Team A wins vs. Team B wins). In this case, the bookmaker can set the odds on both sides of the bet such that the implied probabilities sum to more than one, ensuring a profit regardless of which outcome occurs. This is how bookmakers make money in sports betting markets, and it is a direct application of the expected value calculation we just did. This excess is called the **vigorish**, **vig**, or **juice**.
+
+As an example, let's say the coin flip is still fair, with both sides having an odds of $1.90$ instead of the fair $2.0$. The casino flips the coin and accepts bets on both sides. If you bet on heads, you have a 50% chance of winning $0.90$ (since you get your stake back plus $0.90$ profit) and a 50% chance of losing $1.00$. Same for betting on tails. The expected value of this bet for the casino is positive, while the expected value for the bettor is negative. Further, the casino gets to double dip on both sides of the bet, collecting money from losing bets on both sides while only paying out on winning bets at a reduced rate. This is the mathematical guarantee that the house always wins in the long run when they set odds with vig.
+
+The moment the bookmaker shades the odds below $1/p$, the expected value goes negative for the bettor (you). In practice the bookmaker prices *both* sides of an event — say Team A wins and Team B wins — and sets the odds such that the implied probabilities sum to **more than one**. 
+
+Define the **overround** $\Omega$ for an event with $n$ outcomes quoted at decimal odds $d_1, d_2, \ldots, d_n$:
+
+$$\Omega = \sum_{i=1}^{n} \frac{1}{d_i}$$
+
+For a fair book, $\Omega = 1$ exactly (implied probs sum to 100 %). For a real book, $\Omega > 1$. The **vig** is:
+
+$$v = \Omega - 1$$
+
+A typical two-outcome market (e.g. a football game with no draw) might look like:
+
+| Outcome | Decimal | Implied $p$ |
+|---------|---------|-------------|
+| Team A  | 1.91    | 0.5236      |
+| Team B  | 1.91    | 0.5236      |
+| **Total** |       | **1.0471**  |
+
+Here $\Omega = 1.047$ and $v = 4.7\%$. Every dollar wagered loses 4.7 cents in expectation, regardless of which team the bettor backs.
+
+### Why the House Always Wins — The Mathematical Guarantee
+
+Suppose a book takes action $A$ on outcome 1 and action $B$ on outcome 2, at decimal odds $d_1$ and $d_2$ respectively.
+
+If outcome 1 occurs, the book collects $B$ (from losing bets on side 2) and pays out $A(d_1 - 1)$ (profit to winning bets on side 1). House profit:
+
+$$\Pi_1 = B - A(d_1 - 1)$$
+
+If outcome 2 occurs:
+
+$$\Pi_2 = A - B(d_2 - 1)$$
+
+For the house to guarantee a profit *regardless of outcome*, we need $\Pi_1 > 0$ **and** $\Pi_2 > 0$. This is achievable whenever $\Omega > 1$. In a balanced market where $A = B$ (equal action on both sides):
+
+$$\Pi_1 = A\left(1 - (d_1 - 1)\right) = A(2 - d_1)$$
+
+This is positive as long as $d_1 < 2$, i.e. the odds are below the fair level — which is precisely what vig ensures.
+
+More generally, the bookmaker's **expected margin per dollar of action** is:
+
+$$\text{margin} = 1 - \frac{1}{\Omega} = \frac{v}{1 + v}$$
+
+For $v = 4.7\%$, the margin is $\approx 4.5\%$ per dollar — that is the house's guaranteed take, locked in by the structure of the odds before a single ball is kicked.
+
+```{python}
+#| label: vig-visualization
+#| fig-cap: "Expected profit per $1 stake as a function of bookmaker vig. The bettor's EV is always negative once any vig is present."
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+p_true = 0.5                    # symmetric two-outcome event
+vig_pct = np.linspace(0, 15, 300)   # vig from 0% to 15%
+
+# Overround implied by vig; each side gets half the overround
+# Implied prob for each side = 0.5 * (1 + v) -> decimal = 1/implied_prob
+ev_per_dollar = []
+house_margin  = []
+
+for v in vig_pct / 100:
+    implied_prob_side = (1 + v) / 2          # implied prob offered to bettor
+    decimal_odds      = 1.0 / implied_prob_side
+    ev = expected_profit(1.0, decimal_odds, p_true)
+    ev_per_dollar.append(ev)
+    house_margin.append(v / (1 + v) * 100)   # as %
+
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.plot(vig_pct, ev_per_dollar, color='firebrick', linewidth=2, label="Bettor EV per $1 stake")
+ax.axhline(0, color='gray', linewidth=0.8, linestyle='--')
+ax.fill_between(vig_pct, ev_per_dollar, 0, alpha=0.15, color='firebrick')
+ax.set_xlabel("Bookmaker Vig (%)")
+ax.set_ylabel("Expected Profit ($)")
+ax.set_title("The House Edge: Expected Value vs. Vig")
+ax.legend()
+plt.tight_layout()
+plt.show()
+
+print("Representative values:")
+print(f"{'Vig':>8}  {'Bettor EV':>12}  {'House margin':>14}")
+for v_pct, ev, hm in zip(vig_pct[::60], ev_per_dollar[::60], house_margin[::60]):
+    print(f"{v_pct:>7.1f}%  ${ev:>11.4f}  {hm:>13.2f}%")
+```
+
+### Horse Racing — Parimutuel Pools
+
+Fixed-odds bookmaking is one architecture. Horse racing uses a different mechanism — **parimutuel** (French: *mutual stake*) — but the mathematics of extraction is identical.
+
+In a parimutuel pool:
+
+1. All bets on a race go into a single pool $P$.
+2. The track removes its **take** $\tau$ (typically 15–25 %) up front: $P_\text{net} = P(1 - \tau)$.
+3. The remainder is divided proportionally among tickets on the winning horse.
+
+If a bettor holds a fraction $f$ of all winning tickets, the expected return per dollar staked is:
+
+$$\mathbb{E}[\text{return}] = f \cdot \frac{P(1-\tau)}{f \cdot P} = 1 - \tau$$
+
+So the expected **profit** per dollar is:
+
+$$\mathbb{E}[\text{profit}] = -\tau$$
+
+The bettor loses the take $\tau$ in expectation *regardless of which horse wins*, regardless of the bettor's skill in picking horses, and regardless of the odds displayed on the board. The take is extracted before any payout calculations are made. A typical 20 % take means that, in the long run, every dollar bet at the track returns 80 cents.
+
+::: {.callout-note}
+## Connection to Bayesian Filtering
+
+There is a structural analogy worth noting. In Bayes' rule:
+
+$$p(\mathbf{x}|\mathbf{z}) = \frac{p(\mathbf{z}|\mathbf{x})\,p(\mathbf{x})}{p(\mathbf{z})}$$
+
+the denominator $p(\mathbf{z})$ is a normalizing constant that ensures the posterior integrates to one — it is the "true" probability of the measurement. A bookmaker who sets odds with vig is doing the inverse: they are deliberately *mis-normalizing* the implied probabilities so that they sum to more than one, extracting the excess as profit. A biased sensor model in your filter does exactly the same thing: it shifts the effective normalizer and systematically corrupts the posterior. In both cases, the lesson is the same — if the probabilities you are working with do not sum to one, someone or something is taking a cut.
+:::
+
+The upshot is simple: the mathematics of gambling are not subtle. The house does not need to cheat; it only needs to ensure $\Omega > 1$ (fixed-odds) or $\tau > 0$ (parimutuel). Both conditions are structural, always present, and entirely legal. To quote the cult classic *War Games* (1983): "The only winning move is not to play."

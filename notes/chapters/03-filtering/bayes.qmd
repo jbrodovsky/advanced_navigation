@@ -1,0 +1,609 @@
+# The Extended Kalman Filter & Error-State Formulation
+
+## Introduction
+
+Chapter 0 established the theoretical foundation: the Bayes Filter and the Kalman Filter for linear systems. In real-world navigation, systems are rarely linear. This chapter presents the Extended Kalman Filter (EKF), which extends the Kalman Filter to nonlinear systems through linearization, and then introduces the Error-State Kalman Filter (ESKF), the industry-standard formulation used in modern inertial navigation systems.
+
+---
+
+## 1. From Linear to Nonlinear: EKF Overview
+
+### 1.1 The Nonlinear System Model
+
+We consider discrete-time nonlinear systems of the form:
+$$x_k = f(x_{k-1}, u_{k-1}) + w_{k-1}$$
+$$z_k = h(x_k) + v_k$$
+
+where:
+- $x_k \in \mathbb{R}^n$: state vector (position, velocity, attitude, etc.)
+- $u_{k-1}$: control input from time step $k-1$
+- $f$: nonlinear process model (state transition function)
+- $h$: nonlinear measurement model (observation function)
+- $w_{k-1} \sim \mathcal{N}(0, Q_{k-1})$: process noise
+- $v_k \sim \mathcal{N}(0, R_k)$: measurement noise
+
+**Key challenge**: When $f$ and $h$ are nonlinear, the posterior distribution $p(x_k | z_{1:k})$ is no longer Gaussian, and we cannot track it with just mean and covariance.
+
+**EKF strategy**: Linearize around the current estimate, then apply the Kalman Filter equations as if the system were locally linear.
+
+### 1.2 Linearization by First-Order Taylor Expansion
+
+Recall from Chapter 0: For a nonlinear function $f(x)$, the first-order Taylor approximation around $\bar{x}$ is:
+$$f(x) \approx f(\bar{x}) + J_f(\bar{x})(x - \bar{x})$$
+
+where $J_f(\bar{x})$ is the Jacobian matrix.
+
+**For the process model**, linearize around the estimate $\hat{x}_{k-1}$:
+$$f(x_{k-1}, u_{k-1}) \approx f(\hat{x}_{k-1}, u_{k-1}) + F_k (x_{k-1} - \hat{x}_{k-1})$$
+
+where $F_k = \frac{\partial f}{\partial x}\bigg|_{x=\hat{x}_{k-1}, u=u_{k-1}}$ is the **state transition Jacobian**.
+
+**For the measurement model**, linearize around the predicted state $\hat{x}_k^-$:
+$$h(x_k) \approx h(\hat{x}_k^-) + H_k (x_k - \hat{x}_k^-)$$
+
+where $H_k = \frac{\partial h}{\partial x}\bigg|_{x=\hat{x}_k^-}$ is the **measurement Jacobian**.
+
+---
+
+## 2. Extended Kalman Filter Algorithm
+
+### 2.1 The EKF Prediction Step (Time Update)
+
+Given the estimate $\hat{x}_{k-1}$ and covariance $P_{k-1}$ from the previous step:
+
+**1. Predict the state:**
+$$\hat{x}_k^- = f(\hat{x}_{k-1}, u_{k-1})$$
+
+This evaluates the nonlinear process model at the previous estimate. Critically, we evaluate $f$ at the estimated state, *not* at a linearization point away from it.
+
+**2. Compute the state transition Jacobian:**
+$$F_k = \frac{\partial f}{\partial x}\bigg|_{x=\hat{x}_{k-1}, u=u_{k-1}}$$
+
+**3. Propagate the covariance:**
+$$P_k^- = F_k P_{k-1} F_k^T + Q_{k-1}$$
+
+This uses the linearized error dynamics. The term $F_k P_{k-1} F_k^T$ propagates uncertainty through the Jacobian, and $Q_{k-1}$ adds process noise.
+
+### 2.2 The EKF Update Step (Measurement Update)
+
+Given measurement $z_k$:
+
+**1. Compute the measurement Jacobian:**
+$$H_k = \frac{\partial h}{\partial x}\bigg|_{x=\hat{x}_k^-}$$
+
+**2. Compute the Kalman gain:**
+$$K_k = P_k^- H_k^T (H_k P_k^- H_k^T + R_k)^{-1}$$
+
+The denominator $(H_k P_k^- H_k^T + R_k)$ is the predicted measurement uncertainty (covariance of innovation).
+
+**3. Compute the innovation (measurement residual):**
+$$y_k = z_k - h(\hat{x}_k^-)$$
+
+This is the difference between the actual and predicted measurement. If the model is accurate, innovations should be approximately zero-mean white noise.
+
+**4. Update the state:**
+$$\hat{x}_k = \hat{x}_k^- + K_k y_k$$
+
+We add a correction proportional to the innovation, scaled by the Kalman gain.
+
+**5. Update the covariance:**
+$$P_k = (I - K_k H_k) P_k^-$$
+
+(Or use the Joseph form for numerical stability: $P_k = (I - K_k H_k) P_k^- (I - K_k H_k)^T + K_k R_k K_k^T$)
+
+### 2.3 Complete EKF Algorithm Summary
+
+**Initialize**: Choose $\hat{x}_0$ and $P_0$ (often $P_0 = \sigma_0^2 I$ with large $\sigma_0$)
+
+**For $k = 1, 2, 3, \ldots$**:
+
+1. **Predict**:
+   - $\hat{x}_k^- = f(\hat{x}_{k-1}, u_{k-1})$
+   - $F_k = \frac{\partial f}{\partial x}\big|_{\hat{x}_{k-1}}$
+   - $P_k^- = F_k P_{k-1} F_k^T + Q_{k-1}$
+
+2. **Update** (when measurement arrives):
+   - $H_k = \frac{\partial h}{\partial x}\big|_{\hat{x}_k^-}$
+   - $K_k = P_k^- H_k^T (H_k P_k^- H_k^T + R_k)^{-1}$
+   - $\hat{x}_k = \hat{x}_k^- + K_k (z_k - h(\hat{x}_k^-))$
+   - $P_k = (I - K_k H_k) P_k^-$
+
+---
+
+## 3. Computing Jacobians: Detailed Examples
+
+### 3.1 Example 1: 2D Constant Velocity Model
+
+**State**: $x = [x, y, v_x, v_y]^T$ (position and velocity in 2D)
+
+**Process Model**:
+$$x_{k} = \begin{bmatrix} x_{k-1} + v_x \Delta t \\ y_{k-1} + v_y \Delta t \\ v_x \\ v_y \end{bmatrix} = \begin{bmatrix}
+1 & 0 & \Delta t & 0 \\
+0 & 1 & 0 & \Delta t \\
+0 & 0 & 1 & 0 \\
+0 & 0 & 0 & 1
+\end{bmatrix} x_{k-1}$$
+
+Since this is linear, $F_k$ is simply:
+$$F_k = \begin{bmatrix}
+1 & 0 & \Delta t & 0 \\
+0 & 1 & 0 & \Delta t \\
+0 & 0 & 1 & 0 \\
+0 & 0 & 0 & 1
+\end{bmatrix}$$
+
+**Measurement Model (range to landmark)**:
+$$z = \sqrt{(x_m - x)^2 + (y_m - y)^2} + v$$
+
+where $(x_m, y_m)$ is a known landmark position.
+
+This measurement depends only on $x$ and $y$:
+$$h(x) = \sqrt{(x_m - x)^2 + (y_m - y)^2}$$
+
+The Jacobian (gradient) is:
+$$H_k = \frac{\partial h}{\partial x} = \left[ \frac{\partial h}{\partial x}, \frac{\partial h}{\partial y}, \frac{\partial h}{\partial v_x}, \frac{\partial h}{\partial v_y} \right]$$
+
+Computing the partial derivatives:
+$$\frac{\partial h}{\partial x} = \frac{-(x_m - x)}{r}, \quad \frac{\partial h}{\partial y} = \frac{-(y_m - y)}{r}, \quad \frac{\partial h}{\partial v_x} = 0, \quad \frac{\partial h}{\partial v_y} = 0$$
+
+where $r = \sqrt{(x_m - x)^2 + (y_m - y)^2}$ is the range.
+
+Thus:
+$$H_k = \frac{1}{r} \left[ -(x_m - x), \, -(y_m - y), \, 0, \, 0 \right]$$
+
+### 3.2 Example 2: Nonlinear Constant-Turn Model
+
+**State**: $x = [x, y, \theta, v]^T$ (2D position, heading, speed)
+
+**Process Model** (constant turn rate):
+$$\begin{bmatrix} x_{k} \\ y_{k} \\ \theta_k \\ v_k \end{bmatrix} = \begin{bmatrix}
+x_{k-1} + \frac{v_{k-1}}{\omega} \sin(\theta_k) \\
+y_{k-1} - \frac{v_{k-1}}{\omega} \cos(\theta_k) \\
+\theta_{k-1} + \omega \Delta t \\
+v_{k-1}
+\end{bmatrix}$$
+
+where $\omega$ is the turn rate and $\Delta t$ is the time step.
+
+The Jacobian $F_k = \frac{\partial f}{\partial x}$ is:
+$$F_k = \begin{bmatrix}
+1 & 0 & \frac{v_{k-1}}{\omega} \cos(\theta_k) & \frac{1}{\omega} \sin(\theta_k) \\
+0 & 1 & \frac{v_{k-1}}{\omega} \sin(\theta_k) & -\frac{1}{\omega} \cos(\theta_k) \\
+0 & 0 & 1 & 0 \\
+0 & 0 & 0 & 1
+\end{bmatrix}$$
+
+Note the coupling between position and heading derivatives—this is characteristic of nonlinear systems.
+
+### 3.3 Computing Jacobians in Practice
+
+```python
+import numpy as np
+from scipy.optimize import approx_fprime
+
+# For simple functions, compute Jacobians analytically (preferred)
+def f_nonlinear(x, u, dt):
+    """Nonlinear constant-turn model"""
+    x_new = np.zeros_like(x)
+    omega = u[0]  # turn rate
+    v = x[3]      # speed
+    theta = x[2]
+
+    x_new[0] = x[0] + (v / omega) * np.sin(theta + omega * dt) - (v / omega) * np.sin(theta)
+    x_new[1] = x[1] - (v / omega) * np.cos(theta + omega * dt) + (v / omega) * np.cos(theta)
+    x_new[2] = x[2] + omega * dt
+    x_new[3] = x[3]
+
+    return x_new
+
+def F_jacobian_analytical(x, u, dt):
+    """Analytical Jacobian (preferred)"""
+    omega = u[0]
+    v = x[3]
+    theta = x[2]
+
+    F = np.eye(4)
+    F[0, 2] = (v / omega) * np.cos(theta + omega * dt)
+    F[0, 3] = (1 / omega) * (np.sin(theta + omega * dt) - np.sin(theta))
+
+    F[1, 2] = (v / omega) * np.sin(theta + omega * dt)
+    F[1, 3] = -(1 / omega) * (np.cos(theta + omega * dt) - np.cos(theta))
+
+    return F
+
+# Numerical Jacobian (for testing or when analytical is too complex)
+def F_jacobian_numerical(x, u, dt, eps=1e-6):
+    """Compute Jacobian numerically using finite differences"""
+    n = len(x)
+    F = np.zeros((n, n))
+
+    f_x = f_nonlinear(x, u, dt)
+
+    for i in range(n):
+        x_pert = x.copy()
+        x_pert[i] += eps
+        f_x_pert = f_nonlinear(x_pert, u, dt)
+        F[:, i] = (f_x_pert - f_x) / eps
+
+    return F
+
+# Test both methods
+x = np.array([0.0, 0.0, np.pi/4, 1.0])
+u = np.array([0.1])  # turn rate
+dt = 0.1
+
+F_analytical = F_jacobian_analytical(x, u, dt)
+F_numerical = F_jacobian_numerical(x, u, dt)
+
+print("Analytical Jacobian:\n", F_analytical)
+print("\nNumerical Jacobian:\n", F_numerical)
+print("\nDifference:\n", np.abs(F_analytical - F_numerical))
+```
+
+---
+
+## 4. When Does EKF Work (and When Doesn't It)?
+
+### 4.1 EKF Limitations
+
+The EKF is based on first-order linearization. It works well when:
+- Nonlinearities are mild (second derivatives are small)
+- State estimates are close to the true state (linearization error is small)
+- Process and measurement noise are relatively small
+- The system is locally observable
+
+The EKF can fail when:
+- **Strong nonlinearities**: Linearization error becomes significant
+- **Poor initial estimate**: Filter diverges if far from true state
+- **Unobservable regions**: In some state regions, measurements provide no information
+- **Multimodal posteriors**: True posterior has multiple peaks; Gaussian assumption breaks down
+
+### 4.2 Filter Consistency and Monitoring
+
+The EKF is **consistent** if the actual state estimation error statistics match the reported covariance. Monitor this by checking **innovations** $y_k = z_k - h(\hat{x}_k^-)$:
+
+- **Innovations should be zero-mean** (no bias in filter)
+- **Innovations should be white** (no correlation in time)
+- **Innovations should have covariance equal to predicted covariance** $H_k P_k^- H_k^T + R_k$
+
+If innovations fail these tests, the filter is inconsistent and needs tuning or a better model.
+
+```python
+def check_filter_consistency(innovations, S_history):
+    """
+    Check if innovations are white, zero-mean, and have correct covariance
+    innovations: array of shape (n_steps, n_measurements)
+    S_history: list of predicted innovation covariances S_k = H P^- H^T + R
+    """
+    n_steps = innovations.shape[0]
+
+    # Check mean
+    innovation_mean = np.mean(innovations, axis=0)
+    print(f"Innovation mean: {innovation_mean} (should be ~0)")
+
+    # Check covariance
+    innovation_cov = np.cov(innovations.T)
+    avg_S = np.mean(S_history, axis=0)
+
+    print(f"Empirical innovation covariance:\n{innovation_cov}")
+    print(f"Expected innovation covariance:\n{avg_S}")
+
+    # Normalized Innovation Squared (NIS) test
+    NIS = []
+    for k in range(n_steps):
+        S_k = S_history[k]
+        y_k = innovations[k].reshape(-1, 1)
+        nis_k = y_k.T @ np.linalg.inv(S_k) @ y_k
+        NIS.append(nis_k.item())
+
+    # NIS should be chi-squared distributed with n_meas degrees of freedom
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(10, 6))
+    plt.plot(NIS, 'b-', label='NIS')
+    plt.axhline(y=np.mean(innovations.shape[1]), color='r', linestyle='--', label='Expected')
+    plt.xlabel('Time step')
+    plt.ylabel('NIS')
+    plt.legend()
+    plt.grid(True)
+    plt.title('Normalized Innovation Squared (NIS)')
+    plt.show()
+
+    return innovation_mean, innovation_cov, NIS
+```
+
+---
+
+## 5. Error-State Kalman Filter (ESKF)
+
+### 5.1 Motivation for Error-State Formulation
+
+In direct (total-state) EKF, we filter the full state $x_k$. However, in many navigation applications—especially inertial navigation—it's more practical and accurate to filter only the **error state** $\delta x_k$.
+
+**Why?**
+
+1. **Small-angle approximation**: Errors in orientation are small, so $\delta \theta \ll 1$. We can use linear approximations like $\sin(\delta \theta) \approx \delta \theta$.
+
+2. **Avoiding manifold constraints**: Attitude (rotation) lives on a manifold (SO(3)), not in Euclidean space. By filtering error in attitude (a vector), we avoid quaternion constraints and singularities.
+
+3. **High-frequency integration**: IMU data comes at 400+ Hz. We integrate the nominal state at this high rate without noise, and apply filter corrections at lower rates (10-100 Hz). This decouples high-rate propagation from filter updates.
+
+4. **Numerical stability**: Error states are often much smaller than total states, reducing numerical issues.
+
+### 5.2 Error-State Decomposition
+
+We decompose the true state as:
+$$x_k^{\text{true}} = x_k^{\text{nom}} \oplus \delta x_k$$
+
+where:
+- $x_k^{\text{nom}}$: **nominal state** (best guess, integrated deterministically)
+- $\delta x_k$: **error state** (small perturbation we estimate)
+- $\oplus$: **manifold addition** (for general states, just regular addition for Euclidean state)
+
+For a simple case (position only):
+$$x_k^{\text{true}} = x_k^{\text{nom}} + \delta x_k$$
+
+For attitude (represented as a rotation matrix $R_k$):
+$$R_k^{\text{true}} = R_k^{\text{nom}} \exp(\delta \boldsymbol{\theta}_k^{\times})$$
+
+where $\delta \boldsymbol{\theta}_k$ is a small error rotation vector, and $\exp(\cdot^{\times})$ is the matrix exponential.
+
+### 5.3 Error-State Dynamics
+
+The key insight: if we integrate the nominal state without noise, then:
+$$\delta x_k = x_k^{\text{true}} - x_k^{\text{nom}} \approx \text{small}$$
+
+The error dynamics become approximately linear (under small-error assumption):
+$$\delta x_k \approx F_k \delta x_{k-1} + w_k$$
+$$\delta z_k \approx H_k \delta x_k + v_k$$
+
+where $F_k$ and $H_k$ are Jacobians computed around the nominal trajectory.
+
+### 5.4 ESKF Workflow
+
+**Offline (continuous or at high rate)**:
+Integrate the nominal state using a high-precision integration (e.g., IMU) without estimating noise:
+$$\dot{x}_k^{\text{nom}} = f(x_k^{\text{nom}}, u_k)$$
+
+**Online (at measurement rate, typically lower)**:
+
+1. **Predict error covariance** (time update):
+   - Compute Jacobian: $F_k = \frac{\partial f}{\partial x}\big|_{x_k^{\text{nom}}}$
+   - Predict: $P_k^- = F_k P_{k-1} F_k^T + Q_k$
+
+2. **When measurement arrives** (measurement update):
+   - Compute measurement Jacobian: $H_k$
+   - Compute innovation: $\delta z_k = z_k - h(x_k^{\text{nom}})$ (measurement minus nominal prediction)
+   - Kalman gain: $K_k = P_k^- H_k^T (H_k P_k^- H_k^T + R_k)^{-1}$
+   - Estimate error: $\delta \hat{x}_k = K_k \delta z_k$
+   - Inject correction: $x_k^{\text{nom}} \leftarrow x_k^{\text{nom}} \oplus \delta \hat{x}_k$
+   - Reset error: $\delta \hat{x}_k \leftarrow 0$
+   - Update covariance: $P_k = (I - K_k H_k) P_k^-$
+
+### 5.5 Why ESKF Approximation Works
+
+Under the small-error assumption, the error dynamics are approximately linear:
+$$\delta x_k = x_k^{\text{true}} - x_k^{\text{nom}} = f(x_k^{\text{true}}, u_k) + w_k - f(x_k^{\text{nom}}, u_k)$$
+
+Using Taylor expansion:
+$$\delta x_k \approx f(x_k^{\text{nom}}, u_k) + F_k (x_k^{\text{true}} - x_k^{\text{nom}}) + w_k - f(x_k^{\text{nom}}, u_k)$$
+$$= F_k \delta x_{k-1} + w_k$$
+
+The approximation is accurate because we neglect $O(\|\delta x\|^2)$ terms, which are negligible when errors are small.
+
+---
+
+## 6. Practical EKF Implementation
+
+### 6.1 Complete EKF Example: 2D Localization with Range-Bearing Measurements
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+class SimpleEKF:
+    """Extended Kalman Filter for 2D localization"""
+
+    def __init__(self, x0, P0, Q, R, landmarks):
+        """
+        x0: initial state [x, y, theta, v]
+        P0: initial covariance
+        Q: process noise covariance
+        R: measurement noise covariance (range)
+        landmarks: list of landmark positions [(x_m, y_m), ...]
+        """
+        self.x = x0
+        self.P = P0
+        self.Q = Q
+        self.R = R
+        self.landmarks = landmarks
+        self.dt = 0.1
+
+        self.history = {'x': [x0], 'P_diag': [np.diag(P0)]}
+
+    def process_model(self, x, u):
+        """Nonlinear process model: constant velocity + turn rate"""
+        x_new = np.zeros_like(x)
+        v, omega = u
+
+        x_new[0] = x[0] + v * np.cos(x[2]) * self.dt
+        x_new[1] = x[1] + v * np.sin(x[2]) * self.dt
+        x_new[2] = x[2] + omega * self.dt
+        x_new[3] = v
+
+        return x_new
+
+    def process_jacobian(self, x, u):
+        """Jacobian of process model w.r.t. state"""
+        v = u[0]
+        theta = x[2]
+
+        F = np.eye(4)
+        F[0, 2] = -v * np.sin(theta) * self.dt
+        F[0, 3] = np.cos(theta) * self.dt
+        F[1, 2] = v * np.cos(theta) * self.dt
+        F[1, 3] = np.sin(theta) * self.dt
+
+        return F
+
+    def measurement_model(self, x, landmark_idx):
+        """Range measurement to a landmark"""
+        lm = self.landmarks[landmark_idx]
+        dx = lm[0] - x[0]
+        dy = lm[1] - x[1]
+        r = np.sqrt(dx**2 + dy**2)
+        return np.array([r])
+
+    def measurement_jacobian(self, x, landmark_idx):
+        """Jacobian of measurement model w.r.t. state"""
+        lm = self.landmarks[landmark_idx]
+        dx = lm[0] - x[0]
+        dy = lm[1] - x[1]
+        r = np.sqrt(dx**2 + dy**2)
+
+        H = np.zeros((1, 4))
+        H[0, 0] = -dx / r
+        H[0, 1] = -dy / r
+
+        return H
+
+    def predict(self, u):
+        """EKF prediction step"""
+        # Predict state
+        self.x = self.process_model(self.x, u)
+
+        # Predict covariance
+        F = self.process_jacobian(self.x, u)
+        self.P = F @ self.P @ F.T + self.Q
+
+    def update(self, z, landmark_idx):
+        """EKF update step"""
+        # Measurement Jacobian
+        H = self.measurement_jacobian(self.x, landmark_idx)
+
+        # Innovation
+        z_pred = self.measurement_model(self.x, landmark_idx)
+        y = z - z_pred
+
+        # Innovation covariance
+        S = H @ self.P @ H.T + self.R
+
+        # Kalman gain
+        K = self.P @ H.T / S
+
+        # Update state
+        self.x = self.x + (K * y).flatten()
+
+        # Update covariance
+        self.P = (np.eye(4) - K @ H) @ self.P
+
+    def run_filter(self, measurements, controls):
+        """Run filter over a sequence of measurements"""
+        for z, u in zip(measurements, controls):
+            # Predict
+            self.predict(u)
+
+            # Update with measurement
+            if z is not None:
+                landmark_idx = 0  # assume measurement is to first landmark
+                self.update(np.array([z]), landmark_idx)
+
+            # Record
+            self.history['x'].append(self.x.copy())
+            self.history['P_diag'].append(np.diag(self.P))
+
+# Example: simulate robot moving with range measurements to a landmark
+landmarks = [(10.0, 10.0)]  # One landmark at (10, 10)
+
+# Initial state: [x, y, theta, v]
+x0 = np.array([0.0, 0.0, 0.0, 1.0])
+P0 = np.diag([1.0, 1.0, 0.1, 0.1])
+
+# Noise covariances
+Q = np.diag([0.01, 0.01, 0.01, 0.0])  # Process noise
+R = np.array([[0.5]])  # Range measurement noise
+
+ekf = SimpleEKF(x0, P0, Q, R, landmarks)
+
+# Simulate
+np.random.seed(42)
+n_steps = 50
+measurements = []
+controls = []
+
+x_true = x0.copy()
+for k in range(n_steps):
+    # True dynamics
+    v = 1.0
+    omega = 0.02  # slow turn
+    u = np.array([v, omega])
+
+    x_true[0] += v * np.cos(x_true[2]) * 0.1
+    x_true[1] += v * np.sin(x_true[2]) * 0.1
+    x_true[2] += omega * 0.1
+
+    # Measurement: range with noise
+    dx = landmarks[0][0] - x_true[0]
+    dy = landmarks[0][1] - x_true[1]
+    z_true = np.sqrt(dx**2 + dy**2)
+    z_noisy = z_true + np.random.normal(0, np.sqrt(R[0, 0]))
+
+    measurements.append(z_noisy)
+    controls.append(u)
+
+# Run filter
+ekf.run_filter(measurements, controls)
+
+# Plot results
+history = np.array(ekf.history['x'])
+plt.figure(figsize=(12, 8))
+
+plt.subplot(2, 2, 1)
+plt.plot(history[:, 0], history[:, 1], 'b-', label='EKF estimate')
+plt.plot(x0[0], x0[1], 'go', markersize=10, label='Start')
+plt.plot(landmarks[0][0], landmarks[0][1], 'r*', markersize=15, label='Landmark')
+plt.xlabel('X')
+plt.ylabel('Y')
+plt.legend()
+plt.grid(True)
+plt.title('2D Trajectory')
+
+plt.subplot(2, 2, 2)
+plt.plot(history[:, 2], 'b-')
+plt.xlabel('Step')
+plt.ylabel('Heading (rad)')
+plt.grid(True)
+plt.title('Estimated Heading')
+
+plt.subplot(2, 2, 3)
+P_diag = np.array(ekf.history['P_diag'])
+plt.semilogy(np.sqrt(P_diag[:, 0]), label='std(x)')
+plt.semilogy(np.sqrt(P_diag[:, 1]), label='std(y)')
+plt.semilogy(np.sqrt(P_diag[:, 2]), label='std(theta)')
+plt.xlabel('Step')
+plt.ylabel('Uncertainty (1-sigma)')
+plt.legend()
+plt.grid(True)
+plt.title('Estimated Uncertainty')
+
+plt.tight_layout()
+plt.show()
+```
+
+---
+
+## 7. Summary
+
+The Extended Kalman Filter extends Kalman filtering to nonlinear systems through linearization. While not optimal for strongly nonlinear systems, it remains the most widely used estimation algorithm in practice due to:
+
+- **Simplicity**: Easy to implement and understand
+- **Efficiency**: Computationally tractable (O(n³) per step)
+- **Effectiveness**: Works well when nonlinearities are mild
+- **Industry standard**: Decades of practical experience
+
+The Error-State Kalman Filter is a variant that filters estimation errors rather than total states, providing:
+
+- **Better numerical properties**: Small perturbation vectors
+- **Higher frequency integration**: Decouple high-rate propagation from updates
+- **Manifold handling**: Naturally handles attitude without quaternion singularities
+
+In Chapter 3, we introduce the **Unscented Kalman Filter**, which handles nonlinearities more accurately by using deterministic sampling instead of linearization.

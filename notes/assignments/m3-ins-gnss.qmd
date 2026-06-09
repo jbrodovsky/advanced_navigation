@@ -1,0 +1,630 @@
+---
+title: "Assignment 3: INS/GNSS Integration"
+subtitle: "Curved-Earth Navigation with Loosely Coupled Error-State Kalman Filtering"
+author: "Advanced Navigation Course"
+date: "2026-05-19"
+---
+
+# Assignment 3: INS/GNSS Integration
+
+## Overview
+
+In this project, you will implement a complete Inertial Navigation System (INS) with Global Navigation Satellite System (GNSS) integration for a vehicle traveling over long distances where the Earth's curvature cannot be ignored.
+
+You will implement the strapdown mechanization equations in a WGS84 geodetic frame, build an Error-State Kalman Filter (ESKF) to fuse IMU and GNSS measurements, and analyze real-world performance metrics.
+
+**Estimated time:** 22 hours **Learning outcomes:** - Implement strapdown mechanization on curved Earth (Chapter 7) - Understand IMU error models and characterization (Chapter 8) - Design and implement ESKF with proper error-state dynamics (Chapter 2) - Analyze INS drift and GNSS aiding effectiveness (Chapter 15) - Work with real-world high-rate sensor data
+
+------------------------------------------------------------------------
+
+## Project Architecture
+
+```         
+Raw IMU (400 Hz) → Strapdown Mechanization → Dead Reckoning Navigation
+                          ↓
+                    ESKF Prediction (error-state propagation)
+                          ↓
+GNSS Position/Velocity (1-10 Hz) → ESKF Update (measurement fusion)
+                          ↓
+                    Error Injection & Reset
+                          ↓
+            Optimal Fused Navigation Solution
+```
+
+------------------------------------------------------------------------
+
+## Part A: Curved-Earth Strapdown Mechanization
+
+### Learning Objectives
+
+-   Implement the complete strapdown mechanization equations
+-   Account for Earth rotation rate and transport rate
+-   Handle gravity variation with altitude and latitude
+-   Transform between reference frames correctly
+
+### Background
+
+Unlike flat-earth navigation, when traveling long distances the Earth's curvature and rotation become significant. The mechanization equations in the NED (North-East-Down) frame must account for:
+
+1.  **Gravity variation:** Depends on latitude and altitude (WGS84 model)
+2.  **Earth rotation rate** $\omega_{ie}$: Creates Coriolis effect on accelerometers
+3.  **Transport rate** $\omega_{en}$: Local frame rotates as vehicle moves over curved surface
+
+**Relevant chapters:** - Chapter 7 (INS/GNSS Integration) — complete mechanization with curved Earth - Chapter 14 (Mathematical Reference) — quaternion kinematics, frame transformations - Chapter 8 (INS Error Models) — IMU characteristics and biases
+
+### Specification
+
+Implement a `StrapdownNavigator` class for curved-earth navigation:
+
+``` python
+class StrapdownNavigator:
+    def __init__(self, initial_state_geodetic, imu_params):
+        """
+        initial_state_geodetic: dict with keys:
+            - 'latitude': radians
+            - 'longitude': radians
+            - 'altitude': meters above WGS84 ellipsoid
+            - 'velocity_ned': [v_n, v_e, v_d] in NED frame (m/s)
+            - 'attitude': quaternion [qw, qx, qy, qz]
+
+        imu_params: calibration parameters
+            - 'accel_bias': [ba_x, ba_y, ba_z]
+            - 'gyro_bias': [bg_x, bg_y, bg_z]
+            - 'accel_scale': scale factor matrix
+            - 'gyro_scale': scale factor matrix
+        """
+        self.lat = initial_state_geodetic['latitude']
+        self.lon = initial_state_geodetic['longitude']
+        self.alt = initial_state_geodetic['altitude']
+        self.v_ned = initial_state_geodetic['velocity_ned']
+        self.q = initial_state_geodetic['attitude']  # Body to NED
+        self.imu_params = imu_params
+
+        # WGS84 parameters
+        self.a = 6378137.0  # Semi-major axis (meters)
+        self.e2 = 6.69437999014132e-3  # First eccentricity squared
+        self.omega_ie = 7.2921150e-5  # Earth rotation rate (rad/s)
+
+        self.trajectory = []
+        self.covariance_nominal = None
+
+    def integrate_imu(self, accel_raw, gyro_raw, dt):
+        """
+        Integrate IMU measurements for one time step.
+
+        Args:
+            accel_raw: [ax, ay, az] in body frame (m/s²)
+            gyro_raw: [wx, wy, wz] in body frame (rad/s)
+            dt: time step (seconds)
+        """
+        # Step 1: Apply IMU calibration
+        accel = accel_raw - self.imu_params['accel_bias']
+        gyro = gyro_raw - self.imu_params['gyro_bias']
+
+        # Scale factors (if needed)
+        accel = self.imu_params['accel_scale'] @ accel
+        gyro = self.imu_params['gyro_scale'] @ gyro
+
+        # Step 2: Update attitude (quaternion integration)
+        self.q = self._update_attitude(self.q, gyro, dt)
+
+        # Step 3: Rotate acceleration to NED frame
+        R_b2n = self._quat_to_rotation_matrix(self.q)
+        accel_ned = R_b2n @ accel
+
+        # Step 4: Compute Coriolis and centrifugal effects
+        omega_ie_n = np.array([
+            self.omega_ie * np.cos(self.lat),
+            0,
+            -self.omega_ie * np.sin(self.lat)
+        ])
+
+        omega_en_n = np.array([
+            self.v_ned[1] / (self.get_meridian_radius() + self.alt),
+            -self.v_ned[0] / (self.get_prime_vertical_radius() + self.alt),
+            -self.v_ned[1] * np.tan(self.lat) / \
+            (self.get_prime_vertical_radius() + self.alt)
+        ])
+
+        # Total rotation rate in NED frame
+        omega_n = omega_ie_n + omega_en_n
+
+        # Coriolis acceleration: -2 * omega_ie × v
+        f_coriolis = -2 * self._skew_symmetric(omega_ie_n) @ self.v_ned
+
+        # Step 5: Gravity at current location (WGS84 model)
+        g_n = self._compute_gravity(self.lat, self.alt)
+
+        # Step 6: Update velocity
+        f_total = accel_ned + f_coriolis + np.array([0, 0, g_n])
+        self.v_ned = self.v_ned + f_total * dt
+
+        # Step 7: Update position
+        self._update_position(self.v_ned, dt)
+
+        # Step 8: Normalize quaternion
+        self.q = self.q / np.linalg.norm(self.q)
+
+        # Record state
+        self.trajectory.append({
+            'timestamp': time.time(),
+            'lat': self.lat,
+            'lon': self.lon,
+            'alt': self.alt,
+            'v_ned': self.v_ned.copy(),
+            'q': self.q.copy()
+        })
+
+    def _update_attitude(self, q, gyro, dt):
+        """
+        Update quaternion using integrated rotation.
+        q_new = q_old * exp(0.5 * integrated_rotation_vector)
+        """
+        rotation_vec = gyro * dt
+        rotation_angle = np.linalg.norm(rotation_vec)
+
+        if rotation_angle < 1e-10:
+            # Small angle approximation
+            dq = np.array([1, 0.5*gyro[0]*dt, 0.5*gyro[1]*dt, 0.5*gyro[2]*dt])
+        else:
+            # Full rotation
+            axis = rotation_vec / rotation_angle
+            half_angle = rotation_angle / 2
+            dq = np.concatenate([
+                [np.cos(half_angle)],
+                np.sin(half_angle) * axis
+            ])
+
+        # Quaternion multiplication: q_new = dq * q
+        return self._quat_multiply(dq, q)
+
+    def _update_position(self, v_ned, dt):
+        """Update latitude, longitude, altitude from velocity."""
+        # Radii of curvature
+        R_m = self.get_meridian_radius()
+        R_p = self.get_prime_vertical_radius()
+
+        # Rate of change of geodetic position
+        dLat = v_ned[0] / (R_m + self.alt)
+        dLon = v_ned[1] / ((R_p + self.alt) * np.cos(self.lat))
+        dAlt = -v_ned[2]
+
+        self.lat += dLat * dt
+        self.lon += dLon * dt
+        self.alt += dAlt * dt
+
+    def get_meridian_radius(self):
+        """Radius of curvature in meridian (north-south)."""
+        denom = 1 - self.e2 * np.sin(self.lat)**2
+        return self.a * (1 - self.e2) / denom**1.5
+
+    def get_prime_vertical_radius(self):
+        """Radius of curvature in prime vertical (east-west)."""
+        denom = 1 - self.e2 * np.sin(self.lat)**2
+        return self.a / np.sqrt(denom)
+
+    def _compute_gravity(self, lat, alt):
+        """
+        WGS84 gravity model.
+        Returns: magnitude of gravity (positive downward)
+        """
+        sin_lat = np.sin(lat)
+        sin2_lat = sin_lat**2
+
+        # Closed-form WGS84 gravity
+        g_0 = 9.7803253359
+        g_a = 0.0053024 * sin2_lat
+        g_b = 0.0000058 * sin2_lat**2
+        g_surface = g_0 * (1 + g_a - g_b)
+
+        # Altitude correction
+        g = g_surface - 3.087e-6 * alt
+
+        return g
+
+    def _skew_symmetric(self, v):
+        """Create skew-symmetric (cross-product) matrix."""
+        return np.array([
+            [0, -v[2], v[1]],
+            [v[2], 0, -v[0]],
+            [-v[1], v[0], 0]
+        ])
+
+    def _quat_multiply(self, q1, q2):
+        """Multiply two quaternions."""
+        w1, x1, y1, z1 = q1
+        w2, x2, y2, z2 = q2
+
+        return np.array([
+            w1*w2 - x1*x2 - y1*y2 - z1*z2,
+            w1*x2 + x1*w2 + y1*z2 - z1*y2,
+            w1*y2 - x1*z2 + y1*w2 + z1*x2,
+            w1*z2 + x1*y2 - y1*x2 + z1*w2
+        ])
+
+    def _quat_to_rotation_matrix(self, q):
+        """Convert quaternion to rotation matrix (body to NED)."""
+        w, x, y, z = q
+        return np.array([
+            [1 - 2*(y**2 + z**2), 2*(x*y - w*z), 2*(x*z + w*y)],
+            [2*(x*y + w*z), 1 - 2*(x**2 + z**2), 2*(y*z - w*x)],
+            [2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x**2 + y**2)]
+        ])
+
+    def get_state(self):
+        """Return current navigation state."""
+        return {
+            'latitude': self.lat,
+            'longitude': self.lon,
+            'altitude': self.alt,
+            'velocity_ned': self.v_ned,
+            'attitude': self.q
+        }
+```
+
+### Deliverables for Part A
+
+1.  **Mechanization Implementation:**
+    -   Complete `StrapdownNavigator` class above
+    -   Verify quaternion integration (check norm stays 1.0)
+    -   Test gravity model at various latitudes/altitudes
+2.  **Dead Reckoning Results:**
+    -   Integrate IMU from start to end of trajectory
+    -   Plot trajectory in geodetic coordinates (lat/lon map)
+    -   Compare against ground truth
+    -   Quantify drift rate (position error vs. time)
+3.  **Analysis:**
+    -   Show effect of not removing Coriolis (vs. with removal)
+    -   Show effect of gravity variation
+    -   Estimate how long INS can run without GNSS before drift exceeds threshold (e.g., 1 km)
+
+------------------------------------------------------------------------
+
+## Part B: Error-State Kalman Filter (ESKF)
+
+### Learning Objectives
+
+-   Understand error-state dynamics vs. nominal-state dynamics
+-   Implement ESKF prediction with linearized error models
+-   Design measurement updates for GNSS aiding
+
+### Background
+
+Rather than filtering the full 15-dimensional state (position, velocity, attitude, gyro bias, accel bias), the ESKF filters a much smaller error state while the nominal state is propagated nonlinearly. This dramatically improves numerical stability and computational efficiency.
+
+**Relevant chapters:** - Chapter 2 (Bayes Filter and EKF) — complete ESKF theory - Chapter 7 (INS/GNSS) — ESKF for INS - Chapter 14 (Mathematical Reference) — Jacobian derivations - Chapter 15 (Practical Guide) — numerical stability
+
+### Error State Definition
+
+Define error state as perturbations around nominal state:
+
+$$\delta\mathbf{x} = \begin{bmatrix}
+\delta\mathbf{p} \\
+\delta\mathbf{v} \\
+\delta\boldsymbol{\theta} \\
+\delta\mathbf{b}_a \\
+\delta\mathbf{b}_g
+\end{bmatrix}$$
+
+where: - $\delta\mathbf{p}$: position error \[3×1\] - $\delta\mathbf{v}$: velocity error \[3×1\] - $\delta\boldsymbol{\theta}$: attitude error (small rotation vector) \[3×1\] - $\delta\mathbf{b}_a$: accelerometer bias error \[3×1\] - $\delta\mathbf{b}_g$: gyroscope bias error \[3×1\]
+
+Total error state dimension: 15.
+
+### Specification
+
+Implement an `INSGNSSFilter` class:
+
+``` python
+class INSGNSSFilter:
+    def __init__(self, navigator, initial_covariance, Q, R):
+        """
+        navigator: StrapdownNavigator instance
+        initial_covariance: 15×15 initial covariance of error state
+        Q: 15×15 process noise covariance
+        R: 3×3 GNSS position measurement noise
+        """
+        self.nav = navigator
+        self.P = initial_covariance  # Error-state covariance
+        self.Q = Q
+        self.R = R
+
+        # Error state (initialized to zero, meaning no error)
+        self.delta_x = np.zeros(15)
+
+        self.innovations = []
+        self.chi2_sequence = []
+
+    def predict_with_imu(self, accel, gyro, dt):
+        """
+        Prediction step: propagate error-state covariance.
+        The nominal state is updated by StrapdownNavigator.integrate_imu().
+        """
+        # Step 1: Propagate nominal state
+        self.nav.integrate_imu(accel, gyro, dt)
+
+        # Step 2: Compute error-state Jacobian F at current nominal state
+        F = self._compute_error_state_jacobian(accel, gyro, dt)
+
+        # Step 3: Propagate covariance
+        # P_k = F * P_{k-1} * F^T + Q
+        self.P = F @ self.P @ F.T + self.Q
+
+        # Ensure symmetry (numerical stability)
+        self.P = 0.5 * (self.P + self.P.T)
+
+    def update_with_gnss(self, gnss_position, gnss_velocity=None):
+        """
+        Update step: fuse GNSS measurements.
+
+        Args:
+            gnss_position: [lat, lon, alt] or LLA vector
+            gnss_velocity: [v_n, v_e, v_d] in NED (optional)
+        """
+        # Measurement: GNSS position
+        z = np.array(gnss_position)
+
+        # Measurement function: h(x) = position (in ECEF or similar)
+        # For simplicity, use position directly
+        z_pred = np.array([self.nav.lat, self.nav.lon, self.nav.alt])
+
+        # Measurement Jacobian (only depends on position)
+        H = np.zeros((3, 15))
+        H[0:3, 0:3] = np.eye(3)  # Gradient w.r.t. position
+
+        # Innovation
+        nu = z - z_pred
+        self.innovations.append(nu)
+
+        # Innovation covariance
+        S = H @ self.P @ H.T + self.R
+
+        # Kalman gain
+        K = self.P @ H.T @ np.linalg.inv(S)
+
+        # Update error state
+        self.delta_x = self.delta_x + K @ nu
+
+        # Update covariance (Joseph form for stability)
+        I_KH = np.eye(15) - K @ H
+        self.P = I_KH @ self.P @ I_KH.T + K @ self.R @ K.T
+
+        # Normalize (ensure symmetry)
+        self.P = 0.5 * (self.P + self.P.T)
+
+        # Diagnostic: compute normalized innovation
+        chi2 = nu.T @ np.linalg.inv(S) @ nu
+        self.chi2_sequence.append(chi2)
+
+        # Step 4: Error injection (correct nominal state by error state)
+        self._inject_error_state()
+
+    def _compute_error_state_jacobian(self, accel, gyro, dt):
+        """
+        Compute Jacobian F of error-state dynamics.
+        This is complex; use numerical differentiation if needed.
+        """
+        eps = 1e-7
+        F = np.zeros((15, 15))
+
+        # [Simplified] Approximate Jacobian structure
+        # For a complete implementation, refer to Chapter 14 or appendix
+
+        # Position ← velocity
+        F[0:3, 3:6] = np.eye(3) * dt
+
+        # Velocity ← attitude error (acceleration depends on orientation)
+        R = self.nav._quat_to_rotation_matrix(self.nav.q)
+        accel_corrected = accel - self.nav.imu_params['accel_bias']
+        accel_ned = R @ accel_corrected
+
+        F[3:6, 6:9] = -self.nav._skew_symmetric(accel_ned) * dt
+
+        # Velocity ← accel bias
+        F[3:6, 9:12] = -R * dt
+
+        # Attitude ← gyro bias
+        F[6:9, 12:15] = -np.eye(3) * dt
+
+        # Biases evolve as random walk
+        # (diagonal elements already 1, off-diagonals are 0)
+
+        return F
+
+    def _inject_error_state(self):
+        """
+        Correct nominal state with error state, then reset error to zero.
+        """
+        # Position correction
+        dlat, dlon, dalt = self.delta_x[0:3]
+        self.nav.lat += dlat
+        self.nav.lon += dlon
+        self.nav.alt += dalt
+
+        # Velocity correction
+        self.nav.v_ned += self.delta_x[3:6]
+
+        # Attitude correction (small angle rotation)
+        dtheta = self.delta_x[6:9]
+        dq = np.array([1, dtheta[0]/2, dtheta[1]/2, dtheta[2]/2])
+        self.nav.q = self.nav._quat_multiply(dq, self.nav.q)
+        self.nav.q /= np.linalg.norm(self.nav.q)
+
+        # Bias corrections
+        self.nav.imu_params['accel_bias'] += self.delta_x[9:12]
+        self.nav.imu_params['gyro_bias'] += self.delta_x[12:15]
+
+        # Reset error state
+        self.delta_x = np.zeros(15)
+
+    def get_state(self):
+        """Return navigation state and uncertainty."""
+        return {
+            'position': self.nav.get_state(),
+            'covariance': self.P,
+            'error_state': self.delta_x
+        }
+
+    def diagnose_filter(self):
+        """
+        Consistency check using normalized innovations.
+        """
+        chi2_mean = np.mean(self.chi2_sequence)
+        print(f"Mean χ²: {chi2_mean:.2f} (expected: 3.0)")
+
+        if chi2_mean > 6:
+            print("⚠ UNDERCONFIDENT: GNSS measurement noise too low")
+        elif chi2_mean < 1.5:
+            print("⚠ OVERCONFIDENT: GNSS measurement noise too high")
+        else:
+            print("✓ CONSISTENT: Filter tuned correctly")
+```
+
+### Deliverables for Part B
+
+1.  **ESKF Implementation:**
+    -   Implement `INSGNSSFilter` class with prediction and update steps
+    -   Test state propagation accuracy
+    -   Verify Jacobian computation (numerical vs. analytical)
+2.  **Covariance Evolution:**
+    -   Plot diagonal elements of P vs. time
+    -   Show growth during prediction, decrease during updates
+    -   Discuss physical meaning of each covariance component
+3.  **Consistency Testing:**
+    -   Compute χ² sequence from innovations
+    -   Plot histogram of χ² values
+    -   Verify mean ≈ 3 (3-dimensional measurement)
+    -   If inconsistent, adjust Q and R
+
+------------------------------------------------------------------------
+
+## Part C: Performance Analysis
+
+### Learning Objectives
+
+-   Evaluate filter performance against ground truth
+-   Characterize IMU drift and GNSS aiding effectiveness
+-   Compute standard navigation error metrics
+
+### Specification
+
+Implement performance evaluation:
+
+``` python
+class NavigationEvaluator:
+    def __init__(self, estimated_trajectory, ground_truth_trajectory):
+        """
+        estimated_trajectory: list of (lat, lon, alt) estimates
+        ground_truth_trajectory: list of (lat, lon, alt) ground truth
+        """
+        self.est = np.array(estimated_trajectory)
+        self.gt = np.array(ground_truth_trajectory)
+
+    def compute_absolute_pose_error(self):
+        """APE: RMS position error."""
+        errors = self._geodetic_distance(self.est, self.gt)
+        return np.sqrt(np.mean(errors**2))
+
+    def compute_relative_pose_error(self, window_size=100):
+        """RPE: error in relative motion over windows."""
+        errors = []
+        for i in range(0, len(self.est) - window_size):
+            est_displacement = self._geodetic_distance(
+                self.est[i+window_size], self.est[i]
+            )
+            gt_displacement = self._geodetic_distance(
+                self.gt[i+window_size], self.gt[i]
+            )
+            errors.append(abs(est_displacement - gt_displacement))
+
+        return np.sqrt(np.mean(np.array(errors)**2))
+
+    def compute_drift_rate(self):
+        """Position error growth rate (m/min)."""
+        errors = self._geodetic_distance(self.est, self.gt)
+        time_minutes = np.arange(len(errors)) * (1/60)  # Assuming 60 Hz
+
+        # Fit linear drift
+        z = np.polyfit(time_minutes, errors, 1)
+        return z[0]  # Slope in m/min
+
+    def _geodetic_distance(self, pos1, pos2):
+        """Haversine distance between two geodetic points."""
+        lat1, lon1 = pos1[:2]
+        lat2, lon2 = pos2[:2]
+
+        R = 6371000  # Earth radius in meters
+
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+
+        a = np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
+        c = 2 * np.arcsin(np.sqrt(a))
+
+        return R * c
+```
+
+### Deliverables for Part C
+
+1.  **Metric Computation:**
+    -   Compute APE (Absolute Pose Error)
+    -   Compute RPE (Relative Pose Error) over 1-minute windows
+    -   Compute drift rate
+2.  **Comparison Results:**
+    -   Create table comparing:
+        -   Dead Reckoning (Part A) only
+        -   GNSS only
+        -   Fused INS/GNSS (full filter)
+    -   Show APE, RPE, drift rate for each
+3.  **Visualization:**
+    -   Plot trajectory map (lat/lon): estimated vs. ground truth
+    -   Plot position error vs. time
+    -   Plot GNSS outage behavior (how long filter can coast)
+4.  **Report:**
+    -   Discuss when INS is most valuable (e.g., GNSS denial, high dynamics)
+    -   Identify failure modes (if any)
+    -   Recommend improvements
+
+------------------------------------------------------------------------
+
+## Provided Data
+
+### INS/GNSS Dataset
+
+Available at: https://github.com/jbrodovsky/mems-nav-dataset/tree/main/data/input
+
+-   High-rate IMU measurements (200-400 Hz): accelerometer, gyroscope
+-   GNSS position/velocity (1-10 Hz depending on scenario)
+-   Ground truth reference trajectory
+-   Sensor specifications and calibration parameters
+
+### Dataset Format
+
+Typically provided as CSV or binary with fields:
+
+```         
+timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, [lat, lon, alt, v_n, v_e, v_d]
+```
+
+------------------------------------------------------------------------
+
+## Grading Rubric
+
+| Component | Full (10) | Partial (5) | Minimal (2) | Missing (0) |
+|---------------|---------------|---------------|---------------|---------------|
+| **Part A: Mechanization** | Correct gravity model, Coriolis effects, quaternion integration | Mostly correct but numerical issues | Only Euler angle implementation | No implementation |
+| **Part B: ESKF** | Correct Jacobians, error injection, Joseph form covariance | Working but Jacobians numerical only | Oversimplified (linear) | No ESKF |
+| **Part C: Performance** | APE/RPE computed, comparisons made, analysis deep | Metrics present but limited insight | Only final error reported | No evaluation |
+| **Code Quality** | Well-structured classes, clear comments, modular | Functional but tangled | Barely functional | Unrunnable |
+| **Results** | Comprehensive plots, meaningful conclusions | Plots present, shallow analysis | Minimal plots | No results |
+
+------------------------------------------------------------------------
+
+## References
+
+-   Chapter 2: Extended Kalman Filter and Error-State Kalman Filter
+-   Chapter 7: INS/GNSS Integration (mechanization equations, earth models)
+-   Chapter 8: INS Error Models (sensor specifications, biases)
+-   Chapter 14: Mathematical Reference (Jacobian computation, quaternions)
+-   Chapter 15: Practical Implementation Guide (debugging, validation)
+-   Farrell, J. A. (2008). Aided Navigation: GPS with High-Rate Sensors
+-   Grewal, M. S., Weill, L. R., & Andrews, A. P. (2007). Global Positioning Systems, Inertial Navigation, and Integration

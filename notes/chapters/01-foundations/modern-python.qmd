@@ -1,0 +1,138 @@
+---
+title: "Modern Python Refresher"
+subtitle: "Practical Python patterns for navigation coursework"
+author: "James Brodovsky"
+date: "2026-06-06"
+---
+
+# Modern Python Refresher
+
+This chapter is a practical refresh on Python tools and patterns used throughout the course. It assumes prior Python experience and focuses on habits that make numerical and estimation code reliable.
+
+## Python Version and Environment
+
+Use a modern Python 3 release and isolate dependencies per project.
+
+Recommended baseline workflow:
+
+1. Create virtual environment.
+2. Install core scientific stack.
+3. Pin versions for reproducibility.
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install numpy scipy matplotlib jupyter
+```
+
+## Core Language Features to Use
+
+### Type Hints and Dataclasses
+
+Type hints improve readability and editor/tooling support.
+
+```python
+from dataclasses import dataclass
+import numpy as np
+
+@dataclass
+class FilterState:
+		x: np.ndarray
+		P: np.ndarray
+		t: float
+```
+
+### Structured Iteration
+
+Prefer explicit, readable loops and vectorized operations where they improve clarity and performance.
+
+```python
+for k, z_k in enumerate(measurements):
+		x_pred, P_pred = predict(x, P, dt)
+		x, P = update(x_pred, P_pred, z_k)
+```
+
+## Numerical Computing Patterns (NumPy)
+
+### Shape Discipline
+
+Be explicit about vector/matrix shapes to avoid silent bugs.
+
+- State vector as `(n, 1)` or `(n,)` consistently across codebase.
+- Measurement matrices aligned with model equations.
+
+```python
+import numpy as np
+
+F = np.array([[1.0, dt], [0.0, 1.0]])
+Q = np.diag([q_pos, q_vel])
+x = np.array([x0, v0], dtype=float)
+P = np.eye(2) * 10.0
+```
+
+### Stable Linear Solves
+
+Prefer `np.linalg.solve` to explicit inverse.
+
+```python
+S = H @ P_pred @ H.T + R
+K = np.linalg.solve(S.T, (H @ P_pred.T)).T
+```
+
+## Project Structure for Assignments
+
+Keep code modular and testable.
+
+Suggested minimal structure:
+
+```text
+project/
+	src/
+		models.py
+		filters.py
+		simulation.py
+	tests/
+		test_filters.py
+	notebooks/
+		experiments.ipynb
+```
+
+## Testing and Validation
+
+For estimation code, tests should check both correctness and behavior.
+
+What to test:
+
+- Dimensions and shape invariants
+- Symmetry/PSD properties of covariance updates
+- Performance on synthetic trajectories with known truth
+- Regression tests for previously fixed bugs
+
+```python
+def test_covariance_is_symmetric(P):
+		assert np.allclose(P, P.T, atol=1e-10)
+```
+
+## Visualization Habits
+
+Plot diagnostics routinely:
+
+- Ground truth vs estimate
+- Residuals and innovations
+- Estimated uncertainty over time
+
+Readable diagnostic plotting often catches model and tuning issues before deep debugging.
+
+## Common Mistakes
+
+- Mixing radians and degrees in the same pipeline.
+- Silent shape broadcasting errors.
+- Hard-coding constants instead of configuration values.
+- Writing all logic in notebooks without reusable modules.
+
+## Quick Exercise Set
+
+1. Implement predict/update functions for a 1D constant-velocity Kalman filter.
+2. Add assertions for matrix dimension checks and covariance symmetry.
+3. Generate synthetic data and compare RMSE for two different process-noise settings.
+

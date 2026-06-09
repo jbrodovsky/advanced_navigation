@@ -1,0 +1,5 @@
+readings/
+/.quarto/
+**/*.quarto_ipynb
+attic/
+lectures/

@@ -1,0 +1,115 @@
+project:
+  type: book
+  output-dir: output
+
+website:
+  title: "Advanced Autonomous Navigation"
+  description: "Bridging Robotics and Aerospace Navigation"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Home
+      - href: syllabus.qmd
+        text: Syllabus
+      - text: "Module 1: Flat Earth"
+        menu:
+          - chapters/ch01-intro.qmd
+          - chapters/ch02-bayes.qmd
+          - chapters/ch03-ukf.qmd
+          - chapters/ch04-pf.qmd
+          - assignments/m1-drone-pipeline.qmd
+      - text: "Module 2: SLAM"
+        menu:
+          - chapters/ch05-mapping.qmd
+          - chapters/ch06-slam.qmd
+          - assignments/m2-victoria-park.qmd
+      - text: "Module 3: Global INS/GNSS"
+        menu:
+          - chapters/ch07-ins-gnss.qmd
+          - assignments/m3-ins-gnss.qmd
+    right:
+      - icon: github
+        href: https://github.com/yourusername/advanced-navigation
+      - text: "Download PDF Book"
+        href: book.pdf
+
+book:
+  title: "Advanced Autonomous Navigation"
+  subtitle: "A Practical Guide to State Estimation, Simultaneous Localization and Mapping (SLAM), and Inertial Navigation for Roboticists and Autonomous Vehicle Engineers"
+  author: "James Brodovsky"
+  chapters:
+    - index.qmd # Also the home page
+    - part: "Introduction"
+      chapters:
+        - chapters/00-intro/intro.qmd
+        - chapters/00-intro/syllabus.qmd
+        - chapters/00-intro/navigation-overview.qmd
+    - part: "Foundations"
+      chapters:
+        - chapters/01-foundations/foundations.qmd
+        - chapters/01-foundations/linear-algebra.qmd
+        - chapters/01-foundations/probability-theory.qmd
+        - chapters/01-foundations/modern-python.qmd
+    - part: "Sensing and Perception"
+      chapters:
+        - chapters/02-sensing/sensing.qmd
+        - chapters/02-sensing/sensor-models.qmd
+        - chapters/02-sensing/measurement-noise.qmd
+        - chapters/02-sensing/data-association.qmd
+        - chapters/02-sensing/pnp-vision.qmd
+    - part: "Filtering and State Estimation"
+      chapters:
+        - chapters/03-filtering/filtering.qmd
+        - chapters/03-filtering/bayes.qmd
+        - chapters/03-filtering/ekf.qmd
+        - chapters/03-filtering/ukf.qmd
+        - chapters/03-filtering/pf.qmd
+        - assignments/m1-drone-pipeline.qmd
+    - part: "Simultaneous Localization and Mapping"
+      chapters:
+        - chapters/04-slam/mapping.qmd
+        - chapters/04-slam/slam.qmd
+        - chapters/04-slam/data-association.qmd
+        - chapters/04-slam/visual-navigation.qmd
+        - chapters/04-slam/loop-closure.qmd
+        - assignments/m2-victoria-park.qmd
+    - part: "Global Scale Navigation"
+      chapters:
+        - chapters/05-global/global-nav.qmd
+        - chapters/05-global/ins-gnss.qmd
+        - chapters/05-global/ins-errors.qmd
+        - assignments/m3-ins-gnss.qmd
+    - part: "Practical Implementation Guide"
+      chapters:
+        - chapters/06-practical/practical-implementation-guide.qmd
+    - part: "Advanced Topics"
+      chapters:
+        - chapters/07-adv/advanced-slam.qmd
+        - chapters/07-adv/system-integration.qmd
+  # toc-depth: 2
+
+bibliography: references.bib
+
+format:
+  html:
+    theme: 
+      light: cosmo
+      dark: darkly
+    code-fold: true
+    toc: true
+    math: true
+  pdf:
+    documentclass: scrreprt
+    number-sections: true
+    colorlinks: false
+    toc: true
+    toc-depth: 2
+  epub:
+    toc: true
+    toc-depth: 2
+    math: true
+    cover: images/cover.png
+
+metadata:
+  copyright: "2024 James Brodovsky"
+

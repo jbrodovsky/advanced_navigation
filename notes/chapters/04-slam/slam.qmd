@@ -1,0 +1,485 @@
+# Simultaneous Localization and Mapping (SLAM)
+
+## Introduction
+
+**SLAM** (Simultaneous Localization and Mapping) is the fundamental problem in autonomous navigation: estimate both the robot's trajectory and the environment map when neither is known a priori.
+
+It's often called the "chicken-and-egg" problem:
+- To localize, you need a map
+- To map, you need to know your location
+
+This chapter presents three major paradigms for solving SLAM, each with different computational and accuracy trade-offs. The choice depends on the system requirements and available computational resources.
+
+---
+
+## 1. The SLAM Problem Formulation
+
+### 1.1 Problem Definition
+
+**Given**:
+- Control inputs: $u_{1:t} = \{u_1, u_2, \ldots, u_t\}$
+- Measurements: $z_{1:t} = \{z_1, z_2, \ldots, z_t\}$
+- (Robot position is unknown; map is unknown)
+
+**Estimate**:
+- Robot trajectory: $x_{1:t} = \{x_1, x_2, \ldots, x_t\}$
+- Environment map: $m = \{\ell_1, \ell_2, \ldots, \ell_M\}$ (set of landmarks)
+
+**Objective**: Compute the joint posterior:
+$$p(x_{1:t}, m | z_{1:t}, u_{1:t})$$
+
+### 1.2 SLAM Variants
+
+**Online SLAM**: Estimate current pose and map:
+$$p(x_t, m | z_{1:t}, u_{1:t})$$
+
+Used in real-time applications where only the current state matters.
+
+**Full SLAM**: Estimate entire trajectory and map:
+$$p(x_{1:t}, m | z_{1:t}, u_{1:t})$$
+
+Used in offline applications where the full trajectory history is valuable (e.g., post-processing, loop closure).
+
+The relationship: Online SLAM is obtained from Full SLAM by integrating out all past poses:
+$$p(x_t, m | z_{1:t}, u_{1:t}) = \int p(x_{1:t}, m | z_{1:t}, u_{1:t}) dx_{1:t-1}$$
+
+---
+
+## 2. EKF-SLAM: The Classical Filtering Approach
+
+### 2.1 The Idea: Augment the State
+
+The simplest SLAM approach: treat landmarks as part of the state vector and apply the Extended Kalman Filter.
+
+**Augmented state**:
+$$\mathbf{y}_t = \begin{bmatrix} x_t \\ m_{1:N} \end{bmatrix} = \begin{bmatrix} x \\ y \\ \theta \\ m_{1,x} \\ m_{1,y} \\ m_{2,x} \\ m_{2,y} \\ \vdots \\ m_{N,x} \\ m_{N,y} \end{bmatrix}$$
+
+where:
+- $(x, y, \theta)$: robot pose (3 DOF in 2D)
+- $m_{i,x}, m_{i,y}$: coordinates of landmark $i$ (2 DOF each)
+- Total state dimension: $3 + 2N$
+
+**Augmented covariance**:
+$$\boldsymbol{\Sigma}_t = \begin{bmatrix}
+\Sigma_x & \Sigma_{xm} \\
+\Sigma_{mx} & \Sigma_m
+\end{bmatrix}$$
+
+where:
+- $\Sigma_x \in \mathbb{R}^{3 \times 3}$: robot pose uncertainty
+- $\Sigma_m \in \mathbb{R}^{2N \times 2N}$: landmark uncertainties
+- $\Sigma_{xm}$: coupling between robot and landmarks (crucial!)
+
+### 2.2 EKF-SLAM Prediction Step
+
+When the robot moves with control $u_t$ but without observing landmarks:
+
+**Update robot pose**:
+$$\hat{x}_t^- = f({\hat{x}}_{t-1}, u_t)$$
+
+(Same as localization-only motion model)
+
+**Landmarks don't move**:
+$$\hat{m}_i^- = \hat{m}_{i,t-1}$$
+
+**Update covariance**:
+$$\Sigma_t^- = \begin{bmatrix}
+F_x & 0 \\
+0 & I
+\end{bmatrix} \Sigma_{t-1} \begin{bmatrix}
+F_x^T & 0 \\
+0 & I
+\end{bmatrix} + Q$$
+
+where $F_x = \frac{\partial f}{\partial x}\big|_{\hat{x}_{t-1}}$ is the motion model Jacobian (3×3).
+
+The key: the landmark positions evolve according to the identity (don't change), but their uncertainty grows due to **robot pose drift** propagating through the coupling terms $\Sigma_{xm}$.
+
+### 2.3 EKF-SLAM Update Step
+
+When a measurement $z_t$ observes landmark $j$:
+
+**Measurement model**: For landmark $j$ at position $\mathbf{m}_j$:
+$$z_t = h(\mathbf{y}_t) = \begin{bmatrix}
+\sqrt{(m_{j,x} - x)^2 + (m_{j,y} - y)^2} \\
+\text{atan2}(m_{j,y} - y, m_{j,x} - x) - \theta
+\end{bmatrix} + v_t$$
+
+This is range-bearing measurement to the landmark.
+
+**Measurement Jacobian**:
+$$H_t = \begin{bmatrix} H_x & \ldots & H_j & \ldots & 0 \end{bmatrix}$$
+
+where $H_x$ (1×3) relates the measurement to robot position/orientation, $H_j$ (2×2) relates to landmark $j$, and other landmarks have zero contribution.
+
+**Kalman gain**:
+$$K_t = \Sigma_t^- H_t^T (H_t \Sigma_t^- H_t^T + R_t)^{-1}$$
+
+**Update**:
+$$\hat{\mathbf{y}}_t = \hat{\mathbf{y}}_t^- + K_t(z_t - h(\hat{\mathbf{y}}_t^-))$$
+
+$$\Sigma_t = (I - K_t H_t) \Sigma_t^-$$
+
+Crucially, the update to landmark position **correlates the robot and landmark uncertainties**. This coupling is what makes EKF-SLAM work: when observing a landmark, we refine both our estimate of the landmark's position *and* the robot's position relative to the landmark.
+
+### 2.4 EKF-SLAM Data Association
+
+A critical step: when a measurement arrives, which landmark does it correspond to?
+
+**Gating**: Compute predicted measurement for each landmark and Mahalanobis distance:
+$$D_j^2 = (z_t - \hat{z}_j)^T S_j^{-1} (z_t - \hat{z}_j)$$
+
+where $S_j = H_j \Sigma_t^- H_j^T + R_t$ is the predicted measurement covariance.
+
+**Association rule**:
+- If $D_j^2 < \chi^2_{\alpha, n}$ for exactly one landmark $j$: associate measurement with landmark $j$
+- If $D_j^2 < \chi^2_{\alpha, n}$ for multiple landmarks: ambiguous (use multi-hypothesis tracking)
+- If no landmark passes the gate: treat as new landmark (initialize)
+
+### 2.5 The O(N²) Problem: Why EKF-SLAM Fails at Scale
+
+The update step requires:
+- Computing $K_t = \Sigma_t^- H_t^T (\ldots)^{-1}$
+- Inverting matrix of size $(3 + 2N) \times (3 + 2N)$: **O(N³) per update**
+
+For real-time SLAM, we need $O(N)$ or $O(N \log N)$ complexity. EKF-SLAM becomes intractable for $N > 1000$ landmarks.
+
+**Solutions**:
+1. **Submapping**: Divide large maps into submaps, run EKF-SLAM on each
+2. **Sparse extended information filter (SEIF)**: Exploit sparsity in the information matrix
+3. Use a different algorithm altogether (FastSLAM or GraphSLAM)
+
+---
+
+## 3. FastSLAM: Particle Filter with Per-Landmark EKFs
+
+### 3.1 The Key Insight: Rao-Blackwellization
+
+FastSLAM exploits conditional independence: **given the robot's trajectory, landmarks are independently observable**.
+
+Proof: The landmark posterior factors as:
+$$p(m | x_{1:t}, z_{1:t}) = \prod_{i=1}^{N} p(m_i | x_{1:t}, z_{1:t})$$
+
+This means:
+- Use a **particle filter** to estimate the robot trajectory $p(x_{1:t} | z_{1:t}, u_{1:t})$
+- For each particle (sampled trajectory), maintain a separate **tiny EKF for each landmark**
+- Each landmark's EKF is 2×2 (position only, no coupling to other landmarks)
+
+**Computational benefit**:
+- Particle filter: O(M) where M is number of particles
+- Per-landmark EKF updates: O(M × N) where N is number of landmarks
+- **Total: O(M × N) instead of O(N³)**
+
+Typically M << N (e.g., 100 particles for 10,000 landmarks → O(10⁶) vs. O(10¹⁵)).
+
+### 3.2 FastSLAM Algorithm
+
+**Initialize**: Create M particles, each with:
+- A pose sample: $x^{(m)}_0$
+- Landmark estimates: One tiny EKF per landmark
+
+**For each time step** $t = 1, 2, 3, \ldots$:
+
+**Prediction** (Same for all particles):
+1. Apply motion model to each particle: $x^{(m)}_t = f(x^{(m)}_{t-1}, u_t)$
+2. Add process noise: $x^{(m)}_t \sim p(x_t | x^{(m)}_{t-1}, u_t)$
+
+**Update** (For each particle):
+1. **Data association**: Using particle's current pose, associate measurement $z_t$ with landmark $j$
+2. **Landmark update**: Update particle's landmark $j$ EKF using the measurement
+   - Compute expected measurement from particle's pose and landmark estimate
+   - Update landmark position using measurement residual
+3. **Particle weight**: Weight particle by measurement likelihood
+4. **Resampling**: Resample particles proportional to weights
+
+### 3.3 FastSLAM Data Association
+
+Each particle makes its own data association decisions. This is a form of **multi-hypothesis tracking**—different particles hypothesize different associations.
+
+For particle $m$ with pose $x^{(m)}_t$:
+
+**For each landmark** $i$:
+- Compute predicted measurement: $\hat{z}_i = h(x^{(m)}_t, m_i)$
+- Compute Mahalanobis distance: $D_i^2 = (z_t - \hat{z}_i)^T S_i^{-1} (z_t - \hat{z}_i)$
+- Compute measurement likelihood: $\mathcal{L}_i = \mathcal{N}(z_t; \hat{z}_i, S_i)$
+
+**Associate** with landmark $j^* = \arg\max_i \mathcal{L}_i$ if $D_{j^*}^2 < \chi^2_{\text{threshold}}$.
+
+### 3.4 Resampling and Particle Degeneracy
+
+After many updates, particles' weights diverge: most particles have negligible weight, only a few represent high-probability trajectories.
+
+**Low-variance resampling** preserves diversity:
+1. Compute cumulative weights
+2. Draw M uniform random numbers
+3. Select particles according to these numbers
+
+```python
+def low_variance_resample(particles, weights):
+    """Resample particles using low-variance scheme"""
+    N = len(particles)
+    new_particles = []
+
+    r = np.random.uniform(0, 1/N)
+    c = weights[0]
+    j = 0
+
+    for i in range(N):
+        U = r + i / N
+        while U > c:
+            j += 1
+            c += weights[j]
+        new_particles.append(particles[j])
+
+    return new_particles
+```
+
+---
+
+## 4. GraphSLAM: Batch Optimization
+
+### 4.1 The Batch Formulation
+
+Instead of updating one pose/landmark at a time, GraphSLAM reformulates SLAM as a **batch optimization problem**:
+
+**Minimize**:
+$$\sum_{t=1}^{T} \|\dot{x}_t - f(x_{t-1}, u_t)\|_{Q_t}^2 + \sum_{t,i} \|z_t^{(i)} - h(x_t, m_i)\|_{R_t}^2$$
+
+where:
+- First term: motion model constraints (how movements connect poses)
+- Second term: measurement constraints (how measurements relate poses to landmarks)
+- $\|\cdot\|_A^2 = (\cdot)^T A^{-1} (\cdot)$ is weighted squared error (Mahalanobis distance)
+
+This is a **Nonlinear Least Squares** problem: find configuration of poses and landmarks that best fits all constraints.
+
+### 4.2 Factor Graphs
+
+GraphSLAM is naturally represented as a **factor graph**:
+
+**Nodes**:
+- Pose nodes: $x_1, x_2, \ldots, x_T$ (one per time step)
+- Landmark nodes: $m_1, m_2, \ldots, m_N$
+
+**Factors (Edges)**:
+- **Odometry factors**: $f_{\text{motion}}(x_t, x_{t-1}, u_t)$ (prior on motion)
+- **Measurement factors**: $f_{\text{meas}}(x_t, m_i, z_t)$ (measurement constraints)
+- **Prior factors**: $f_{\text{prior}}(x_1)$ (initial pose prior)
+
+Each factor contributes an error term to the overall objective.
+
+### 4.3 Loop Closure: The Power of Optimization
+
+When the robot revisits a previously mapped region, we obtain a **loop closure constraint** relating widely separated poses.
+
+**Before loop closure**: Accumulated drift in both pose estimates.
+
+**Loop closure measurement**: Observe a landmark (or recognize a place) that creates a constraint between poses $x_t$ and $x_s$ (where $t >> s$).
+
+**After optimization**: The solver redistributes error across the entire trajectory, correcting years of accumulated drift in a single optimization.
+
+**Filtering approaches** (EKF, FastSLAM) struggle with loop closure because they operate causally (can't "undo" past decisions). **Batch optimization** naturally handles loop closure by considering all constraints simultaneously.
+
+### 4.4 Sparse Matrix Structure
+
+The key to GraphSLAM efficiency: **sparsity**.
+
+The Jacobian matrix of all constraints has a block structure:
+
+$$J = \begin{bmatrix}
+\frac{\partial f_1}{\partial x_1} & \frac{\partial f_1}{\partial x_2} & 0 & \cdots & 0 \\
+0 & \frac{\partial f_2}{\partial x_2} & \frac{\partial f_2}{\partial x_3} & \cdots & 0 \\
+\vdots & & \ddots & & \vdots \\
+\frac{\partial f_{loop}}{\partial x_s} & 0 & \cdots & 0 & \frac{\partial f_{loop}}{\partial x_t}
+\end{bmatrix}$$
+
+Each row represents one constraint and touches only a few variables. The Hessian $H = J^T J$ is **sparse**: most entries are zero.
+
+Modern solvers (Ceres Solver, g2o) exploit this sparsity, achieving **O(N)** complexity.
+
+### 4.5 Solving the Nonlinear Least Squares Problem
+
+**Gauss-Newton iteration**:
+
+1. **Linearize** around current estimate $\hat{\mathbf{v}}$:
+   $$\mathbf{r} \approx \mathbf{r}_0 + J \Delta \mathbf{v}$$
+   where $\mathbf{r}_0$ is residual at current estimate, $J$ is Jacobian.
+
+2. **Solve normal equations**:
+   $$(J^T J) \Delta \mathbf{v} = -J^T \mathbf{r}_0$$
+
+3. **Update**:
+   $$\hat{\mathbf{v}} \leftarrow \hat{\mathbf{v}} + \Delta \mathbf{v}$$
+
+4. **Repeat** until convergence.
+
+**Levenberg-Marquardt** adds a damping term for better numerical stability:
+$$(J^T J + \lambda I) \Delta \mathbf{v} = -J^T \mathbf{r}_0$$
+
+The damping parameter $\lambda$ adjusts between Gauss-Newton (small $\lambda$, faster convergence) and gradient descent (large $\lambda$, more robust).
+
+---
+
+## 5. Comparison of SLAM Algorithms
+
+| Aspect | EKF-SLAM | FastSLAM | GraphSLAM |
+|--------|----------|----------|-----------|
+| **Type** | Filtering (recursive) | Particle + Filtering | Optimization (batch) |
+| **Complexity** | O(N²) or O(N³) | O(M log N) | O(N) sparse |
+| **Loop closure** | Difficult | Implicit (particles) | Natural |
+| **Convergence** | Real-time | Real-time | Offline/batch |
+| **Accuracy** | Good for small N | Good for nonlinear | Excellent |
+| **Implementation** | Simple | Moderate | Complex (needs solver) |
+| **Best for** | <100 landmarks | Ambiguous data | Large-scale, long-term |
+
+---
+
+## 6. Implementation Example: Minimal FastSLAM
+
+```python
+import numpy as np
+from scipy.linalg import inv
+
+class FastSLAMParticle:
+    """Single particle for FastSLAM"""
+
+    def __init__(self, pose, n_landmarks):
+        self.pose = pose  # [x, y, theta]
+        self.landmark_mus = [np.zeros(2) for _ in range(n_landmarks)]  # landmarks
+        self.landmark_sigmas = [np.eye(2) for _ in range(n_landmarks)]  # landmark covs
+        self.weight = 1.0
+
+    def motion_update(self, u, dt, Q):
+        """Predict pose"""
+        v, omega = u
+        x, y, theta = self.pose
+
+        x_new = x + v * np.cos(theta) * dt
+        y_new = y + v * np.sin(theta) * dt
+        theta_new = theta + omega * dt
+
+        self.pose = np.array([x_new, y_new, theta_new])
+
+        # Add process noise
+        noise = np.random.multivariate_normal([0, 0, 0], Q)
+        self.pose += noise
+
+    def measurement_update(self, z, landmark_idx, R):
+        """Update landmark EKF with measurement"""
+        x, y, theta = self.pose
+        z_range, z_bearing = z
+
+        # Current landmark estimate
+        mu = self.landmark_mus[landmark_idx]
+        sigma = self.landmark_sigmas[landmark_idx]
+
+        # Predicted measurement
+        dx = mu[0] - x
+        dy = mu[1] - y
+        z_pred_range = np.sqrt(dx**2 + dy**2)
+        z_pred_bearing = np.arctan2(dy, dx) - theta
+
+        # Measurement Jacobian (2x2 for 2D landmark)
+        H = np.array([
+            [-dx / z_pred_range, -dy / z_pred_range],
+            [dy / z_pred_range**2, -dx / z_pred_range**2]
+        ])
+
+        # Innovation
+        y_innovation = np.array([z_range - z_pred_range, z_bearing - z_pred_bearing])
+
+        # Update (EKF)
+        S = H @ sigma @ H.T + R
+        K = sigma @ H.T @ inv(S)
+
+        mu_new = mu + K @ y_innovation
+        sigma_new = (np.eye(2) - K @ H) @ sigma
+
+        # Update landmark
+        self.landmark_mus[landmark_idx] = mu_new
+        self.landmark_sigmas[landmark_idx] = sigma_new
+
+        # Update particle weight
+        self.weight *= 1.0 / np.sqrt(np.linalg.det(2 * np.pi * S)) * \
+                      np.exp(-0.5 * y_innovation @ inv(S) @ y_innovation)
+
+
+class FastSLAM:
+    """Minimal FastSLAM implementation"""
+
+    def __init__(self, n_particles, n_landmarks, Q, R):
+        self.n_particles = n_particles
+        self.n_landmarks = n_landmarks
+        self.Q = Q
+        self.R = R
+
+        # Initialize particles
+        self.particles = [FastSLAMParticle(np.zeros(3), n_landmarks)
+                         for _ in range(n_particles)]
+        self.weights = np.ones(n_particles) / n_particles
+
+    def predict(self, u, dt):
+        """Predict step"""
+        for particle in self.particles:
+            particle.motion_update(u, dt, self.Q)
+
+    def update(self, z, landmark_idx):
+        """Update step"""
+        for particle in self.particles:
+            particle.measurement_update(z, landmark_idx, self.R)
+
+        # Update weights
+        self.weights = np.array([p.weight for p in self.particles])
+        self.weights /= np.sum(self.weights)
+
+    def resample(self):
+        """Low-variance resampling"""
+        indices = np.argsort(self.weights)[::-1]
+
+        # Keep best particles and resample others
+        n_keep = self.n_particles // 10
+        new_particles = [self.particles[i] for i in indices[:n_keep]]
+
+        # Resample remaining
+        for _ in range(self.n_particles - n_keep):
+            idx = np.random.choice(range(self.n_particles), p=self.weights)
+            new_particles.append(self.particles[idx])
+
+        self.particles = new_particles
+        self.weights = np.ones(self.n_particles) / self.n_particles
+
+    def get_best_estimate(self):
+        """Get pose/landmark estimate from best particle"""
+        best_idx = np.argmax(self.weights)
+        return self.particles[best_idx]
+```
+
+---
+
+## 7. Summary
+
+**SLAM fundamentally requires solving the joint estimation problem** for both robot and environment.
+
+Three major approaches exist:
+
+1. **EKF-SLAM**: Elegant filtering approach, O(N²-N³) complexity, fails at large scale
+2. **FastSLAM**: Particle-based, exploits conditional independence, O(M log N)
+3. **GraphSLAM**: Batch optimization, naturally handles loop closure, O(N) with sparsity
+
+**Modern systems** predominantly use GraphSLAM variants (Ceres Solver, g2o, GTSAM) because:
+- Loop closure is critical for long-term navigation
+- Sparsity exploitation enables large-scale operation
+- Batch processing allows for post-processing and off-line refinement
+
+**Remaining challenges**:
+- Data association in large-scale, ambiguous environments
+- Dynamic obstacles
+- Perceptual aliasing (identical-looking places in different locations)
+- Computational limits on real-time optimization
+
+In practice, modern SLAM systems often integrate:
+- **Visual front-end**: Feature detection/matching (Chapter on vision SLAM)
+- **Optimization back-end**: Graph-based SLAM solver
+- **Loop closure module**: Place recognition for detecting revisited areas
+- **Dynamic object filtering**: Robust handling of moving obstacles
+
+The next frontier is **collaborative SLAM** (multiple robots mapping together) and **semantic SLAM** (understanding *what* is being mapped, not just *where*).
