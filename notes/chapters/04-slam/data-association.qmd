@@ -1,723 +1,275 @@
-# Data Association and Multi-Hypothesis Tracking
+# Data Association for Landmark SLAM
 
-## Introduction
+Data association answers a deceptively simple question:
 
-In Chapters 5 and 6, we encountered a persistent problem: **when a measurement arrives, which feature does it correspond to?** This is the **data association problem**, one of the most critical (and error-prone) components of navigation systems.
+> Which map landmark produced this measurement?
 
-In **simple scenarios**:
-- Few features in view
-- Distinctive features with unique signatures
-- Good state estimates
+In Victoria Park, the measurements are tree candidates extracted from laser scans. The map landmarks are previously observed tree trunks. If the association is correct, the SLAM backend improves both pose and map. If the association is wrong, the filter confidently updates the wrong object. Confidence is not the same thing as correctness; it just makes the mistake look tidy.
 
-**Nearest neighbor** association suffices.
+This chapter focuses on the association tools needed for the FastSLAM project:
 
-In **complex scenarios**:
-- Cluttered environments with many potential matches
-- Ambiguous or repetitive features (visual features in indoor environments)
-- Uncertainty in current state estimate
-- Missing detections, false alarms
+- nearest-neighbor and maximum-likelihood matching;
+- Mahalanobis gating;
+- outlier rejection;
+- landmark birth and deletion;
+- per-particle association in FastSLAM.
 
-**Single hypothesis** fails. We must consider **multiple competing hypotheses** simultaneously and evaluate them probabilistically.
+## The Association Problem
 
-This chapter covers:
-- Problem formulation and complexity
-- Classical association algorithms (nearest neighbor, gate, Hungarian algorithm)
-- Probabilistic data association (PDA) for filtering
-- Multiple hypothesis tracking (MHT) for robust multi-target scenarios
-- Track management
-- Practical implementation considerations
+At time $t$, suppose the feature extractor returns observations
 
----
+$$
+Z_t = \{z_t^1, z_t^2, \ldots, z_t^K\}.
+$$
 
-## 1. The Data Association Problem
+The current map contains landmarks
 
-### 1.1 Problem Formulation
+$$
+m = \{\ell_1, \ell_2, \ldots, \ell_N\}.
+$$
 
-**Given**:
-- Current state estimate: $\hat{\mathbf{x}}_k^-$ with uncertainty $P_k^-$
-- Current estimated features (landmarks): $\{\ell_1, \ell_2, \ldots, \ell_N\}$
-- New measurement: $z_k$ (single observation of one feature)
+For each observation, we choose one of three outcomes:
 
-**Determine**:
-- Which feature does $z_k$ correspond to?
-  - Option 1: Landmark $\ell_1$?
-  - Option 2: Landmark $\ell_2$?
-  - ...
-  - Option N: Landmark $\ell_N$?
-  - Option N+1: A new, previously unseen landmark?
+1. it came from an existing landmark;
+2. it is a new landmark;
+3. it is an outlier and should be ignored.
 
-**Impact on filter**:
-- **Correct association** → filter is updated correctly, learns true landmark position
-- **Incorrect association** → filter is pulled in wrong direction, can diverge catastrophically
+The third outcome matters. A feature extractor will sometimes report moving objects, partial trunks, signs, poles, or numerical nonsense wearing a convincing little hat.
 
-### 1.2 Why Association is Hard
+## Innovation and Mahalanobis Distance
 
-**Fundamental causes**:
-1. **Sensor noise**: Same landmark observed from different positions can have quite different measurements
-2. **Uncertainty in state**: Current position estimate is uncertain; predicted measurement is wrong
-3. **Ambiguity**: Multiple landmarks may look similar or have overlapping measurement predictions
-4. **Clutter**: False detections (noise spikes, reflections, moving objects) appear as valid measurements
-5. **Missed detections**: Expected landmark not detected; may be occluded or failed sensor
+For a particle pose $x$ and landmark $\ell_j$, the predicted measurement is
 
-**Probabilistic view**: We must compute conditional probabilities:
-$$P(\text{measurement } z_k \text{ corresponds to landmark } \ell_i | z_{1:k}, \hat{\mathbf{x}}_k^-)$$
+$$
+\hat{z}_j = h(x, \ell_j).
+$$
 
-### 1.3 Complexity
+The innovation is
 
-For $N$ landmarks and $M$ new measurements, there are $M!$ possible ways to assign measurements to landmarks (factorial growth). For $N = M = 100$, this is ~$10^{157}$ possibilities—intractable.
+$$
+\nu_j = z - \hat{z}_j.
+$$
 
-**Practical approximation**: Use iterative algorithms that don't explore all possibilities.
+For a range-bearing observation, wrap the bearing residual into $[-\pi, \pi)$.
 
----
+The innovation covariance is
 
-## 2. Nearest Neighbor Association
+$$
+S_j = H_j P_j H_j^T + R,
+$$
 
-### 2.1 Algorithm
+where $P_j$ is the landmark covariance inside the current particle and $R$ is the measurement covariance.
 
-The simplest association rule:
+The squared Mahalanobis distance is
 
-```
-For each measurement z_k:
-    1. For each landmark ℓ_i:
-        - Compute predicted measurement: ẑ_i = h(x̂_k^-, ℓ_i)
-        - Compute distance (Euclidean or Mahalanobis): d_i = ||z_k - ẑ_i||
-    2. Find closest landmark: i* = argmin_i d_i
-    3. If d_{i*} < threshold:
-        Associate z_k with ℓ_{i*}
-    4. Else:
-        Treat z_k as new landmark
-```
+$$
+d_j^2 = \nu_j^T S_j^{-1} \nu_j.
+$$
 
-**Advantages**:
-- O(N) complexity per measurement
-- Simple to implement
-- Fast
+This distance accounts for uncertainty. A one-meter residual is severe for a very certain landmark and unremarkable for a weakly initialized one.
 
-**Disadvantages**:
-- Fails in ambiguous situations (multiple nearby landmarks)
-- No probabilistic reasoning
-- Hard to choose threshold
-- Vulnerable to a single bad association cascading into filter divergence
+```{python}
+#| label: mahalanobis-gating
+#| echo: true
+import math
 
-### 2.2 Example: 2D Landmark Association
-
-```python
 import numpy as np
-import matplotlib.pyplot as plt
-
-class LandmarkFilter:
-    """Simple landmark-based localization with nearest-neighbor association"""
-
-    def __init__(self):
-        self.pose = np.array([0.0, 0.0, 0.0])  # [x, y, theta]
-        self.landmarks = []  # list of [x, y, uncertainty]
-        self.measurements_history = []
-
-    def motion_update(self, u, dt):
-        """Simple motion model"""
-        v, omega = u
-        self.pose[0] += v * np.cos(self.pose[2]) * dt
-        self.pose[1] += v * np.sin(self.pose[2]) * dt
-        self.pose[2] += omega * dt
-
-    def measurement_model(self, ell):
-        """Range-bearing measurement to landmark"""
-        dx = ell[0] - self.pose[0]
-        dy = ell[1] - self.pose[1]
-        range_meas = np.sqrt(dx**2 + dy**2)
-        bearing_meas = np.arctan2(dy, dx) - self.pose[2]
-        return np.array([range_meas, bearing_meas])
-
-    def nearest_neighbor_associate(self, z, gate_threshold=3.0):
-        """
-        Nearest neighbor data association
-        z: measurement [range, bearing]
-        gate_threshold: Mahalanobis distance threshold
-        """
-        if len(self.landmarks) == 0:
-            return None  # no landmarks yet
-
-        # Predicted measurement and Mahalanobis distance for each landmark
-        distances = []
-
-        for i, ell in enumerate(self.landmarks):
-            z_pred = self.measurement_model(ell)
-            # Simple covariance (for demo; would be from filter in real code)
-            S = np.diag([0.1**2, 0.05**2])  # measurement noise covariance
-            diff = z - z_pred
-            # Normalize angles
-            diff[1] = np.arctan2(np.sin(diff[1]), np.cos(diff[1]))
-
-            maha_dist = np.sqrt(diff @ np.linalg.inv(S) @ diff)
-            distances.append(maha_dist)
-
-        distances = np.array(distances)
-        best_idx = np.argmin(distances)
-        best_dist = distances[best_idx]
-
-        if best_dist < gate_threshold:
-            return best_idx
-        else:
-            return None  # no good match, treat as new landmark
-
-    def update_landmark(self, meas_idx, z):
-        """Update landmark position (simple; would use EKF in practice)"""
-        # Inverse measurement model
-        bearing_global = z[1] + self.pose[2]
-        range_meas = z[0]
-
-        new_x = self.pose[0] + range_meas * np.cos(bearing_global)
-        new_y = self.pose[1] + range_meas * np.sin(bearing_global)
-
-        # Simple average with old estimate
-        old_x, old_y, _ = self.landmarks[meas_idx]
-        self.landmarks[meas_idx] = [
-            0.7 * old_x + 0.3 * new_x,
-            0.7 * old_y + 0.3 * new_y,
-            1.0
-        ]
-
-    def add_landmark(self, z):
-        """Add new landmark from measurement"""
-        bearing_global = z[1] + self.pose[2]
-        range_meas = z[0]
-
-        new_x = self.pose[0] + range_meas * np.cos(bearing_global)
-        new_y = self.pose[1] + range_meas * np.sin(bearing_global)
-
-        self.landmarks.append([new_x, new_y, 1.0])
-
-    def process_measurement(self, z):
-        """Process one measurement"""
-        assoc_idx = self.nearest_neighbor_associate(z)
-
-        if assoc_idx is not None:
-            self.update_landmark(assoc_idx, z)
-        else:
-            self.add_landmark(z)
-
-        self.measurements_history.append((z, assoc_idx))
 
 
-# Simulate
-np.random.seed(42)
-filt = LandmarkFilter()
+def wrap_angle(angle):
+    """Wrap an angle to [-pi, pi)."""
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
 
-# Ground truth landmarks
-true_landmarks = np.array([
-    [5.0, 5.0],
-    [10.0, 5.0],
-    [10.0, -5.0],
-    [5.0, -5.0]
-])
 
-# Simulate robot moving in a circle
-n_steps = 200
-for step in range(n_steps):
-    # Motion
-    angle = 2 * np.pi * step / n_steps
-    u = np.array([1.0, 0.1])  # velocity, turn rate
-    filt.motion_update(u, 0.1)
+def squared_mahalanobis(residual, covariance):
+    """Compute residual.T @ inv(covariance) @ residual without forming inv."""
+    residual = np.asarray(residual, dtype=float)
+    return float(residual @ np.linalg.solve(covariance, residual))
 
-    # Measurement to closest true landmark
-    range_to_landmarks = np.linalg.norm(true_landmarks - filt.pose[:2], axis=1)
-    closest_idx = np.argmin(range_to_landmarks)
 
-    # Measurement with noise
-    true_meas = filt.measurement_model(true_landmarks[closest_idx])
-    z = true_meas + np.random.normal(0, [0.1, 0.05])
-
-    filt.process_measurement(z)
-
-# Visualization
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-
-# Plot 1: Landmarks
-ax1.plot(true_landmarks[:, 0], true_landmarks[:, 1], 'r*', markersize=20, label='True landmarks')
-estimated_landmarks = np.array(filt.landmarks)
-if len(estimated_landmarks) > 0:
-    ax1.plot(estimated_landmarks[:, 0], estimated_landmarks[:, 1], 'b+', markersize=10, label='Estimated landmarks')
-
-ax1.plot(filt.pose[0], filt.pose[1], 'go', markersize=8, label='Final robot pose')
-ax1.set_xlabel('X')
-ax1.set_ylabel('Y')
-ax1.legend()
-ax1.grid(True, alpha=0.3)
-ax1.axis('equal')
-ax1.set_title('Landmark Positions')
-
-# Plot 2: Association correctness
-associations = [a for _, a in filt.measurements_history]
-correct = sum(1 for a in associations if a is not None) / len(associations) * 100
-ax2.text(0.5, 0.5, f'Landmarks found: {len(filt.landmarks)}\nAssociations made: {sum(1 for a in associations if a is not None)}',
-         ha='center', va='center', transform=ax2.transAxes, fontsize=14,
-         bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.7))
-ax2.axis('off')
-
-plt.tight_layout()
-plt.show()
+residual = np.array([0.7, np.deg2rad(3.0)])
+S = np.diag([0.5**2, np.deg2rad(5.0)**2])
+squared_mahalanobis(residual, S)
 ```
 
----
+For a 2D measurement, common chi-square gates are:
 
-## 3. Mahalanobis Distance and Statistical Gating
+| Probability mass | Gate |
+|---:|---:|
+| 90% | 4.61 |
+| 95% | 5.99 |
+| 99% | 9.21 |
 
-### 3.1 Mahalanobis Distance
+A 95% gate is a reasonable starting point. It is not a law of nature.
 
-The Euclidean distance $\|z_k - \hat{z}_i\|$ treats all measurement uncertainties equally. Better: use **Mahalanobis distance**, which accounts for measurement uncertainty.
+## Nearest Neighbor and Maximum Likelihood
 
-$$D_i = \sqrt{(z_k - \hat{z}_i)^T S_i^{-1} (z_k - \hat{z}_i)}$$
+The simplest association rule is nearest neighbor:
 
-where $S_i$ is the **innovation covariance**:
-$$S_i = H_i P_k^- H_i^T + R$$
+$$
+j^* = \arg\min_j d_j^2.
+$$
 
-**Interpretation**: Mahalanobis distance = distance in units of measurement uncertainty. A distance of 3 means 3 standard deviations away.
+Accept the match if $d_{j^*}^2$ is below the gate. Otherwise initialize a new landmark or reject the observation.
 
-**Advantage over Euclidean**:
-- Accounts for filter uncertainty and sensor noise
-- Dimensionless, comparable across different measurement types
-- Statistical interpretation: follows chi-squared distribution under Gaussian assumptions
+Maximum likelihood uses the full Gaussian likelihood:
 
-### 3.2 Gating
+$$
+p(z \mid \ell_j, x) =
+\frac{1}{\sqrt{(2\pi)^k |S_j|}}
+\exp\left(-\frac{1}{2} d_j^2 \right).
+$$
 
-**Gate threshold** (accept association if inside gate):
-$$D_i < \chi^2_{\alpha, n_z}$$
+When all candidate innovation covariances are similar, nearest Mahalanobis distance and maximum likelihood usually choose the same landmark. When covariances differ substantially, likelihood is more precise.
 
-where:
-- $\alpha$: false alarm probability (typically 0.05)
-- $n_z$: measurement dimension (e.g., 2 for range-bearing)
-- $\chi^2$ is the chi-squared distribution CDF
+```{python}
+#| label: nearest-neighbor-association
+#| echo: true
+def associate_by_gate(candidates, gate_threshold=5.99):
+    """Choose the candidate with the smallest gated Mahalanobis distance.
 
-For 2D measurements and $\alpha = 0.05$: threshold ≈ 5.99.
-
-**Benefits of gating**:
-- Pre-filter implausible associations (huge computational savings)
-- Provides probabilistic interpretation
-- Robust to state estimate uncertainty
-
-### 3.3 Example: Gating with Uncertain State
-
-```python
-import scipy.stats
-
-def chi2_gate_threshold(n_dim, confidence=0.95):
-    """Chi-squared threshold for gating"""
-    return scipy.stats.chi2.ppf(confidence, n_dim)
-
-# Example
-threshold_2d = chi2_gate_threshold(2, confidence=0.95)
-print(f"2D Mahalanobis distance gate threshold (95%): {threshold_2d:.2f}")
-# Output: 5.99
-
-threshold_3d = chi2_gate_threshold(3, confidence=0.95)
-print(f"3D Mahalanobis distance gate threshold (95%): {threshold_3d:.2f}")
-# Output: 7.81
-
-# If measurement innovation: d_mahal = 4.5
-# Accept for 2D (4.5 < 5.99) but not for 3D (4.5 < 7.81 is false)
-```
-
----
-
-## 4. Probabilistic Data Association (PDA)
-
-### 4.1 The Idea: Soft Assignment
-
-Instead of assigning a measurement to **one** landmark (hard assignment), assign it **probabilistically** to all plausible landmarks.
-
-**Association probabilities**:
-$$\beta_i = P(\text{measurement } z_k \text{ associates with landmark } i | z_{1:k})$$
-
-where $\sum_{i=0}^{N} \beta_i = 1$ ($i=0$ is for spurious detections).
-
-Compute using Bayes rule:
-$$\beta_i \propto P(z_k | \ell_i) P(\ell_i)$$
-
-where:
-- $P(z_k | \ell_i)$: measurement likelihood given landmark $i$
-- $P(\ell_i)$: prior probability of association
-
-Under Gaussian assumptions:
-$$P(z_k | \ell_i) = \mathcal{N}(z_k; \hat{z}_i, S_i)$$
-
-### 4.2 PDA Algorithm
-
-**1. Compute association probabilities**:
-$$\beta_i = \frac{p_d P(z_k | \ell_i)}{\lambda_f + \sum_{j=1}^{N} p_d P(z_k | \ell_j)}$$
-
-where:
-- $p_d$: probability of detection (1 - missed detection probability)
-- $\lambda_f$: false alarm rate (clutter density)
-
-**2. Compute combined innovation**:
-$$\bar{y}_k = \sum_{i=1}^{N} \beta_i (z_k - \hat{z}_i)$$
-
-**3. Update state using combined innovation**:
-$$\hat{\mathbf{x}}_k = \hat{\mathbf{x}}_k^- + K_k \bar{y}_k$$
-
-**4. Update covariance** (more complex; accounts for uncertainty in association):
-$$P_k = P_k^- + K_k S_k K_k^T - \sum_{i=1}^{N} \beta_i (z_k - \hat{z}_i)(z_k - \hat{z}_i)^T$$
-
-**Advantages**:
-- Probabilistically principled
-- Handles measurement ambiguity naturally
-- More robust than hard assignment
-
-**Disadvantages**:
-- More complex algorithm
-- Does not explicitly track multiple hypotheses (filter collapses to single estimate)
-- Can still diverge if all hypotheses are wrong
-
-### 4.3 PDA Example
-
-```python
-def compute_pda_probabilities(z, predictions, covars, p_detect=0.9, false_alarm_rate=1e-3):
+    Each candidate is `(landmark_id, residual, innovation_covariance)`.
+    Returns `(landmark_id, distance)` or `(None, best_distance)`.
     """
-    Compute probabilistic data association weights
+    best_id = None
+    best_distance = np.inf
 
-    z: measurement (1D or 2D)
-    predictions: list of predicted measurements for each landmark
-    covars: list of innovation covariance matrices
-    p_detect: detection probability
-    false_alarm_rate: expected false detections per scan
-    """
-    from scipy.stats import multivariate_normal
+    for landmark_id, residual, covariance in candidates:
+        residual = np.asarray(residual, dtype=float).copy()
+        residual[1] = wrap_angle(residual[1])
+        distance = squared_mahalanobis(residual, covariance)
 
-    n_landmarks = len(predictions)
-    n_dim = len(z) if hasattr(z, '__len__') else 1
+        if distance < best_distance:
+            best_id = landmark_id
+            best_distance = distance
 
-    # Likelihood for each landmark
-    likelihoods = []
-    for z_pred, S in zip(predictions, covars):
-        mv_normal = multivariate_normal(mean=z_pred, cov=S)
-        like = mv_normal.pdf(z)
-        likelihoods.append(like)
+    if best_distance < gate_threshold:
+        return best_id, best_distance
+    return None, best_distance
 
-    likelihoods = np.array(likelihoods)
 
-    # Probability of false alarm (Poisson model)
-    p_false = false_alarm_rate
+candidate_measurements = [
+    (10, [0.8, np.deg2rad(2.0)], np.diag([0.5**2, np.deg2rad(5.0)**2])),
+    (11, [2.2, np.deg2rad(-9.0)], np.diag([0.5**2, np.deg2rad(5.0)**2])),
+]
 
-    # Association probabilities (normalized)
-    beta = np.zeros(n_landmarks + 1)
-
-    # Probability for each landmark
-    for i in range(n_landmarks):
-        beta[i] = p_detect * likelihoods[i]
-
-    # Probability of false alarm
-    beta[n_landmarks] = p_false
-
-    # Normalize
-    beta /= np.sum(beta)
-
-    return beta
+associate_by_gate(candidate_measurements)
 ```
 
----
+## Landmark Birth
 
-## 5. Multiple Hypothesis Tracking (MHT)
+If no existing landmark passes the gate, the measurement may be a new tree. Initialize a landmark using the inverse range-bearing model:
 
-### 5.1 Concept
+$$
+\ell =
+\begin{bmatrix}
+x + r \cos(\theta + \beta) \\
+y + r \sin(\theta + \beta)
+\end{bmatrix}.
+$$
 
-Instead of maintaining a single estimate, **maintain multiple competing hypotheses**, each with a probability.
+The initial covariance comes from propagating measurement uncertainty through that inverse model:
 
-**Hypothesis**: A specific sequence of associations for all measurements to date.
+$$
+P_\ell = G R G^T.
+$$
 
-**Example**: If 3 measurements have arrived:
-- Hypothesis 1: measurement 1 → landmark A, measurement 2 → landmark B, measurement 3 → landmark C
-- Hypothesis 2: measurement 1 → landmark A, measurement 2 → landmark B, measurement 3 → new landmark
-- Hypothesis 3: measurement 1 → landmark A, measurement 2 → new landmark, measurement 3 → landmark C
-- ... (many more possibilities)
+New-landmark logic should be conservative. If every questionable scan segment becomes a tree, the map will grow because the detector is bad, not because the park has become a forest in fast-forward.
 
-**Branching tree**:
-```
-                    Root (start)
-                    /    |    \
-          Meas1→A  Meas1→B  Meas1→new
-          /   |       /   |       /   |
-      M2→B M2→C   M2→C M2→new M2→A M2→new
-      ...
-```
+Practical rules:
 
-Each path is a hypothesis with a probability.
+- require a minimum number of scan points in the segment;
+- reject implausible trunk diameters;
+- reject landmarks too close to the vehicle path if they would be in free space;
+- optionally require a tentative landmark to be observed more than once before becoming confirmed.
 
-### 5.2 MHT Algorithm
+## Landmark Deletion
 
-**1. Prediction**: For each hypothesis, predict new measurement
+A landmark may be deleted or marked inactive when:
 
-**2. Gating**: For each hypothesis and new measurement, determine if plausible
+- it was observed only once;
+- it repeatedly should have been visible but was not detected;
+- its covariance grows or remains too large;
+- it is outside the area being reported.
 
-**3. Hypothesis branching**: For each hypothesis, create new hypotheses for each plausible measurement association
+Deletion is not just memory cleanup. It is outlier control.
 
-**4. Probability update**: Update hypothesis probability using:
-$$P(\text{hypothesis} | z_{1:k}) \propto P(z_k | \text{hypothesis}) P(\text{hypothesis} | z_{1:k-1})$$
+For the course project, a simple track state is enough:
 
-**5. Pruning**: Delete low-probability hypotheses (to avoid exponential explosion)
+| State | Meaning |
+|---|---|
+| tentative | newly initialized, not yet trusted |
+| confirmed | repeatedly observed and usable for association |
+| inactive | not used for updates or final reporting |
 
-**6. Merging**: Combine very similar hypotheses
+## Per-Particle Association in FastSLAM
 
-### 5.3 Example: MHT Decision Tree
+FastSLAM performs association inside each particle. This changes the interpretation:
 
-```python
-class Hypothesis:
-    """Single data association hypothesis"""
+- Particle A may believe a measurement is tree 42.
+- Particle B may believe the same measurement is a new tree.
+- Particle C may reject the measurement as an outlier.
 
-    def __init__(self, associations=None, log_likelihood=0):
-        self.associations = associations or {}  # meas_idx → landmark_idx
-        self.log_likelihood = log_likelihood
-        self.probability = 1.0
+This is a useful form of multiple-hypothesis tracking. Particles with poor associations should receive lower measurement likelihoods and eventually disappear during resampling.
 
-class MHTTracker:
-    """Multiple Hypothesis Tracking"""
+The project implementation should therefore avoid a single global association table that is forced on all particles. Association should be a method of the particle or of the FastSLAM update step using that particle's pose and landmark map.
 
-    def __init__(self, n_landmarks):
-        self.n_landmarks = n_landmarks
-        self.hypotheses = [Hypothesis()]  # start with empty hypothesis
+## Outlier Handling
 
-    def process_measurement(self, z, predicted_measurements, likelihoods):
-        """
-        Process one measurement and generate new hypotheses
+Outliers are expected in Victoria Park:
 
-        z: measurement
-        predicted_measurements: list of predicted z for each landmark
-        likelihoods: list of measurement likelihoods for each landmark
-        """
-        new_hypotheses = []
+- laser returns from non-tree objects;
+- moving objects;
+- weak partial returns;
+- tree detector failures;
+- timestamp or calibration mismatch;
+- bad odometry causing good features to appear inconsistent.
 
-        # For each existing hypothesis
-        for hyp in self.hypotheses:
-            # Try associating new measurement with each landmark
-            for i, like in enumerate(likelihoods):
-                new_hyp = Hypothesis(
-                    associations=dict(hyp.associations),
-                    log_likelihood=hyp.log_likelihood + np.log(max(like, 1e-10))
-                )
-                new_hyp.associations[len(new_hyp.associations)] = i
-                new_hypotheses.append(new_hyp)
+Useful defenses:
 
-            # Try treating as new landmark
-            new_hyp = Hypothesis(
-                associations=dict(hyp.associations),
-                log_likelihood=hyp.log_likelihood + np.log(0.01)  # low prior for clutter
-            )
-            new_hypotheses.append(new_hyp)
+- gate before updating;
+- cap the maximum number of new landmarks per scan;
+- record rejected observations for debugging;
+- plot new landmarks separately from confirmed landmarks;
+- tune measurement covariance honestly instead of using artificially tiny values.
 
-        # Normalize probabilities
-        max_ll = max(h.log_likelihood for h in new_hypotheses)
-        for h in new_hypotheses:
-            h.probability = np.exp(h.log_likelihood - max_ll)
+The fastest way to make FastSLAM fail is to feed it overconfident outliers.
 
-        # Normalize
-        total_p = sum(h.probability for h in new_hypotheses)
-        for h in new_hypotheses:
-            h.probability /= total_p
+## Choosing the Gate
 
-        # Prune: keep only top hypotheses
-        new_hypotheses.sort(key=lambda h: h.probability, reverse=True)
-        self.hypotheses = new_hypotheses[:10]  # keep top 10
+The gate threshold creates a tradeoff:
 
-    def get_best_hypothesis(self):
-        """Return highest-probability hypothesis"""
-        return max(self.hypotheses, key=lambda h: h.probability)
-```
+| Gate | Typical failure mode |
+|---|---|
+| too tight | duplicate landmarks, map bloat |
+| reasonable | stable map growth |
+| too loose | distinct trees merge |
 
----
+Students should report a small sensitivity study. For example, compare final map size and trajectory shape using gates near 4.61, 5.99, and 9.21.
 
-## 6. Track Management
+## Diagnostics for the Project
 
-Beyond association, we must manage the lifecycle of tracks (estimated features):
+Every implementation should produce diagnostic plots or tables:
 
-### 6.1 Track States
+- number of extracted features per scan;
+- number of accepted associations per scan;
+- number of new landmarks per scan;
+- number of confirmed landmarks over distance traveled;
+- rejected-observation count;
+- effective sample size over time;
+- final map colored by observation count or landmark age.
 
-Each track progresses through states:
+These diagnostics are not extra polish. They are how students find out whether the system is doing SLAM or merely drawing increasingly confident nonsense.
 
-1. **Tentative**: New track with only 1-2 detections (high uncertainty)
-2. **Confirmed**: Track with sufficient detections (>= m confirmations)
-3. **Coasted**: Track with recent missed detections (still propagating)
-4. **Deleted**: Track dropped (too many missed detections)
+## Summary
 
-### 6.2 Track Initialization
+Data association is the hinge between perception and estimation. A good FastSLAM implementation needs:
 
-When a new measurement cannot be associated with an existing track:
+1. range-bearing innovation calculations;
+2. Mahalanobis gating;
+3. per-particle nearest-neighbor or maximum-likelihood association;
+4. conservative landmark birth;
+5. explicit outlier handling;
+6. diagnostics that expose duplicate and merged landmarks.
 
-**Option 1**: Immediately create tentative track (eager initiation)
-- Pros: Catches new features quickly
-- Cons: Creates many spurious tracks from clutter
-
-**Option 2**: Require 2-3 detections before initiating (conservative)
-- Pros: Reduces clutter-induced tracks
-- Cons: May miss short-lived features
-
-### 6.3 Track Confirmation and Deletion
-
-**Confirmation**: After $m$ consecutive measurements (typically $m = 3$), promote to confirmed track
-
-**Deletion**: If track is not updated for $n$ scans (typically $n = 5-10$), delete it
-
-**Logic**:
-```
-For each track:
-    If measurement associated:
-        misses = 0
-        If confirmed == False and detections >= m_confirm:
-            confirmed = True
-    Else:
-        misses += 1
-        If misses > max_misses:
-            Delete track
-        Else:
-            Coast (predict without update)
-```
-
-### 6.4 Implementation Example
-
-```python
-class Track:
-    """Single feature track"""
-
-    def __init__(self, track_id, z_init):
-        self.id = track_id
-        self.state = np.array(z_init)  # estimated position
-        self.covariance = np.eye(2) * 10  # large initial uncertainty
-        self.detections = 1
-        self.misses = 0
-        self.confirmed = False
-
-    def update(self, z, measurement_noise=0.1):
-        """Update track with new measurement"""
-        # Simple update (would be Kalman in practice)
-        alpha = 0.5  # filter gain
-        self.state = alpha * self.state + (1 - alpha) * z
-        self.detections += 1
-        self.misses = 0
-
-    def predict(self):
-        """Predict next state (coast)"""
-        self.misses += 1
-        # In practice, would propagate with motion model
-
-    def should_delete(self, max_misses=5):
-        return self.misses > max_misses
-
-    def should_confirm(self, min_detections=3):
-        return self.detections >= min_detections and not self.confirmed
-
-
-class TrackManager:
-    """Manage set of tracks"""
-
-    def __init__(self):
-        self.tracks = []
-        self.next_id = 0
-
-    def update(self, measurements, associations):
-        """
-        Update all tracks
-
-        measurements: list of measurements
-        associations: list of (meas_idx, track_idx) pairs
-        """
-        # Mark all tracks as not updated
-        updated = [False] * len(self.tracks)
-
-        # Process associations
-        for meas_idx, track_idx in associations:
-            self.tracks[track_idx].update(measurements[meas_idx])
-            updated[track_idx] = True
-
-        # Predict unmatched tracks and delete if needed
-        for i, track in enumerate(self.tracks):
-            if not updated[i]:
-                track.predict()
-
-            if track.should_confirm():
-                track.confirmed = True
-
-            if track.should_delete():
-                # Mark for deletion
-                self.tracks[i] = None
-
-        # Remove deleted tracks
-        self.tracks = [t for t in self.tracks if t is not None]
-
-        # Create new tracks from unassociated measurements
-        for meas_idx, (track_idx, _) in enumerate(associations):
-            if track_idx is None:
-                self.tracks.append(Track(self.next_id, measurements[meas_idx]))
-                self.next_id += 1
-```
-
----
-
-## 7. Practical Considerations and Robustness
-
-### 7.1 Association Failure Modes
-
-**Mode 1: Hard association in ambiguous scenario**
-- Choose wrong association deterministically
-- Filter diverges
-
-**Prevention**: Use PDA or MHT to consider all hypotheses
-
-**Mode 2: Clutter spikes create spurious associations**
-- Noise spike interpreted as new feature
-- Multiplies features
-
-**Prevention**: Track management with confirmation requirements
-
-**Mode 3: Perceptual aliasing**
-- Different features look identical
-- Associate measurements to wrong landmarks
-- Filter incorrectly "corrects" position
-
-**Prevention**: Use feature descriptors, multi-sensor fusion
-
-### 7.2 Computational Complexity
-
-| Algorithm | Complexity | Robust | Notes |
-|-----------|-----------|--------|-------|
-| Nearest Neighbor | O(NM) | Low | N=landmarks, M=measurements |
-| Mahalanobis Gating | O(NM) | Low | Better than NN |
-| PDA | O(NM) | Medium | Probabilistic but single estimate |
-| MHT | O(2^{NM}) | High | Exponential; requires pruning |
-| Auction/Hungarian | O((NM)^3) | Medium | Optimal global assignment |
-
-**In practice**: Use **tiered approach**:
-1. Mahalanobis gating (O(NM), eliminates implausible associations)
-2. Hungarian algorithm for remaining associations (polynomial, optimal)
-3. Track management to clean up spurious tracks
-
-### 7.3 Sensor Fusion for Robustness
-
-Combine multiple association techniques:
-- **Visual features**: Use descriptor matching (SIFT, ORB) for feature identification
-- **Spatial**: Use Mahalanobis distance for proximity
-- **Temporal**: Use track consistency (expected motion)
-
-Example:
-```
-association_score = 0.5 * descriptor_score + 0.3 * mahalanobis_score + 0.2 * motion_score
-```
-
----
-
-## 8. Summary and Best Practices
-
-**Key Takeaways**:
-1. **Data association is critical**: A single bad association can cause divergence
-2. **No perfect algorithm**: Always use probabilistic reasoning and hypothesis testing
-3. **Robustness requires multi-layered approach**: Gating + MHT + track management
-4. **Computational cost increases with robustness**: Trade accuracy for speed based on application
-
-**Best Practices**:
-- ✓ Use Mahalanobis distance with gating (essential)
-- ✓ Implement track management (confirmation/deletion)
-- ✓ Use PDA or MHT in ambiguous environments
-- ✓ Validate associations with cross-checks (spatial, temporal, descriptor-based)
-- ✓ Monitor innovation statistics for filter consistency
-- ✓ Fall back to external sensors (vision, compass) on association failure
-
-**Remaining challenge**: **Perceptual aliasing** and **feature ambiguity**. Even with perfect association algorithms, identical-looking features cause failures. Solution: Visual SLAM with **place recognition** and **loop closure** (Chapter 11).
-
-The next chapter addresses these challenges through visual navigation.
+The next chapters place this in the larger SLAM ecosystem: visual front-ends, loop closure, and graph optimization.

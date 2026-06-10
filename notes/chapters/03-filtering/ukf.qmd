@@ -1,54 +1,558 @@
-# The Unscented Kalman Filter (UKF)
+# The Unscented Kalman Filter
 
-## Beyond Linearization
+The Extended Kalman Filter handles nonlinear systems by linearizing the model.
+That works when the estimate is close and the nonlinearities are gentle. It
+also requires Jacobians, and Jacobians are a fine place to hide mistakes.
 
-In the previous chapter, we saw how the EKF linearizes nonlinear functions using Jacobians. While powerful, this "first-order" approximation has flaws:
-1. **Jacobian Complexity**: Deriving Jacobians for complex systems is error-prone.
-2. **Linearization Error**: For highly nonlinear functions or large uncertainties, the first-order approximation can lead to filter divergence.
+The Unscented Kalman Filter (UKF) takes a different approach. Instead of
+linearizing the function, it approximates how the distribution moves through
+the nonlinear function. It does this with carefully chosen deterministic sample
+points called **sigma points**.
 
-The **Unscented Kalman Filter (UKF)** addresses these by using a deterministic sampling approach known as the **Unscented Transform**.
+The UKF still represents the belief with a mean and covariance. It is not a
+particle filter. It is a Gaussian filter that uses smarter bookkeeping for
+nonlinear transformations.
 
-## The Unscented Transform (UT)
+## The Problem with Transforming a Gaussian
 
-Instead of linearizing the function, the UKF linearizes the *distribution*. 
+If
 
-It picks a small set of sample points, called **Sigma Points**, that capture the mean and covariance of the state. These points are passed through the true nonlinear function, and the new mean and covariance are calculated from the transformed points.
+$$
+\mathbf{x} \sim \mathcal{N}(\boldsymbol{\mu}, \mathbf{P})
+$$
 
-### Advantages of the UKF
-- **No Jacobians**: You only need the nonlinear functions $f(x)$ and $h(x)$.
-- **Higher Accuracy**: The UT captures the mean and covariance correctly to at least the second order (Taylor series) for any nonlinearity.
-- **Robustness**: Better performance in systems with "highly curved" dynamics or measurements.
+and
 
-## Sigma Point Selection
+$$
+\mathbf{y} = f(\mathbf{x}),
+$$
 
-For a state of dimension $n$, the UKF typically uses $2n + 1$ sigma points. The points are distributed around the mean $\bar{x}$ at a distance proportional to the square root of the covariance $P$.
+then $\mathbf{y}$ is generally not Gaussian when $f$ is nonlinear. The EKF
+approximates $f$ with a tangent plane and then transforms the Gaussian through
+that plane. The UKF chooses points that capture the mean and covariance of
+$\mathbf{x}$, sends those points through the true nonlinear function, and
+reconstructs an approximate mean and covariance from the transformed points.
 
-$$ \mathcal{X}_0 = \bar{x} $$
-$$ \mathcal{X}_i = \bar{x} + \sqrt{(n + \lambda)P}_i \quad \text{for } i=1 \dots n $$
-$$ \mathcal{X}_i = \bar{x} - \sqrt{(n + \lambda)P}_{i-n} \quad \text{for } i=n+1 \dots 2n $$
+This is the unscented transform.
 
-## EKF vs. UKF: A Practical Comparison
+## Sigma Points
 
-In industry, the choice between EKF and UKF often comes down to computational budget:
-- **EKF**: Faster, but requires manual derivation of Jacobians.
-- **UKF**: More computationally expensive (running the model $2n+1$ times), but easier to implement and generally more accurate.
+For an $n$-dimensional state, the common UKF construction uses $2n + 1$ sigma
+points. Define
 
-```python
+$$
+\lambda = \alpha^2(n + \kappa) - n.
+$$
+
+The sigma points are
+
+$$
+\mathcal{X}_0 = \boldsymbol{\mu},
+$$
+
+$$
+\mathcal{X}_i
+=
+\boldsymbol{\mu}
++
+\left[\sqrt{(n+\lambda)\mathbf{P}}\right]_i,
+\qquad
+i = 1, \ldots, n,
+$$
+
+$$
+\mathcal{X}_{i+n}
+=
+\boldsymbol{\mu}
+-
+\left[\sqrt{(n+\lambda)\mathbf{P}}\right]_i,
+\qquad
+i = 1, \ldots, n.
+$$
+
+The square root is usually computed with a Cholesky factor. The notation
+$[\cdot]_i$ means the $i$th column of that matrix square root.
+
+The parameters have practical meaning:
+
+- $\alpha$ controls the spread of the sigma points.
+- $\kappa$ is a secondary scaling parameter.
+- $\beta$ encodes prior knowledge about the distribution; $\beta=2$ is common
+  for Gaussian beliefs.
+
+Typical starting values are $\alpha=10^{-3}$, $\beta=2$, and $\kappa=0$, though
+the best values depend on the problem.
+
+```{python}
+#| label: fig-ukf-sigma-points
+#| fig-cap: "Sigma points for a 2D Gaussian belief. The points are deterministic, not random samples, and are chosen to reproduce the mean and covariance."
+#| code-fold: true
+
 import numpy as np
-from advnav.filters import UKF
+import matplotlib.pyplot as plt
 
-# Define a highly nonlinear transition
-def f_nonlinear(x, u=None):
-    return np.array([[x[0,0] + np.sin(x[1,0])], 
-                     [x[1,0]**2]])
 
-# Initialize UKF
-ukf = UKF(dim_x=2, dim_z=1)
-ukf.x = np.array([[1.0, 0.5]]).T
-ukf.P *= 0.1
+def sigma_points(mean, covariance, alpha=0.7, beta=2.0, kappa=0.0):
+    n = mean.size
+    lam = alpha**2 * (n + kappa) - n
+    scale = n + lam
+    root = np.linalg.cholesky(scale * covariance)
 
-# Predict
-ukf.predict(f_nonlinear)
+    points = [mean]
+    for i in range(n):
+        points.append(mean + root[:, i])
+    for i in range(n):
+        points.append(mean - root[:, i])
 
-print(f"UKF Predicted Mean:\n{ukf.x}")
+    points = np.array(points)
+
+    wm = np.full(2 * n + 1, 1.0 / (2.0 * scale))
+    wc = np.full(2 * n + 1, 1.0 / (2.0 * scale))
+    wm[0] = lam / scale
+    wc[0] = lam / scale + (1.0 - alpha**2 + beta)
+    return points, wm, wc
+
+
+mean = np.array([2.0, 1.0])
+P = np.array([[1.0, 0.55], [0.55, 0.6]])
+points, _, _ = sigma_points(mean, P)
+
+theta = np.linspace(0.0, 2.0 * np.pi, 300)
+circle = np.vstack([np.cos(theta), np.sin(theta)])
+ellipse = mean[:, None] + np.linalg.cholesky(P) @ circle
+
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.plot(ellipse[0], ellipse[1], color="0.55", label="1-sigma covariance ellipse")
+ax.scatter(points[:, 0], points[:, 1], s=70, label="sigma points")
+ax.scatter(mean[0], mean[1], s=90, marker="x", color="black", label="mean")
+for i, p in enumerate(points):
+    ax.annotate(str(i), p + np.array([0.05, 0.05]))
+ax.set_aspect("equal", adjustable="box")
+ax.set_xlabel("state component 1")
+ax.set_ylabel("state component 2")
+ax.set_title("UKF sigma point set")
+ax.grid(True, alpha=0.25)
+ax.legend()
+plt.show()
 ```
+
+## Weights
+
+Each sigma point has a mean weight and a covariance weight:
+
+$$
+W_0^{(m)}
+=
+\frac{\lambda}{n+\lambda},
+$$
+
+$$
+W_0^{(c)}
+=
+\frac{\lambda}{n+\lambda}
++
+1 - \alpha^2 + \beta,
+$$
+
+$$
+W_i^{(m)}
+=
+W_i^{(c)}
+=
+\frac{1}{2(n+\lambda)},
+\qquad
+i=1,\ldots,2n.
+$$
+
+The first point is the mean. The remaining points are paired around the mean.
+The weights allow the sigma point set to reconstruct the original mean and
+covariance before any nonlinear transformation is applied.
+
+## The Unscented Transform
+
+Given sigma points $\mathcal{X}_i$, transform each point through the nonlinear
+function:
+
+$$
+\mathcal{Y}_i = f(\mathcal{X}_i).
+$$
+
+The transformed mean is
+
+$$
+\boldsymbol{\mu}_y
+=
+\sum_{i=0}^{2n}
+W_i^{(m)} \mathcal{Y}_i.
+$$
+
+The transformed covariance is
+
+$$
+\mathbf{P}_y
+=
+\sum_{i=0}^{2n}
+W_i^{(c)}
+(\mathcal{Y}_i - \boldsymbol{\mu}_y)
+(\mathcal{Y}_i - \boldsymbol{\mu}_y)^T.
+$$
+
+If additive noise is part of the transformation, add its covariance after the
+weighted covariance reconstruction.
+
+```{python}
+#| label: fig-ukf-nonlinear-transform
+#| fig-cap: "A nonlinear transformation bends the sigma points. The UKF reconstructs a Gaussian approximation from the transformed points instead of using a local tangent."
+#| code-fold: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def make_sigma_points(mean, covariance, alpha=0.75, beta=2.0, kappa=0.0):
+    n = mean.size
+    lam = alpha**2 * (n + kappa) - n
+    scale = n + lam
+    root = np.linalg.cholesky(scale * covariance)
+    points = [mean]
+    points.extend(mean + root[:, i] for i in range(n))
+    points.extend(mean - root[:, i] for i in range(n))
+    points = np.array(points)
+    wm = np.full(2 * n + 1, 1.0 / (2.0 * scale))
+    wc = np.full(2 * n + 1, 1.0 / (2.0 * scale))
+    wm[0] = lam / scale
+    wc[0] = lam / scale + (1.0 - alpha**2 + beta)
+    return points, wm, wc
+
+
+def nonlinear_map(points):
+    x = points[:, 0]
+    y = points[:, 1]
+    return np.column_stack((x + 0.45 * y**2, np.sin(y) + 0.15 * x))
+
+
+def weighted_mean_and_cov(points, wm, wc):
+    mean = wm @ points
+    diff = points - mean
+    covariance = sum(wc[i] * np.outer(diff[i], diff[i]) for i in range(points.shape[0]))
+    return mean, covariance
+
+
+mean = np.array([1.0, 0.4])
+P = np.array([[0.45, 0.12], [0.12, 0.3]])
+X, wm, wc = make_sigma_points(mean, P)
+Y = nonlinear_map(X)
+y_mean, y_cov = weighted_mean_and_cov(Y, wm, wc)
+
+fig, axes = plt.subplots(1, 2, figsize=(10, 4.5))
+axes[0].scatter(X[:, 0], X[:, 1], s=70)
+axes[0].scatter(mean[0], mean[1], marker="x", color="black", s=90)
+axes[0].set_title("input sigma points")
+axes[0].set_xlabel("x1")
+axes[0].set_ylabel("x2")
+axes[0].grid(True, alpha=0.25)
+
+axes[1].scatter(Y[:, 0], Y[:, 1], s=70)
+axes[1].scatter(y_mean[0], y_mean[1], marker="x", color="black", s=90, label="UKF mean")
+axes[1].set_title("transformed sigma points")
+axes[1].set_xlabel("y1")
+axes[1].set_ylabel("y2")
+axes[1].grid(True, alpha=0.25)
+axes[1].legend()
+
+plt.tight_layout()
+plt.show()
+```
+
+The transformed points do not need to lie on a straight line or an ellipse. The
+UKF uses them only to recover the best Gaussian summary it can from the
+nonlinear transformation.
+
+## UKF Prediction
+
+For the nonlinear process model
+
+$$
+\mathbf{x}_k = f(\mathbf{x}_{k-1}, \mathbf{u}_k) + \mathbf{w}_k,
+$$
+
+the prediction step is:
+
+1. Generate sigma points from $\hat{\mathbf{x}}_{k-1}$ and $\mathbf{P}_{k-1}$.
+2. Propagate each sigma point through the process model:
+
+$$
+\mathcal{X}_{k|k-1}^{(i)}
+=
+f(\mathcal{X}_{k-1}^{(i)}, \mathbf{u}_k).
+$$
+
+3. Reconstruct the predicted mean:
+
+$$
+\hat{\mathbf{x}}_k^-
+=
+\sum_i
+W_i^{(m)}
+\mathcal{X}_{k|k-1}^{(i)}.
+$$
+
+4. Reconstruct the predicted covariance:
+
+$$
+\mathbf{P}_k^-
+=
+\sum_i
+W_i^{(c)}
+(\mathcal{X}_{k|k-1}^{(i)} - \hat{\mathbf{x}}_k^-)
+(\mathcal{X}_{k|k-1}^{(i)} - \hat{\mathbf{x}}_k^-)^T
++
+\mathbf{Q}_k.
+$$
+
+No process Jacobian appears.
+
+## UKF Update
+
+For the nonlinear measurement model
+
+$$
+\mathbf{z}_k = h(\mathbf{x}_k) + \mathbf{v}_k,
+$$
+
+propagate the predicted sigma points into measurement space:
+
+$$
+\mathcal{Z}_k^{(i)}
+=
+h(\mathcal{X}_{k|k-1}^{(i)}).
+$$
+
+The predicted measurement is
+
+$$
+\hat{\mathbf{z}}_k
+=
+\sum_i
+W_i^{(m)}
+\mathcal{Z}_k^{(i)}.
+$$
+
+The innovation covariance is
+
+$$
+\mathbf{S}_k
+=
+\sum_i
+W_i^{(c)}
+(\mathcal{Z}_k^{(i)} - \hat{\mathbf{z}}_k)
+(\mathcal{Z}_k^{(i)} - \hat{\mathbf{z}}_k)^T
++
+\mathbf{R}_k.
+$$
+
+The cross-covariance between state and measurement is
+
+$$
+\mathbf{P}_{xz}
+=
+\sum_i
+W_i^{(c)}
+(\mathcal{X}_{k|k-1}^{(i)} - \hat{\mathbf{x}}_k^-)
+(\mathcal{Z}_k^{(i)} - \hat{\mathbf{z}}_k)^T.
+$$
+
+Then
+
+$$
+\mathbf{K}_k
+=
+\mathbf{P}_{xz}\mathbf{S}_k^{-1},
+$$
+
+$$
+\hat{\mathbf{x}}_k
+=
+\hat{\mathbf{x}}_k^-
++
+\mathbf{K}_k(\mathbf{z}_k - \hat{\mathbf{z}}_k),
+$$
+
+$$
+\mathbf{P}_k
+=
+\mathbf{P}_k^-
+-
+\mathbf{K}_k \mathbf{S}_k \mathbf{K}_k^T.
+$$
+
+## Minimal Implementation Skeleton
+
+```{python}
+#| label: ukf-skeleton-code
+#| eval: false
+
+import numpy as np
+
+
+def unscented_transform(points, wm, wc, noise_cov=None):
+    mean = wm @ points
+    diff = points - mean
+    covariance = sum(wc[i] * np.outer(diff[i], diff[i]) for i in range(points.shape[0]))
+    if noise_cov is not None:
+        covariance = covariance + noise_cov
+    return mean, covariance
+
+
+def ukf_predict(x, P, u, Q, process_model, sigma_point_fn):
+    points, wm, wc = sigma_point_fn(x, P)
+    propagated = np.array([process_model(point, u) for point in points])
+    x_bar, P_bar = unscented_transform(propagated, wm, wc, Q)
+    return x_bar, P_bar, propagated, wm, wc
+
+
+def ukf_update(x_bar, P_bar, propagated_points, wm, wc, z, R, measurement_model):
+    z_points = np.array([measurement_model(point) for point in propagated_points])
+    z_bar, S = unscented_transform(z_points, wm, wc, R)
+
+    dx = propagated_points - x_bar
+    dz = z_points - z_bar
+    P_xz = sum(wc[i] * np.outer(dx[i], dz[i]) for i in range(propagated_points.shape[0]))
+
+    K = np.linalg.solve(S.T, P_xz.T).T
+    innovation = z - z_bar
+    x = x_bar + K @ innovation
+    P = P_bar - K @ S @ K.T
+    return x, P, innovation, S
+```
+
+This skeleton omits important production details: angle wrapping, positive
+definite covariance repair, square-root filtering, additive versus augmented
+noise handling, and state components that do not live in ordinary Euclidean
+space. Those details are not optional in serious navigation software.
+
+## Practical Implementation Considerations
+
+The UKF removes Jacobians from the main loop, but it does not remove numerical
+care. It trades derivative bookkeeping for sigma-point bookkeeping.
+
+The sigma-point scaling parameters matter. Very small $\alpha$ values keep
+points close to the mean, which can miss nonlinear curvature. Larger values
+sample farther away, which can expose nonlinear behavior but may stress models
+outside their valid region. Start with conventional values, then check
+innovations, consistency, and whether transformed sigma points remain physically
+meaningful.
+
+A standard UKF needs a matrix square root of the covariance. Cholesky
+factorization is fast, but it requires positive definite covariance. If it
+fails, the right fix is usually to inspect the model and covariance update, not
+to blindly add a large diagonal term. A small jitter can be useful as a last
+numerical guardrail.
+
+```{python}
+#| label: ukf-stable-cholesky-code
+#| eval: false
+
+import numpy as np
+
+
+def stable_cholesky(P: np.ndarray, jitter: float = 1e-10, max_tries: int = 5) -> np.ndarray:
+    P = 0.5 * (P + P.T)
+    for i in range(max_tries):
+        try:
+            return np.linalg.cholesky(P + (10**i) * jitter * np.eye(P.shape[0]))
+        except np.linalg.LinAlgError:
+            pass
+    raise np.linalg.LinAlgError("covariance is not positive definite")
+```
+
+For additive process and measurement noise, adding $\mathbf{Q}$ and
+$\mathbf{R}$ after the unscented transform is usually sufficient. For
+non-additive noise, augment the state with noise variables and generate sigma
+points over the augmented covariance. That is more expensive, but it models how
+noise passes through the nonlinear functions.
+
+As with the EKF, avoid explicit inverses in the update. Compute the gain with a
+solve:
+
+```{python}
+#| label: ukf-gain-solve-code
+#| eval: false
+
+import numpy as np
+
+
+def ukf_gain(P_xz: np.ndarray, S: np.ndarray) -> np.ndarray:
+    return np.linalg.solve(S.T, P_xz.T).T
+```
+
+Angle states require special handling. Do not average headings by ordinary
+weighted arithmetic near the wrap boundary. Use sine/cosine averaging for planar
+angles, and use a manifold-aware mean for quaternions or rotation matrices.
+
+```{python}
+#| label: ukf-circular-mean-code
+#| eval: false
+
+import numpy as np
+
+
+def circular_mean(angles: np.ndarray, weights: np.ndarray) -> float:
+    s = np.sum(weights * np.sin(angles))
+    c = np.sum(weights * np.cos(angles))
+    return float(np.arctan2(s, c))
+```
+
+## EKF vs UKF
+
+The UKF is attractive because it avoids Jacobians and often handles nonlinear
+transformations better than a first-order EKF. That does not make it universally
+better.
+
+EKF advantages:
+
+- fewer model evaluations per time step;
+- often faster for high-dimensional systems;
+- well understood and widely deployed;
+- analytical Jacobians reveal observability and state coupling.
+
+UKF advantages:
+
+- no process or measurement Jacobians;
+- often better mean and covariance propagation through curved functions;
+- easier to prototype when models change frequently;
+- useful when deriving Jacobians would be painful or error-prone.
+
+UKF costs:
+
+- $2n+1$ sigma points for an $n$-state filter;
+- more model evaluations;
+- sensitivity to sigma point scaling parameters;
+- care required for angles, quaternions, and constrained states.
+
+For small to medium nonlinear navigation problems, the UKF is often a very good
+teaching and prototyping tool. For large inertial navigation systems, EKF and
+error-state EKF formulations remain common because they are computationally
+efficient and fit the structure of the physics.
+
+## Algorithm Summary
+
+```text
+predict:
+    generate sigma points from x, P
+    propagate each point through f(point, u)
+    reconstruct x_bar and P_bar
+    add Q
+
+update:
+    pass predicted sigma points through h(point)
+    reconstruct predicted measurement z_bar and S
+    compute cross covariance P_xz
+    K = P_xz inv(S)
+    x = x_bar + K (z - z_bar)
+    P = P_bar - K S K.T
+```
+
+The UKF's central idea is simple: when nonlinear functions bend uncertainty,
+sample the uncertainty structure before the bend, push those points through the
+real function, and rebuild the Gaussian afterward.

@@ -388,7 +388,7 @@ for i in range(len(eigenvalues)):
 | Norm | Formula |
 |------|---------|
 | Frobenius | $\|\mathbf{A}\|_F = \sqrt{\sum_{i,j} A_{ij}^2}$ |
-| Induced 2-norm | $\|\mathbf{A}\|_2 = \sigma_\max(\mathbf{A})$ |
+| Induced 2-norm | $\|\mathbf{A}\|_2 = \sigma_{\max}(\mathbf{A})$ |
 
 ### Condition number
 

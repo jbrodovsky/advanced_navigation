@@ -1,57 +1,543 @@
-# Particle Filters & Non-parametric Estimation
+# Nonparametric Filters and Particle Filters
 
-## The Limitations of Gaussian Beliefs
+Kalman-style filters represent belief with a mean and covariance. That is
+efficient, but it commits us to a Gaussian-shaped story about uncertainty. Some
+navigation problems do not have a Gaussian-shaped story.
 
-Both the EKF and UKF are **Parametric Filters**. They assume that the belief distribution is always a Gaussian (parameterized by a mean and covariance). 
+A robot in a symmetric hallway may reasonably believe it is in one of several
+places. A kidnapped robot may have no useful prior at all. A sensor model with
+ambiguous landmarks may produce multiple plausible hypotheses. In those cases,
+a single mean can be worse than useless because it may sit in a place the robot
+almost certainly is not.
 
-However, in many navigation scenarios, the distribution is **Multimodal** (multiple "peaks"). Consider a robot in a symmetrical hallway: it might believe it is at either end of the hall, but definitely not in the middle. A single Gaussian mean would erroneously place the robot in the middle of the hall.
+Nonparametric filters represent belief with a finite collection of values
+instead of a fixed analytic distribution. This chapter covers two important
+examples: histogram filters and particle filters.
 
-## Sequential Monte Carlo (Particle Filters)
+## What Nonparametric Means Here
 
-The **Particle Filter** is a **Non-parametric Filter**. Instead of a functional form (like a Gaussian), it represents the probability distribution using a collection of discrete samples called **Particles**.
+"Nonparametric" does not mean "no parameters." It means the belief is not forced
+into a fixed family such as a Gaussian. The representation can become more
+flexible as we add grid cells or particles.
 
-### Key Concept: The Importance Sampling
-Each particle represents a hypothesis of the robot's state. We move the particles according to the motion model (with noise) and then "weight" them based on how well they match the sensor measurements.
+The trade is direct:
 
-### The Algorithm
-1. **Prediction**: Propagate each particle forward using the motion model: $x_t^{[i]} \sim p(x_t | x_{t-1}^{[i]}, u_t)$.
-2. **Weighting**: Update the weight of each particle based on the measurement likelihood: $w_t^{[i]} = w_{t-1}^{[i]} \cdot p(z_t | x_t^{[i]})$.
-3. **Resampling**: To prevent "particle depletion" (where all but one particle have near-zero weights), we periodically duplicate particles with high weights and discard those with low weights.
+- more cells or particles can represent more complicated beliefs;
+- more cells or particles cost more computation and memory;
+- too few cells or particles can produce confident nonsense.
 
-## The Resampling Dilemma
+There is no free lunch. There is only a better invoice.
 
-Resampling is a double-edged sword:
-- **Good**: It focuses computation on the most likely regions of the state space.
-- **Bad**: It reduces the diversity of the particles (the "sample impoverishment" problem). 
+## Histogram Filters
 
-In industry, we monitor the **Effective Number of Particles** ($N_{eff}$) and only resample when $N_{eff}$ falls below a threshold (usually $N/2$).
+A histogram filter decomposes the state space into regions and stores a
+probability mass for each region. In a 2D map, the regions might be square grid
+cells. In a 1D example, they are intervals along a line.
 
-## Example: Particle Filter in Python
+Let $c_i$ be cell $i$. The belief is
 
-```python
+$$
+\operatorname{bel}(c_i)
+=
+p(\mathbf{x} \in c_i).
+$$
+
+The prediction step is
+
+$$
+\overline{\operatorname{bel}}(c_i)
+=
+\sum_j
+p(c_i \mid c_j, \mathbf{u})
+\operatorname{bel}(c_j).
+$$
+
+The update step is
+
+$$
+\operatorname{bel}(c_i)
+=
+\eta
+p(\mathbf{z} \mid c_i)
+\overline{\operatorname{bel}}(c_i).
+$$
+
+This is the discrete Bayes filter again, but with cells instead of exact state
+values.
+
+## Grid Decomposition Choices
+
+A uniform grid is simple: every cell has the same size. It is easy to implement
+and reason about, but it wastes computation in unimportant regions and loses
+detail where the belief is sharp.
+
+A quadtree-style grid starts coarse and subdivides regions where more detail is
+needed. This can be more efficient, but the implementation is more complicated.
+The filter must now manage probability mass across cells of different sizes.
+
+For teaching and many small problems, use a uniform grid first. For production
+mapping and planning systems, adaptive grids can be worth the complexity.
+
+```{python}
+#| label: histogram-filter-code
+#| eval: false
+
 import numpy as np
-from advnav.filters import ParticleFilter
 
-# 1. Initialize 1000 particles in a 1D space
-pf = ParticleFilter(num_particles=1000, dim_x=1)
-pf.particles = np.random.uniform(-10, 10, (1000, 1))
 
-# 2. Define a simple 1D motion model
-def f_1d(x, u):
-    return x + u
+def histogram_predict(belief, transition):
+    """transition[i, j] = p(cell i at t | cell j at t-1)."""
+    predicted = transition @ belief
+    return predicted / predicted.sum()
 
-# 3. Define a likelihood function (Gaussian centered at z)
-def likelihood(z, x):
-    return np.exp(-0.5 * (z - x)**2 / 0.5**2)
 
-# Simulate a step
-pf.predict(f_1d, Q_std=[0.1], u=1.0)
-pf.update(z=1.1, likelihood_func=likelihood)
-
-# Resample if needed
-if pf.neff() < 500:
-    pf.resample()
-
-mean, var = pf.estimate()
-print(f"PF Estimated Mean: {mean[0]:.2f}, Variance: {var[0]:.2f}")
+def histogram_update(predicted, likelihood):
+    posterior = predicted * likelihood
+    total = posterior.sum()
+    if total <= 0.0:
+        raise ValueError("measurement assigned zero probability to all cells")
+    return posterior / total
 ```
+
+The histogram filter is conceptually clean. Its main problem is dimensionality.
+If each state dimension uses 100 cells, then a 6D state requires
+$100^6 = 10^{12}$ cells. That is not a filter. That is a funding proposal.
+
+## Particle Filters
+
+A particle filter represents the belief with weighted samples:
+
+$$
+\operatorname{bel}(\mathbf{x})
+\approx
+\left\{
+(\mathbf{x}^{[i]}, w^{[i]})
+\right\}_{i=1}^N.
+$$
+
+Each particle is a hypothesis about the state. Its weight says how plausible
+that hypothesis is.
+
+The particle filter loop has three basic operations:
+
+1. **Prediction**: sample a new state for each particle from the motion model.
+2. **Weighting**: assign each particle a weight using the measurement
+   likelihood.
+3. **Resampling**: draw a new particle set from the old one with probability
+   proportional to the weights.
+
+This is also called sequential Monte Carlo estimation.
+
+## Prediction
+
+The prediction step samples
+
+$$
+\mathbf{x}_k^{[i]}
+\sim
+p(\mathbf{x}_k \mid \mathbf{x}_{k-1}^{[i]}, \mathbf{u}_k).
+$$
+
+In code, this usually means propagating each particle through the motion model
+and adding process noise:
+
+```{python}
+#| label: particle-predict-code
+#| eval: false
+
+import numpy as np
+
+
+def predict_particles(particles, control, dt, rng, linear_std, angular_std):
+    """Simple planar unicycle prediction for particles [x, y, theta]."""
+    noisy_v = control[0] + rng.normal(0.0, linear_std, size=particles.shape[0])
+    noisy_w = control[1] + rng.normal(0.0, angular_std, size=particles.shape[0])
+
+    theta = particles[:, 2]
+    particles[:, 0] += noisy_v * np.cos(theta) * dt
+    particles[:, 1] += noisy_v * np.sin(theta) * dt
+    particles[:, 2] += noisy_w * dt
+    particles[:, 2] = (particles[:, 2] + np.pi) % (2.0 * np.pi) - np.pi
+    return particles
+```
+
+Unlike an EKF, the process model does not need to be linearized. It only needs
+to be sampled.
+
+## Weighting
+
+After receiving measurement $\mathbf{z}_k$, each particle weight is updated by
+the likelihood:
+
+$$
+w_k^{[i]}
+\propto
+w_{k-1}^{[i]}
+p(\mathbf{z}_k \mid \mathbf{x}_k^{[i]}).
+$$
+
+For a range measurement to a known landmark, a simple likelihood is
+
+$$
+p(z \mid \mathbf{x}^{[i]})
+\propto
+\exp
+\left(
+-\frac{(z - h(\mathbf{x}^{[i]}))^2}{2\sigma_z^2}
+\right).
+$$
+
+The weights are normalized so they sum to one.
+
+```{python}
+#| label: particle-weight-code
+#| eval: false
+
+import numpy as np
+
+
+def update_range_weights(particles, weights, measured_range, landmark, sigma):
+    dx = particles[:, 0] - landmark[0]
+    dy = particles[:, 1] - landmark[1]
+    expected = np.sqrt(dx * dx + dy * dy)
+    residual = measured_range - expected
+
+    likelihood = np.exp(-0.5 * (residual / sigma) ** 2)
+    weights = weights * likelihood
+    total = weights.sum()
+    if total <= 0.0:
+        weights = np.full_like(weights, 1.0 / weights.size)
+    else:
+        weights = weights / total
+    return weights
+```
+
+## Effective Number of Particles
+
+After several updates, many particles may have tiny weights. A useful diagnostic
+is the effective number of particles:
+
+$$
+N_\text{eff}
+=
+\frac{1}{\sum_i (w^{[i]})^2}.
+$$
+
+If all particles have equal weights, $N_\text{eff}=N$. If one particle has all
+the weight, $N_\text{eff}=1$. A common rule is to resample when
+$N_\text{eff} < N/2$.
+
+```{python}
+#| label: particle-neff-code
+#| eval: false
+
+import numpy as np
+
+
+def effective_particle_count(weights):
+    return 1.0 / np.sum(weights * weights)
+```
+
+## Resampling
+
+Resampling draws a new particle set from the current set with replacement. High
+weight particles are likely to be copied. Low weight particles are likely to
+disappear.
+
+The simplest method is multinomial resampling, but it can add unnecessary
+randomness. Low-variance resampling uses one random offset and walks through
+the cumulative weight distribution at evenly spaced intervals.
+
+```{python}
+#| label: particle-low-variance-resampling-code
+#| eval: false
+
+import numpy as np
+
+
+def low_variance_resample(particles, weights, rng):
+    n = particles.shape[0]
+    positions = (rng.random() + np.arange(n)) / n
+    cumulative = np.cumsum(weights)
+    indexes = np.searchsorted(cumulative, positions)
+
+    resampled_particles = particles[indexes].copy()
+    resampled_weights = np.full(n, 1.0 / n)
+    return resampled_particles, resampled_weights
+```
+
+Resampling focuses computation on plausible regions. It also reduces diversity.
+That is the central resampling dilemma.
+
+```{python}
+#| label: fig-particle-weighting-resampling
+#| fig-cap: "Particle weighting and resampling in 1D. The measurement favors particles near the measured position; resampling concentrates particles in that region and resets weights."
+#| code-fold: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+rng = np.random.default_rng(7)
+n = 600
+
+particles = np.concatenate([
+    rng.normal(2.0, 0.45, size=n // 2),
+    rng.normal(7.2, 0.65, size=n // 2),
+])
+weights = np.full(n, 1.0 / n)
+
+measurement = 6.8
+sigma_z = 0.55
+likelihood = np.exp(-0.5 * ((measurement - particles) / sigma_z) ** 2)
+weights = weights * likelihood
+weights = weights / weights.sum()
+
+positions = (rng.random() + np.arange(n)) / n
+cumulative = np.cumsum(weights)
+indexes = np.searchsorted(cumulative, positions)
+resampled = particles[indexes]
+
+fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+axes[0].scatter(particles, weights, s=12, alpha=0.65)
+axes[0].axvline(measurement, color="black", linestyle=":", label="measurement")
+axes[0].set_ylabel("particle weight")
+axes[0].set_title("after measurement weighting")
+axes[0].grid(True, alpha=0.25)
+axes[0].legend()
+
+axes[1].hist(resampled, bins=45, density=True, alpha=0.75)
+axes[1].axvline(measurement, color="black", linestyle=":", label="measurement")
+axes[1].set_xlabel("state")
+axes[1].set_ylabel("particle density")
+axes[1].set_title("after low-variance resampling")
+axes[1].grid(True, alpha=0.25)
+axes[1].legend()
+
+plt.tight_layout()
+plt.show()
+```
+
+## Sample Impoverishment
+
+Sample impoverishment happens when repeated resampling removes too much
+particle diversity. After enough resampling, the filter may contain many copies
+of a few particles. If the true state later moves outside that region, the
+filter may not recover.
+
+Common mitigations include:
+
+- resample only when $N_\text{eff}$ is low;
+- add small roughening noise after resampling;
+- inject random particles during recovery;
+- use a better proposal distribution;
+- improve the motion and measurement models so fewer particles are wasted.
+
+Particle filters are powerful, but they are not "turn off math and add samples."
+The proposal distribution and resampling strategy matter.
+
+## Recovery from Failure
+
+A particle filter can recover from global ambiguity better than a Gaussian
+filter if it maintains enough diversity. For kidnapped-robot-style failures,
+some systems deliberately inject random particles:
+
+```{python}
+#| label: particle-recovery-code
+#| eval: false
+
+import numpy as np
+
+
+def inject_random_particles(particles, weights, fraction, bounds, rng):
+    n = particles.shape[0]
+    m = int(np.ceil(fraction * n))
+    indexes = rng.choice(n, size=m, replace=False)
+
+    for dim, (low, high) in enumerate(bounds):
+        particles[indexes, dim] = rng.uniform(low, high, size=m)
+
+    weights[:] = 1.0 / n
+    return particles, weights
+```
+
+This is deliberately blunt. It says: "Some of our hypotheses may be terrible;
+keep a few alternatives alive." The right fraction depends on the environment,
+sensor reliability, and how catastrophic localization failure would be.
+
+## Practical Implementation Considerations
+
+Particle filters are easy to write and easy to quietly ruin. The most common
+issues are weight underflow, resampling too often, resampling too randomly, and
+summarizing a multimodal particle cloud with a misleading mean.
+
+Use log weights when likelihoods can become very small:
+
+```{python}
+#| label: particle-log-weight-code
+#| eval: false
+
+import numpy as np
+
+
+def normalize_log_weights(log_weights: np.ndarray) -> np.ndarray:
+    shifted = log_weights - np.max(log_weights)
+    weights = np.exp(shifted)
+    return weights / np.sum(weights)
+```
+
+Resample only when needed. The usual threshold is
+$N_\text{eff} < \alpha N$, with $\alpha$ often around $0.5$. Resampling at
+every step can erase diversity. Never resampling lets all weight collapse onto a
+few particles.
+
+```{python}
+#| label: particle-thresholded-resampling-code
+#| eval: false
+
+import numpy as np
+
+
+def maybe_resample(particles, weights, rng, threshold_fraction=0.5):
+    n = particles.shape[0]
+    n_eff = 1.0 / np.sum(weights * weights)
+    if n_eff >= threshold_fraction * n:
+        return particles, weights, False
+
+    positions = (rng.random() + np.arange(n)) / n
+    indexes = np.searchsorted(np.cumsum(weights), positions)
+    return particles[indexes].copy(), np.full(n, 1.0 / n), True
+```
+
+Resampling methods differ:
+
+| Method | Basic idea | Practical behavior |
+|---|---|---|
+| Multinomial | Draw every new particle independently from the weight distribution | Simple, but highest sampling variance |
+| Residual | Deterministically copy the integer part of $Nw_i$, then sample the remainder | Lower variance, slightly more bookkeeping |
+| Stratified | Draw one sample from each of $N$ equal probability intervals | Lower variance than multinomial |
+| Systematic / low variance | Use one random offset and evenly spaced samples | Simple, fast, common in robotics |
+
+After resampling, all weights are usually reset to $1/N$. If the particle cloud
+collapses too tightly, roughening can add small noise after resampling. Use this
+carefully: roughening is a recovery tool, not a substitute for a reasonable
+motion model.
+
+For circular states, compute estimates with circular statistics:
+
+```{python}
+#| label: particle-circular-estimate-code
+#| eval: false
+
+import numpy as np
+
+
+def weighted_heading_mean(headings: np.ndarray, weights: np.ndarray) -> float:
+    s = np.sum(weights * np.sin(headings))
+    c = np.sum(weights * np.cos(headings))
+    return float(np.arctan2(s, c))
+```
+
+For multimodal beliefs, a single weighted mean may be the wrong output. Report
+the particle set, cluster hypotheses, or keep multiple candidate estimates when
+the downstream system can handle them. A particle filter that correctly knows
+"maybe here or maybe there" should not be forced to lie with one average.
+
+## A Planar Particle Filter
+
+For the common 2D robot state
+
+$$
+\mathbf{x}
+=
+\begin{bmatrix}
+x & y & \theta
+\end{bmatrix}^T,
+$$
+
+a control input might be linear and angular velocity:
+
+$$
+\mathbf{u}
+=
+\begin{bmatrix}
+v & \omega
+\end{bmatrix}^T.
+$$
+
+One sampled motion update is
+
+$$
+x_k^{[i]}
+=
+x_{k-1}^{[i]}
++
+\tilde{v}^{[i]}\cos(\theta_{k-1}^{[i]})\Delta t,
+$$
+
+$$
+y_k^{[i]}
+=
+y_{k-1}^{[i]}
++
+\tilde{v}^{[i]}\sin(\theta_{k-1}^{[i]})\Delta t,
+$$
+
+$$
+\theta_k^{[i]}
+=
+\theta_{k-1}^{[i]}
++
+\tilde{\omega}^{[i]}\Delta t.
+$$
+
+Here $\tilde{v}^{[i]}$ and $\tilde{\omega}^{[i]}$ are noisy samples around the
+commanded motion. The measurement update then scores each particle using the
+sensor model: range-bearing landmarks, lidar likelihood fields, camera feature
+likelihoods, or any other model that can return $p(\mathbf{z}\mid
+\mathbf{x}^{[i]})$.
+
+## Particle Filter Algorithm
+
+```text
+initialize particles and weights
+
+for each time step:
+    for each particle:
+        sample new particle from motion model
+        compute measurement likelihood
+        update particle weight
+
+    normalize weights
+
+    if effective particle count is too low:
+        resample particles
+        reset weights
+
+    estimate state from weighted particles
+```
+
+The state estimate can be the weighted mean, but be careful with circular
+variables and multimodal beliefs. If half the particles are in one hallway and
+half are in another, the mean may be a confidently bad summary.
+
+## When Particle Filters Are a Good Choice
+
+Particle filters are useful when:
+
+- the belief can be multimodal;
+- measurement likelihoods are strongly nonlinear;
+- the state dimension is modest;
+- the motion model can be sampled;
+- ambiguous data association is central to the problem.
+
+They struggle when:
+
+- the state dimension is high;
+- the measurement is very informative but the proposal distribution is poor;
+- too few particles are used;
+- resampling removes diversity too aggressively;
+- runtime constraints are tight.
+
+In navigation, particle filters are especially common in localization against
+maps, global relocalization, and teaching examples where the shape of the belief
+matters more than raw runtime.

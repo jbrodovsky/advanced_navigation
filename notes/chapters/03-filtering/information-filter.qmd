@@ -1,0 +1,708 @@
+# The Information Filter
+
+The Kalman filter represents a Gaussian belief with a mean and covariance. The
+Information Filter represents the same Gaussian belief with an information
+matrix and an information vector. It is not a different probabilistic
+assumption. It is a different coordinate system for the same linear-Gaussian
+estimator.
+
+That change of coordinates is useful in some problems and annoying in others.
+This chapter keeps the focus narrow: what the information form is, why the
+measurement update is attractive, how it compares with Kalman filtering, and
+what nonlinear variants look like.
+
+## Covariance Form and Information Form
+
+In covariance form, a Gaussian belief is written as
+
+$$
+p(\mathbf{x})
+=
+\mathcal{N}(\hat{\mathbf{x}}, \mathbf{P}),
+$$
+
+where $\hat{\mathbf{x}}$ is the mean and $\mathbf{P}$ is the covariance.
+
+In information form, the same Gaussian is represented by
+
+$$
+\boldsymbol{\Omega}
+=
+\mathbf{P}^{-1},
+$$
+
+$$
+\boldsymbol{\xi}
+=
+\boldsymbol{\Omega}\hat{\mathbf{x}}.
+$$
+
+The matrix $\boldsymbol{\Omega}$ is the **information matrix** or **precision
+matrix**. The vector $\boldsymbol{\xi}$ is the **information vector**.
+
+To recover covariance form:
+
+$$
+\mathbf{P}
+=
+\boldsymbol{\Omega}^{-1},
+$$
+
+$$
+\hat{\mathbf{x}}
+=
+\mathbf{P}\boldsymbol{\xi}.
+$$
+
+In scalar form, information is just inverse variance:
+
+$$
+\omega = \frac{1}{\sigma^2}.
+$$
+
+High variance means low information. Low variance means high information. This
+is a useful intuition, but do not push it too far: in multiple dimensions, the
+off-diagonal terms also matter.
+
+```{python}
+#| label: fig-information-variance-precision
+#| fig-cap: "Scalar information is inverse variance. As uncertainty shrinks, precision grows quickly."
+#| code-fold: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+sigma = np.linspace(0.1, 3.0, 500)
+variance = sigma**2
+precision = 1.0 / variance
+
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.plot(variance, precision)
+ax.set_xlabel("variance")
+ax.set_ylabel("information / precision")
+ax.set_title("Information form stores inverse uncertainty")
+ax.grid(True, alpha=0.25)
+plt.show()
+```
+
+## Why Use Information Form?
+
+The Kalman filter's covariance form is usually easier to interpret. The
+covariance matrix directly describes uncertainty, and prediction has a clean
+form:
+
+$$
+\mathbf{P}_k^-
+=
+\mathbf{F}_k\mathbf{P}_{k-1}\mathbf{F}_k^T + \mathbf{Q}_k.
+$$
+
+Information form is most attractive when many independent measurements arrive.
+Independent Gaussian measurement contributions add directly to the information
+matrix and vector. That is useful in distributed sensor fusion, sparse mapping,
+factor graph methods, and large systems where most variables interact only
+locally.
+
+The trade is that prediction is less natural in information form. Updates are
+where the information filter looks elegant. Prediction is where it sighs and
+reaches for matrix identities.
+
+## Linear Measurement Update
+
+Start from a prior belief in information form:
+
+$$
+\boldsymbol{\Omega}^-
+=
+(\mathbf{P}^-)^{-1},
+\qquad
+\boldsymbol{\xi}^-
+=
+\boldsymbol{\Omega}^-\hat{\mathbf{x}}^-.
+$$
+
+For a linear measurement model,
+
+$$
+\mathbf{z}
+=
+\mathbf{H}\mathbf{x} + \mathbf{v},
+\qquad
+\mathbf{v} \sim \mathcal{N}(\mathbf{0}, \mathbf{R}),
+$$
+
+the posterior information matrix is
+
+$$
+\boldsymbol{\Omega}
+=
+\boldsymbol{\Omega}^-
++
+\mathbf{H}^T\mathbf{R}^{-1}\mathbf{H}.
+$$
+
+The posterior information vector is
+
+$$
+\boldsymbol{\xi}
+=
+\boldsymbol{\xi}^-
++
+\mathbf{H}^T\mathbf{R}^{-1}\mathbf{z}.
+$$
+
+That is the main appeal: measurement updates are additive. Each independent
+measurement contributes one information matrix term and one information vector
+term.
+
+## Scalar Example: Same Posterior as Kalman
+
+For a scalar state with prior $x \sim \mathcal{N}(\mu^-, P^-)$ and measurement
+$z = x + v$, the Kalman update is
+
+$$
+K = \frac{P^-}{P^- + R},
+$$
+
+$$
+\mu = \mu^- + K(z-\mu^-),
+$$
+
+$$
+P = (1-K)P^-.
+$$
+
+In information form,
+
+$$
+\omega = \frac{1}{P^-} + \frac{1}{R},
+$$
+
+$$
+\xi = \frac{\mu^-}{P^-} + \frac{z}{R}.
+$$
+
+Then
+
+$$
+P = \frac{1}{\omega},
+\qquad
+\mu = \frac{\xi}{\omega}.
+$$
+
+```{python}
+#| label: fig-information-kalman-equivalence
+#| fig-cap: "Scalar Kalman and information-form updates produce the same posterior. The information update reaches it by adding precision-weighted terms."
+#| code-fold: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def gaussian_pdf(x, mean, variance):
+    return np.exp(-0.5 * (x - mean) ** 2 / variance) / np.sqrt(2.0 * np.pi * variance)
+
+
+prior_mean = 1.0
+prior_var = 1.4
+measurement = 2.5
+measurement_var = 0.35
+
+K = prior_var / (prior_var + measurement_var)
+kalman_mean = prior_mean + K * (measurement - prior_mean)
+kalman_var = (1.0 - K) * prior_var
+
+omega = 1.0 / prior_var + 1.0 / measurement_var
+xi = prior_mean / prior_var + measurement / measurement_var
+information_var = 1.0 / omega
+information_mean = information_var * xi
+
+print(f"Kalman posterior mean:      {kalman_mean:.6f}")
+print(f"Information posterior mean: {information_mean:.6f}")
+print(f"Kalman posterior var:       {kalman_var:.6f}")
+print(f"Information posterior var:  {information_var:.6f}")
+
+x = np.linspace(-2.0, 5.0, 800)
+prior = gaussian_pdf(x, prior_mean, prior_var)
+likelihood = gaussian_pdf(x, measurement, measurement_var)
+posterior = gaussian_pdf(x, information_mean, information_var)
+
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.plot(x, prior, label="prior")
+ax.plot(x, likelihood, label="measurement likelihood")
+ax.plot(x, posterior, label="posterior", linewidth=2.5)
+ax.axvline(kalman_mean, color="black", linestyle=":", label="posterior mean")
+ax.set_xlabel("state")
+ax.set_ylabel("probability density")
+ax.set_title("Kalman and information updates are equivalent")
+ax.grid(True, alpha=0.25)
+ax.legend()
+plt.show()
+```
+
+The numbers match because both forms are doing the same Bayesian update. One
+stores covariance. The other stores precision.
+
+## Multiple Independent Measurements
+
+Suppose several independent sensors observe the same scalar state:
+
+$$
+z_i = x + v_i,
+\qquad
+v_i \sim \mathcal{N}(0, R_i).
+$$
+
+The posterior information is
+
+$$
+\omega
+=
+\omega^-
++
+\sum_i \frac{1}{R_i}.
+$$
+
+The posterior information vector is
+
+$$
+\xi
+=
+\xi^-
++
+\sum_i \frac{z_i}{R_i}.
+$$
+
+The measurements simply add. Sensors with smaller variance contribute more
+information. Sensors with large variance still contribute, but only a little.
+
+```{python}
+#| label: fig-information-additive-measurements
+#| fig-cap: "Independent measurements add information. Low-noise measurements contribute more precision than high-noise measurements."
+#| code-fold: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+prior_mean = 0.0
+prior_var = 4.0
+measurements = np.array([1.6, 2.1, 1.8, 4.0])
+variances = np.array([0.45, 0.25, 0.8, 5.0])
+
+omega_terms = 1.0 / variances
+xi_terms = measurements / variances
+
+omega = 1.0 / prior_var
+xi = prior_mean / prior_var
+
+posterior_means = []
+posterior_vars = []
+for omega_i, xi_i in zip(omega_terms, xi_terms):
+    omega += omega_i
+    xi += xi_i
+    posterior_vars.append(1.0 / omega)
+    posterior_means.append(xi / omega)
+
+fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+axes[0].bar(np.arange(len(measurements)) + 1, omega_terms)
+axes[0].set_xlabel("measurement number")
+axes[0].set_ylabel("information contribution")
+axes[0].set_title("Each measurement adds precision")
+axes[0].grid(True, axis="y", alpha=0.25)
+
+axes[1].plot(np.arange(1, len(measurements) + 1), posterior_vars, marker="o", label="posterior variance")
+axes[1].set_xlabel("measurements incorporated")
+axes[1].set_ylabel("variance")
+axes[1].set_title("Posterior variance shrinks as information accumulates")
+axes[1].grid(True, alpha=0.25)
+axes[1].legend()
+
+plt.tight_layout()
+plt.show()
+```
+
+This is where information form feels natural. A batch of independent
+measurements becomes a sum of terms. In a large sparse problem, most
+measurements touch only a few state variables, so the information matrix can
+remain sparse.
+
+## Linear Prediction
+
+For the linear process model
+
+$$
+\mathbf{x}_k
+=
+\mathbf{F}\mathbf{x}_{k-1}
++
+\mathbf{B}\mathbf{u}_k
++
+\mathbf{w}_k,
+\qquad
+\mathbf{w}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{Q}),
+$$
+
+the covariance-form prediction is
+
+$$
+\hat{\mathbf{x}}_k^-
+=
+\mathbf{F}\hat{\mathbf{x}}_{k-1}
++
+\mathbf{B}\mathbf{u}_k,
+$$
+
+$$
+\mathbf{P}_k^-
+=
+\mathbf{F}\mathbf{P}_{k-1}\mathbf{F}^T
++
+\mathbf{Q}.
+$$
+
+The direct information-form prediction is less tidy because process noise adds
+in covariance space, not information space. The straightforward implementation
+is:
+
+1. Convert from information form to covariance form.
+2. Apply the normal Kalman prediction.
+3. Convert the predicted result back to information form.
+
+```{python}
+#| label: information-predict-code
+#| eval: false
+
+import numpy as np
+
+
+def information_to_covariance(Omega, xi):
+    P = np.linalg.inv(Omega)
+    x_hat = P @ xi
+    return x_hat, P
+
+
+def covariance_to_information(x_hat, P):
+    Omega = np.linalg.inv(P)
+    xi = Omega @ x_hat
+    return Omega, xi
+
+
+def information_predict(Omega, xi, F, B, u, Q):
+    x_hat, P = information_to_covariance(Omega, xi)
+    x_bar = F @ x_hat + B @ u
+    P_bar = F @ P @ F.T + Q
+    return covariance_to_information(x_bar, P_bar)
+```
+
+There are matrix identities that avoid some explicit inversions in special
+cases, but the conceptual issue remains: information form makes measurement
+fusion clean and prediction less clean.
+
+## Linear Information Filter Algorithm
+
+For each time step:
+
+```text
+predict:
+    convert Omega, xi to x, P
+    x_bar = F x + B u
+    P_bar = F P F.T + Q
+    Omega_bar = inv(P_bar)
+    xi_bar = Omega_bar x_bar
+
+update:
+    Omega = Omega_bar + H.T inv(R) H
+    xi = xi_bar + H.T inv(R) z
+```
+
+The update can also be applied measurement by measurement:
+
+```text
+for each independent measurement:
+    Omega += H_i.T inv(R_i) H_i
+    xi += H_i.T inv(R_i) z_i
+```
+
+That incremental structure is one reason the information view shows up in
+multi-sensor fusion and graph-based estimation.
+
+## Extended Information Filter
+
+The Extended Information Filter (EIF) is the information-form analogue of the
+Extended Kalman Filter. For a nonlinear measurement
+
+$$
+\mathbf{z} = h(\mathbf{x}) + \mathbf{v},
+$$
+
+linearize around the predicted estimate $\hat{\mathbf{x}}^-$:
+
+$$
+h(\mathbf{x})
+\approx
+h(\hat{\mathbf{x}}^-)
++
+\mathbf{H}(\mathbf{x} - \hat{\mathbf{x}}^-).
+$$
+
+Rearrange this into a linear pseudo-measurement:
+
+$$
+\mathbf{z}
+-
+h(\hat{\mathbf{x}}^-)
++
+\mathbf{H}\hat{\mathbf{x}}^-
+\approx
+\mathbf{H}\mathbf{x}
++
+\mathbf{v}.
+$$
+
+Define
+
+$$
+\tilde{\mathbf{z}}
+=
+\mathbf{z}
+-
+h(\hat{\mathbf{x}}^-)
++
+\mathbf{H}\hat{\mathbf{x}}^-.
+$$
+
+Then the information update is
+
+$$
+\boldsymbol{\Omega}
+=
+\boldsymbol{\Omega}^-
++
+\mathbf{H}^T\mathbf{R}^{-1}\mathbf{H},
+$$
+
+$$
+\boldsymbol{\xi}
+=
+\boldsymbol{\xi}^-
++
+\mathbf{H}^T\mathbf{R}^{-1}\tilde{\mathbf{z}}.
+$$
+
+The linearization risks are the same as the EKF: poor initial estimates,
+strong curvature, angle wrapping, and bad Jacobians can still cause trouble.
+Information form did not make the nonlinear problem disappear. It just changed
+the accounting.
+
+## Nonlinear Range Example
+
+Consider a 2D position state
+
+$$
+\mathbf{x}
+=
+\begin{bmatrix}
+x & y
+\end{bmatrix}^T
+$$
+
+and a range measurement to a known landmark $\mathbf{m}$:
+
+$$
+z = h(\mathbf{x}) + v
+=
+\|\mathbf{x} - \mathbf{m}\| + v.
+$$
+
+The Jacobian is
+
+$$
+\mathbf{H}
+=
+\begin{bmatrix}
+\frac{x-m_x}{r} &
+\frac{y-m_y}{r}
+\end{bmatrix},
+\qquad
+r = \|\mathbf{x} - \mathbf{m}\|.
+$$
+
+```{python}
+#| label: fig-extended-information-range-update
+#| fig-cap: "Extended Information Filter update for a nonlinear range measurement. The update is equivalent to an EKF-style linearized measurement update, stored in information form."
+#| code-fold: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def covariance_ellipse(mean, covariance, n_std=1.0, points=200):
+    angles = np.linspace(0.0, 2.0 * np.pi, points)
+    circle = np.vstack((np.cos(angles), np.sin(angles)))
+    root = np.linalg.cholesky(covariance)
+    ellipse = mean[:, None] + n_std * root @ circle
+    return ellipse
+
+
+def range_model(x, landmark):
+    return np.array([np.linalg.norm(x - landmark)])
+
+
+def range_jacobian(x, landmark):
+    delta = x - landmark
+    r = np.linalg.norm(delta)
+    return np.array([[delta[0] / r, delta[1] / r]])
+
+
+x_prior = np.array([2.5, 1.5])
+P_prior = np.array([[0.8, 0.25], [0.25, 0.5]])
+landmark = np.array([0.0, 0.0])
+z = np.array([2.25])
+R = np.array([[0.12**2]])
+
+Omega_prior = np.linalg.inv(P_prior)
+xi_prior = Omega_prior @ x_prior
+
+H = range_jacobian(x_prior, landmark)
+z_tilde = z - range_model(x_prior, landmark) + H @ x_prior
+
+Omega_post = Omega_prior + H.T @ np.linalg.inv(R) @ H
+xi_post = xi_prior + H.T @ np.linalg.inv(R) @ z_tilde
+
+P_post = np.linalg.inv(Omega_post)
+x_post = P_post @ xi_post
+
+prior_ellipse = covariance_ellipse(x_prior, P_prior, n_std=1.0)
+post_ellipse = covariance_ellipse(x_post, P_post, n_std=1.0)
+
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.plot(prior_ellipse[0], prior_ellipse[1], label="prior 1-sigma ellipse")
+ax.plot(post_ellipse[0], post_ellipse[1], label="posterior 1-sigma ellipse")
+ax.scatter(*x_prior, marker="x", s=90, label="prior mean")
+ax.scatter(*x_post, marker="o", s=60, label="posterior mean")
+ax.scatter(*landmark, marker="*", s=130, label="landmark")
+
+circle_angles = np.linspace(0.0, 2.0 * np.pi, 300)
+range_circle = landmark[:, None] + z[0] * np.vstack((np.cos(circle_angles), np.sin(circle_angles)))
+ax.plot(range_circle[0], range_circle[1], linestyle=":", color="0.45", label="measured range")
+
+ax.set_aspect("equal", adjustable="box")
+ax.set_xlabel("x position [m]")
+ax.set_ylabel("y position [m]")
+ax.set_title("Nonlinear range update in information form")
+ax.grid(True, alpha=0.25)
+ax.legend(loc="upper right")
+plt.show()
+```
+
+This example is intentionally small. The useful idea is the same in larger
+systems: linearize the measurement, add its information contribution, and then
+recover the mean if you need a state estimate.
+
+## Unscented and Square-Root Variants
+
+An Unscented Information Filter uses sigma points to propagate or update a
+Gaussian approximation, then stores the resulting Gaussian in information form.
+Conceptually, it combines the UKF's nonlinear transformation machinery with the
+Information Filter's inverse-covariance representation.
+
+The usual pattern is:
+
+1. Recover mean and covariance from $\boldsymbol{\Omega}$ and
+   $\boldsymbol{\xi}$.
+2. Run an unscented prediction or update to obtain a new mean and covariance.
+3. Convert the result back to information form.
+
+This is useful when the system wants information-form storage or fusion but the
+models are nonlinear enough that sigma points are preferable to Jacobians.
+
+A Square-Root Information Filter stores a matrix square root of the information
+matrix rather than the information matrix itself. This improves numerical
+conditioning and can be more stable for large systems. It is not a new
+probabilistic estimator. It is a numerically careful way to carry the same
+information-form belief.
+
+## Comparison with Kalman-Style Filters
+
+| Filter | Stored belief | Update style | Prediction style | Good fit |
+|---|---|---|---|---|
+| Kalman Filter | $\hat{\mathbf{x}}, \mathbf{P}$ | Innovation and gain | Direct covariance propagation | Small to medium linear Gaussian systems |
+| Information Filter | $\boldsymbol{\xi}, \boldsymbol{\Omega}$ | Add information terms | Less natural; often convert or use identities | Many independent measurements, sparse fusion |
+| EKF | $\hat{\mathbf{x}}, \mathbf{P}$ | Linearized innovation | Linearized covariance propagation | Nonlinear systems near current estimate |
+| EIF | $\boldsymbol{\xi}, \boldsymbol{\Omega}$ | Add linearized information terms | Same prediction challenge as IF | Nonlinear sparse measurement fusion |
+| UKF / UIF | Gaussian parameters, often converted | Sigma-point measurement transform | Sigma-point process transform | Nonlinear systems where Jacobians are painful |
+
+Use information form when the additive measurement structure matters. Use
+covariance form when prediction and uncertainty interpretation matter more. If
+both matter, do not be surprised when a real system uses both internally.
+
+## Practical Implementation Considerations
+
+Information matrices can be sparse when measurements connect only a few state
+variables. This is one bridge from filtering to factor graphs and smoothing.
+Each measurement adds a local block of information. In a large mapping problem,
+that sparsity can matter more than the elegance of any single recursive update.
+
+There are also practical hazards. The most obvious one is inversion. The
+definition $\boldsymbol{\Omega}=\mathbf{P}^{-1}$ is mathematically clean, but a
+production implementation should prefer factorizations and solves over explicit
+matrix inverses where possible.
+
+```{python}
+#| label: information-form-conversion-code
+#| eval: false
+
+import numpy as np
+
+
+def information_mean(Omega: np.ndarray, xi: np.ndarray) -> np.ndarray:
+    """Recover the mean without explicitly forming inv(Omega)."""
+    return np.linalg.solve(Omega, xi)
+
+
+def covariance_from_information(Omega: np.ndarray) -> np.ndarray:
+    """Useful for diagnostics; avoid calling this in a tight loop if possible."""
+    identity = np.eye(Omega.shape[0])
+    return np.linalg.solve(Omega, identity)
+```
+
+Conditioning matters. A nearly singular covariance becomes an enormous and
+ill-conditioned information matrix. A nearly singular information matrix means
+some direction in the state is weakly constrained. Both cases deserve attention,
+not quiet acceptance.
+
+For large sparse systems:
+
+- store sparse information matrices when the surrounding toolchain supports it;
+- add measurement contributions as local blocks;
+- use Cholesky or QR-style factorizations rather than dense inversion;
+- keep variable ordering in mind because it affects fill-in during
+  factorization.
+
+Square-root information filters carry a factor of the information matrix rather
+than the full matrix. This is usually more stable and is closely related to the
+least-squares view of estimation. The trade is that the implementation becomes
+more about numerical linear algebra than about the short recursive equations.
+
+Conversion between covariance form and information form is not free. Repeatedly
+converting a large state back and forth can destroy the computational advantage
+that motivated information form in the first place. Use information form when
+the additive sparse update structure matters; otherwise, covariance form may be
+simpler and easier to debug.
+
+Practical checklist:
+
+- Avoid explicit matrix inverses in production code when a linear solve or
+  factorization is available.
+- Be careful with ill-conditioned covariance or information matrices.
+- Preserve symmetry after additive updates: use
+  $\boldsymbol{\Omega} \leftarrow (\boldsymbol{\Omega}+\boldsymbol{\Omega}^T)/2$
+  if roundoff introduces tiny asymmetry.
+- Remember that high information means low variance, not high truth.
+- Linearized information filters inherit the same local-validity problems as
+  EKFs.
+
+The Information Filter is best viewed as another representation of Gaussian
+belief. It is not more correct than the Kalman filter. It is sometimes more
+convenient.

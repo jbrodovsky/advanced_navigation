@@ -1,497 +1,596 @@
----
-title: "Assignment 1: Drone Navigation Pipeline"
-subtitle: "Dead Reckoning, Vision-Based Localization, and Sensor Fusion"
-author: "Advanced Navigation Course"
-date: "2026-05-19"
----
-
-# Assignment 1: Drone Navigation Pipeline
+# Project 1: Drone Visual-Inertial Navigation
 
 ## Overview
 
-In this comprehensive project, you will build a complete navigation pipeline for a drone operating in a local, flat-earth frame. Starting with raw sensor data (IMU and camera images), you will progressively construct a fused, nonlinear state estimate using Extended Kalman Filtering.
+This project is the major implementation project for the course. It combines a real drone dataset, a camera-based AprilTag observation model, inertial forward propagation, and three nonlinear navigation filters. The goal is not just to make a plot that looks plausible. The goal is to build a navigation pipeline whose assumptions, failure modes, and tuning choices you can explain.
 
-**Estimated time:** 20 hours
-**Learning outcomes:**
-- Implement strapdown inertial integration (Chapter 7)
-- Design and tune a nonlinear Kalman filter (Chapter 2)
-- Apply vision-based pose estimation (Chapter 10)
-- Validate filter consistency and performance (Chapter 15)
+Project 1 is worth **50% of the total course grade**. It is divided into staged checkpoints:
 
----
+| Checkpoint | Topic | Weight within Project 1 | Weight within course |
+|---|---:|---:|---:|
+| Project 1a | PnP observation model | 25% | 12.5% |
+| Project 1b | Forward mechanization | 25% | 12.5% |
+| Project 1c | EKF, UKF, and PF navigation filters | 50% | 25% |
 
-## Project Architecture
+You will use the files in `data/drone-data/`:
 
-Your pipeline will follow this data flow:
+- `studentdata0.mat` through `studentdata7.mat`
+- `parameters.txt`
 
-```
-Raw IMU Data → Strapdown Integration → Dead Reckoning Trajectory
-                        ↓
-                    EKF Prediction
-                        ↓
-Camera Images → Feature Detection → PnP Solver → Pose Estimate
-                                        ↓
-                                   EKF Update
-                                        ↓
-                        Fused State Estimate
-                                        ↓
-            Compare vs Ground Truth (Vicon)
-```
+The `vicon` data in each `.mat` file is the **truth reference**. You may use it to evaluate errors, estimate measurement covariance, tune with discipline, and report results. You may not feed Vicon as a recurring measurement into any navigation filter. That would be like grading your own exam with the answer key open. Tempting, but not navigation.
 
----
+## Learning Outcomes
 
-## Part A: Inertial Dead Reckoning
+By the end of this project, you should be able to:
 
-### Learning Objectives
-- Understand IMU mechanization and strapdown integration
-- Implement proper quaternion kinematics
-- Observe and characterize inertial sensor drift
+- construct a camera pose observation model from AprilTag corner correspondences;
+- use OpenCV's `solvePnP` correctly, including the world-to-camera convention;
+- estimate observation covariance by comparing camera measurements against a truth reference;
+- implement a 15-state flat-earth inertial propagation model;
+- implement and compare an EKF, UKF, and particle filter on the same process and measurement models;
+- evaluate filter accuracy, consistency, runtime, tuning sensitivity, and failure modes.
 
-### Background
+## Data Format
 
-The IMU provides high-rate (100 Hz) estimates of accelerations and angular velocities in the body frame. Integrating these measurements forward in time gives a "dead reckoning" estimate that, while drift-prone, requires no external sensors.
-
-**Relevant chapters:**
-- Chapter 7 (INS/GNSS Integration) — strapdown mechanization equations
-- Chapter 8 (INS Error Models) — understanding IMU error characteristics
-- Chapter 14 (Mathematical Reference) — quaternion kinematics and integration
-
-### Specification
-
-Implement a `StrapdownNavigator` class with the following interface:
+Load the files with:
 
 ```python
-class StrapdownNavigator:
-    def __init__(self, initial_state, imu_specs):
-        """
-        initial_state: dict with keys:
-            - 'position': [x, y, z] in NED frame (meters)
-            - 'velocity': [vn, ve, vd] in NED frame (m/s)
-            - 'attitude': quaternion [qw, qx, qy, qz]
-        imu_specs: dict with calibration parameters
-            - 'accel_bias': accelerometer bias [m/s²]
-            - 'gyro_bias': gyroscope bias [rad/s]
-        """
-        self.state = initial_state
-        self.imu_specs = imu_specs
-        self.trajectory = []  # List of (timestamp, state)
+from scipy.io import loadmat
 
-    def integrate_imu(self, accel, gyro, dt):
-        """
-        Update state given IMU measurements and time step.
-
-        Args:
-            accel: [ax, ay, az] in body frame (m/s²)
-            gyro: [wx, wy, wz] in body frame (rad/s)
-            dt: time step (seconds)
-        """
-        # Step 1: Update attitude from gyroscope
-        self.state['attitude'] = self._update_attitude(
-            self.state['attitude'], gyro, dt
-        )
-
-        # Step 2: Rotate acceleration to NED frame
-        R = self._quat_to_matrix(self.state['attitude'])
-        accel_ned = R @ accel - np.array([0, 0, 9.81])  # Remove gravity
-
-        # Step 3: Update velocity
-        self.state['velocity'] += accel_ned * dt
-
-        # Step 4: Update position
-        self.state['position'] += self.state['velocity'] * dt
-
-        self.trajectory.append((time.time(), copy.deepcopy(self.state)))
-
-    def get_trajectory(self):
-        """Return list of (timestamp, position, velocity, attitude)."""
-        return self.trajectory
+dataset = loadmat("data/drone-data/studentdata0.mat", simplify_cells=True)
+vicon = dataset["vicon"]
+time = dataset["time"]
+packets = dataset["data"]
 ```
 
-### Deliverables for Part A
+Each file contains:
 
-1. **Implementation:** Complete the `StrapdownNavigator` class above. Pay careful attention to:
-   - Quaternion normalization after each update
-   - Proper frame conventions (NED vs. body frame)
-   - Gravity removal from acceleration
+| Name | Shape/type | Meaning |
+|---|---:|---|
+| `vicon` | `12 x N` array | Vicon truth reference sampled at about 100 Hz |
+| `time` | `N` array | Vicon timestamps in seconds |
+| `data` | list of packet dictionaries | Camera/IMU packets at the sensor packet times |
 
-2. **Visualization:**
-   - Plot the dead reckoning trajectory (X-Y positions)
-   - Overlay with ground truth Vicon trajectory
-   - Compute RMS position error as a function of time
+Interpret the Vicon rows as:
 
-3. **Error Analysis:**
-   - Quantify the drift rate (position error per minute)
-   - Explain the dominant error sources (IMU bias, scale factor, misalignment)
-   - Predict how long the IMU alone can be trusted (e.g., < 1 meter error)
+| Rows | Quantity |
+|---:|---|
+| `0:3` | position `[px, py, pz]` |
+| `3:6` | roll, pitch, yaw |
+| `6:9` | linear velocity `[vx, vy, vz]` |
+| `9:12` | angular velocity |
 
----
+Each element of `data` is a packet dictionary with fields:
 
-## Part B: Vision-Based Pose Estimation
+| Field | Meaning |
+|---|---|
+| `img` | grayscale camera image |
+| `id` | AprilTag IDs observed in this image |
+| `p1`, `p2`, `p3`, `p4` | pixel coordinates of each tag corner |
+| `t` | sensor packet timestamp in seconds |
+| `rpy` | roll, pitch, yaw estimate from the onboard IMU processing |
+| `drpy` | body angular-rate input for propagation |
+| `acc` | body-frame accelerometer input for propagation |
 
-### Learning Objectives
-- Apply camera intrinsics and distortion models
-- Implement robust Perspective-N-Point (PnP) solving
-- Characterize measurement noise from sensor residuals
+The corner fields are ordered by tag and use the project convention:
 
-### Background
+1. `p1`: bottom left
+2. `p2`: bottom right
+3. `p3`: top right
+4. `p4`: top left
 
-The drone is equipped with a downward-looking camera imaging an AprilTag mat on the ground. The known 3D position of the AprilTag markers, combined with their 2D pixel locations in the image, allows us to estimate the camera's 6-DOF pose relative to the mat.
+Some packets have no observed tags. Your PnP update code must handle this without crashing.
 
-**Relevant chapters:**
-- Chapter 10 (Visual Navigation) — camera models, PnP solving, distortion
-- Chapter 14 (Mathematical Reference) — Jacobian computation for optimization
+For truth comparisons at packet times, interpolate the Vicon rows to the packet timestamp. Only compute error metrics over the overlapping time interval between packet data and Vicon truth.
 
-### Specification
+## Required State Convention
 
-Implement a `VisionLocalizer` class:
+Use this 15-state vector throughout the mechanization, EKF, UKF, and PF:
 
 ```python
-class VisionLocalizer:
-    def __init__(self, camera_matrix, dist_coeffs, marker_3d_positions):
-        """
-        camera_matrix: 3×3 intrinsic matrix K
-        dist_coeffs: radial and tangential distortion coefficients
-        marker_3d_positions: dict {marker_id: [X, Y, Z] in world frame}
-        """
-        self.K = camera_matrix
-        self.dist = dist_coeffs
-        self.markers_3d = marker_3d_positions
-
-    def estimate_pose(self, image):
-        """
-        Detect AprilTags in image and estimate camera pose.
-
-        Returns:
-            pose: dict with keys:
-                - 'R_camera_to_world': 3×3 rotation matrix
-                - 't_camera_to_world': [x, y, z] translation vector
-                - 'reprojection_error': RMS pixel error
-                - 'num_inliers': number of inlier markers
-        """
-        # Step 1: Detect AprilTag markers and corners
-        detections = self._detect_apriltags(image)
-
-        if len(detections) < 4:
-            return None  # Need at least 4 points for PnP
-
-        # Step 2: Gather 3D-2D correspondences
-        object_points = []
-        image_points = []
-        for det in detections:
-            if det['id'] in self.markers_3d:
-                object_points.append(self.markers_3d[det['id']])
-                image_points.append(det['centroid_pixel'])
-
-        object_points = np.array(object_points)
-        image_points = np.array(image_points)
-
-        # Step 3: Solve PnP (using OpenCV)
-        success, rvec, tvec = cv2.solvePnP(
-            object_points, image_points, self.K, self.dist,
-            useExtrinsicGuess=False, flags=cv2.SOLVEPNP_ITERATIVE
-        )
-
-        if not success:
-            return None
-
-        # Step 4: Convert rotation vector to matrix
-        R_c2w, _ = cv2.Rodrigues(rvec)
-        t_c2w = tvec.flatten()
-
-        # Step 5: Compute reprojection error
-        projected, _ = cv2.projectPoints(
-            object_points, rvec, tvec, self.K, self.dist
-        )
-        reprojection_error = np.sqrt(
-            np.mean((image_points - projected.reshape(-1, 2))**2)
-        )
-
-        return {
-            'R_camera_to_world': R_c2w,
-            't_camera_to_world': t_c2w,
-            'reprojection_error': reprojection_error,
-            'num_inliers': len(object_points)
-        }
-
-    def transform_pose_to_body_frame(self, camera_pose, T_camera_to_body):
-        """
-        Transform camera pose to body frame.
-
-        Args:
-            camera_pose: output from estimate_pose()
-            T_camera_to_body: 4×4 homogeneous transform
-
-        Returns:
-            body_pose: dict with 'R' and 't' in body frame
-        """
-        # Use rigid body transformation composition
-        R_cam = camera_pose['R_camera_to_world']
-        t_cam = camera_pose['t_camera_to_world']
-
-        R_c2b = T_camera_to_body[:3, :3]
-        t_c2b = T_camera_to_body[:3, 3]
-
-        # Body to world: R_body = R_cam @ R_c2b^T
-        R_body = R_cam @ R_c2b.T
-        t_body = t_cam + R_cam @ t_c2b
-
-        return {'R': R_body, 't': t_body}
+x = [
+    px, py, pz,
+    roll, pitch, yaw,
+    vx, vy, vz,
+    bgx, bgy, bgz,
+    bax, bay, baz,
+]
 ```
 
-### Deliverables for Part B
-
-1. **Camera Calibration:**
-   - Use provided checkerboard calibration images
-   - Compute intrinsic matrix $\mathbf{K}$ and distortion coefficients
-   - Save calibration results to a YAML file
-
-2. **Pose Estimation Implementation:**
-   - Implement `VisionLocalizer` above
-   - Debug against ground truth poses provided in dataset
-   - Report median reprojection error
-
-3. **Covariance Estimation:**
-   - Collect pose estimation residuals across many frames
-   - Fit a covariance matrix $\mathbf{R}$ by computing the empirical covariance of errors
-   - This $\mathbf{R}$ will be used in the Kalman filter update
-
----
-
-## Part C: Sensor Fusion with Extended Kalman Filter
-
-### Learning Objectives
-- Implement a nonlinear Kalman filter for 6-DOF pose estimation
-- Tune filter covariance matrices for optimal performance
-- Validate filter consistency using statistical tests
-
-### Background
-
-Now we combine the high-rate IMU dead reckoning with low-rate vision updates in an Extended Kalman Filter (EKF). The EKF maintains a state estimate and covariance, alternating between:
-- **Prediction:** High-rate IMU integration
-- **Update:** Low-rate vision measurements
-
-**Relevant chapters:**
-- Chapter 2 (Bayes Filter and EKF) — complete EKF theory and error-state formulation
-- Chapter 14 (Mathematical Reference) — EKF error analysis and consistency
-- Chapter 15 (Practical Guide) — debugging, tuning, and validation strategies
-
-### Specification
-
-Implement an `EKFNavigator` class that fuses IMU and vision:
+The attitude convention for this project is roll-pitch-yaw with:
 
 ```python
-class EKFNavigator:
-    def __init__(self, initial_state, initial_covariance, Q, R):
-        """
-        State vector: [x, y, z, vx, vy, vz, qw, qx, qy, qz, bias_ax, bias_ay, bias_az]
-
-        Args:
-            initial_state: 13-element numpy array
-            initial_covariance: 13×13 initial covariance matrix P
-            Q: 13×13 process noise covariance (IMU uncertainties)
-            R: 3×3 measurement noise covariance (vision uncertainties)
-        """
-        self.state = initial_state
-        self.P = initial_covariance
-        self.Q = Q
-        self.R = R
-
-        self.trajectory = []
-        self.innovations = []  # For consistency checking
-
-    def predict_with_imu(self, accel, gyro, dt):
-        """Prediction step: integrate IMU for dt seconds."""
-        # Nonlinear state propagation
-        self.state = self._propagate_state(self.state, accel, gyro, dt)
-
-        # Linearize around current state to get Jacobian F
-        F = self._compute_jacobian_f(self.state, accel, gyro, dt)
-
-        # Propagate covariance: P = F*P*F^T + Q
-        self.P = F @ self.P @ F.T + self.Q
-
-    def update_with_vision(self, vision_pose):
-        """Update step: fuse vision measurement."""
-        # Measurement: position from PnP
-        z = vision_pose['t']  # 3-element vector
-
-        # Measurement function: h(x) = [x, y, z] (first 3 states)
-        h = self.state[:3]
-
-        # Measurement Jacobian
-        H = np.eye(3, 13)  # Only depends on position
-
-        # Innovation (residual)
-        innovation = z - h
-        self.innovations.append(innovation)
-
-        # Innovation covariance: S = H*P*H^T + R
-        S = H @ self.P @ H.T + self.R
-
-        # Kalman gain: K = P*H^T*S^{-1}
-        K = self.P @ H.T @ np.linalg.inv(S)
-
-        # Update state: x = x + K*(z - h)
-        self.state = self.state + K @ innovation
-
-        # Update covariance (Joseph form for numerical stability)
-        I_KH = np.eye(13) - K @ H
-        self.P = I_KH @ self.P @ I_KH.T + K @ self.R @ K.T
-
-        return {'innovation': innovation, 'S': S}
-
-    def get_state(self):
-        """Return current state estimate."""
-        pos = self.state[:3]
-        vel = self.state[3:6]
-        quat = self.state[6:10]
-        return {
-            'position': pos,
-            'velocity': vel,
-            'attitude': quat,
-            'covariance': self.P
-        }
-
-    def _propagate_state(self, x, accel, gyro, dt):
-        """Nonlinear state propagation using strapdown equations."""
-        # Extract components
-        pos = x[:3]
-        vel = x[3:6]
-        quat = x[6:10]
-        bias = x[10:13]
-
-        # Correct acceleration for bias and gravity
-        accel_corrected = accel - bias
-        R = quat_to_matrix(quat)
-        accel_ned = R @ accel_corrected - np.array([0, 0, 9.81])
-
-        # Integrate
-        pos_new = pos + vel * dt
-        vel_new = vel + accel_ned * dt
-        quat_new = quat_integrate(quat, gyro, dt)
-        bias_new = bias  # Biases evolve slowly (random walk model)
-
-        return np.concatenate([pos_new, vel_new, quat_new, bias_new])
-
-    def _compute_jacobian_f(self, x, accel, gyro, dt):
-        """Compute Jacobian F = dxnew/dx at current state."""
-        # Numerical Jacobian (easier to debug than analytical)
-        eps = 1e-6
-        F = np.zeros((13, 13))
-
-        for i in range(13):
-            x_plus = x.copy()
-            x_plus[i] += eps
-            x_minus = x.copy()
-            x_minus[i] -= eps
-
-            xnew_plus = self._propagate_state(x_plus, accel, gyro, dt)
-            xnew_minus = self._propagate_state(x_minus, accel, gyro, dt)
-
-            F[:, i] = (xnew_plus - xnew_minus) / (2 * eps)
-
-        return F
+R_world_body = Rz(yaw) @ Ry(pitch) @ Rx(roll)
 ```
 
-### Implementation Checklist
+Use radians for all angles. Wrap angle residuals into `[-pi, pi)` whenever you subtract attitudes.
 
-- [ ] **State initialization:** Set initial position, velocity, attitude from calibration
-- [ ] **Process noise matrix Q:** Based on IMU noise specifications (Chapter 8)
-  - Position: ~0 (integrated from velocity)
-  - Velocity: ~IMU accel noise × dt
-  - Attitude: ~IMU gyro noise × dt
-  - Bias: ~small random walk (1e-6 per second)
-- [ ] **Measurement noise matrix R:** From Part B covariance estimation
-- [ ] **Joseph form updates:** Use numerically stable covariance update (Chapter 15)
-- [ ] **Consistency tests:**
-  - Normalized innovation test: $\chi^2_k = (\mathbf{z}_k - h(\hat{\mathbf{x}}_{k|k-1}))^T \mathbf{S}_k^{-1} (\mathbf{z}_k - h(\hat{\mathbf{x}}_{k|k-1}))$
-  - Should follow $\chi^2_3$ distribution; mean should be ≈3
-
-### Deliverables for Part C
-
-1. **Implementation:**
-   - Complete `EKFNavigator` class with both prediction and update steps
-   - Demonstrate correct quaternion handling (normalization, integration)
-   - Use Joseph form for covariance updates
-
-2. **Trajectory Comparison:**
-   - Plot four overlaid trajectories:
-     1. Dead reckoning (Part A)
-     2. Vision-only estimates (Part B)
-     3. Fused EKF estimate (Part C)
-     4. Ground truth Vicon
-   - Compute RMS position errors for each method
-
-3. **Filter Consistency Analysis:**
-   - Compute normalized innovations across the entire trajectory
-   - Plot histogram of $\chi^2_k$ values
-   - Compare against expected $\chi^2_3$ distribution
-   - Compute mean and variance of innovations
-   - If overconfident (mean χ² >> 3): increase R or decrease P
-   - If underconfident (mean χ² << 3): decrease R or increase P
-
-4. **Performance Metrics:**
-   - Absolute Pose Error (APE): $\sqrt{\frac{1}{N} \sum_i \|\mathbf{p}_i^{\text{est}} - \mathbf{p}_i^{\text{truth}}\|^2}$
-   - Relative Pose Error (RPE) over 5-second windows
-   - Covariance evolution (trace of P vs. time)
-
-5. **Report:**
-   - Methodology for each component
-   - Calibration parameters and justification
-   - Trajectory plots with error bars (confidence ellipses)
-   - Comparison table: Dead Reckoning vs. Vision vs. Fused vs. Ground Truth
-   - Discussion: When does fusion provide benefit? Where does it fail?
-   - Lessons learned and suggestions for improvement
-
----
-
-## Provided Data
-
-### Files in `data/drone-data/`
-
-- **studentdata0.mat – studentdata7.mat:** Eight independent flight trials
-  - Each contains:
-    - `t`: timestamps (seconds)
-    - `accel`: [Nx3] accelerometer measurements (m/s²)
-    - `gyro`: [Nx3] gyroscope measurements (rad/s)
-    - `images`: [HxWxNx3] uint8 camera frames
-    - `R_vicon`, `t_vicon`: ground truth pose (rotation matrix + position)
-
-- **parameters.txt:** Camera calibration, IMU specs, AprilTag positions
-
-### Loading Data
+The measurement vector from PnP is:
 
 ```python
-import scipy.io as sio
-
-data = sio.loadmat('data/drone-data/studentdata0.mat')
-t = data['t'].flatten()
-accel = data['accel']
-gyro = data['gyro']
-images = data['images']  # H x W x N x 3
-R_truth = data['R_vicon']  # 3 x 3 x N
-t_truth = data['t_vicon']  # 3 x N
+z = [px, py, pz, roll, pitch, yaw]
 ```
 
----
+So the nominal measurement model for the filters is:
+
+```python
+h(x) = x[:6]
+```
+
+This measurement model is simple. Most of the difficulty is in getting the pose measurement, process model, uncertainty handling, and filter bookkeeping right.
+
+## Required Interfaces
+
+Your submitted code must provide these functions/classes:
+
+```python
+load_drone_data(filename)
+build_apriltag_corner_map()
+estimate_pose(packet, camera_matrix, dist_coeffs, tag_map, T_camera_body)
+propagate_state(x, acc, drpy, dt, params)
+EKFNavigator
+UKFNavigator
+ParticleFilterNavigator
+```
+
+You may add helper functions and classes. Keep the public interfaces above stable so the project can be graded consistently.
+
+Recommended package structure:
+
+```text
+project1/
+  __init__.py
+  data.py
+  geometry.py
+  pnp.py
+  mechanization.py
+  filters.py
+  metrics.py
+notebooks/
+  project1_report.ipynb
+```
+
+A single Python module is acceptable if it is clean and easy to grade. A pile of notebook cells that only run in one order on one laptop is not acceptable.
+
+## Environment
+
+Use Python with `numpy`, `scipy`, `matplotlib`, and `opencv-python`. You may use OpenCV for PnP and projection utilities. You may not use a prebuilt filtering library as a substitute for implementing the EKF, UKF, or PF logic unless you are deliberately accepting the grading tradeoff described in the rubric.
+
+## Parameters
+
+Use the camera and rig parameters in `data/drone-data/parameters.txt`.
+
+The camera matrix is:
+
+```python
+import numpy as np
+
+camera_matrix = np.array([
+    [314.1779, 0.0, 199.4848],
+    [0.0, 314.2218, 113.7838],
+    [0.0, 0.0, 1.0],
+], dtype=np.float64)
+```
+
+The OpenCV distortion coefficients are:
+
+```python
+dist_coeffs = np.array(
+    [-0.438607, 0.248625, 0.00072, -0.000476, -0.0911],
+    dtype=np.float64,
+)
+```
+
+The dataset does not include checkerboard calibration images, so do not invent a camera calibration step. Use the supplied intrinsics and distortion coefficients.
+
+The camera-to-body mounting parameters are:
+
+```python
+translation = np.array([-0.04, 0.0, -0.03])
+yaw_offset = np.pi / 4
+```
+
+Using the transform convention in this handout, a reasonable baseline construction is:
+
+```python
+R_camera_body = Rz(-yaw_offset) @ Ry(0.0) @ Rx(-np.pi)
+T_camera_body = make_transform(R_camera_body, translation)
+```
+
+Define a single homogeneous transform `T_camera_body` and document your convention. In this assignment, `T_camera_body` means the transform that maps body-frame coordinates into camera-frame coordinates:
+
+```python
+p_camera = T_camera_body @ p_body_homogeneous
+```
+
+OpenCV returns the transform from world/object coordinates to camera coordinates. If:
+
+```python
+T_camera_world
+```
+
+comes from `solvePnP`, then:
+
+```python
+T_world_camera = np.linalg.inv(T_camera_world)
+T_world_body = T_world_camera @ T_camera_body
+```
+
+If you choose to store the inverse transform instead, that is fine, but invert it once at the boundary and be explicit in your report. Silent frame-convention changes are a reliable way to create confident nonsense.
+
+## Project 1a: PnP Observation Model
+
+### Goal
+
+Implement the camera observation model that estimates drone pose from the AprilTag mat.
+
+### AprilTag Map
+
+The tag map is a 12 by 9 grid. The top-left corner of the top-left tag is world coordinate `(0, 0, 0)`.
+
+Map coordinates:
+
+- `x` increases down the mat;
+- `y` increases to the right;
+- `z = 0` for all tag corners.
+
+Each AprilTag is a square with side length:
+
+```python
+tag_size = 0.152
+```
+
+The normal gap between tags is:
+
+```python
+normal_gap = 0.152
+```
+
+The wider gaps between columns 3-4 and 6-7 are:
+
+```python
+wide_gap = 0.178
+```
+
+The tag ID layout is:
+
+```python
+TAG_IDS = np.array([
+    [0, 12, 24, 36, 48, 60, 72, 84, 96],
+    [1, 13, 25, 37, 49, 61, 73, 85, 97],
+    [2, 14, 26, 38, 50, 62, 74, 86, 98],
+    [3, 15, 27, 39, 51, 63, 75, 87, 99],
+    [4, 16, 28, 40, 52, 64, 76, 88, 100],
+    [5, 17, 29, 41, 53, 65, 77, 89, 101],
+    [6, 18, 30, 42, 54, 66, 78, 90, 102],
+    [7, 19, 31, 43, 55, 67, 79, 91, 103],
+    [8, 20, 32, 44, 56, 68, 80, 92, 104],
+    [9, 21, 33, 45, 57, 69, 81, 93, 105],
+    [10, 22, 34, 46, 58, 70, 82, 94, 106],
+    [11, 23, 35, 47, 59, 71, 83, 95, 107],
+], dtype=int)
+```
+
+Build `build_apriltag_corner_map()` so it returns:
+
+```python
+dict[int, np.ndarray]
+```
+
+where each key is a tag ID and each value is a `4 x 3` array of world-frame corners in the same physical order as `p1`, `p2`, `p3`, `p4`.
+
+### Pose Estimation
+
+Implement:
+
+```python
+estimate_pose(packet, camera_matrix, dist_coeffs, tag_map, T_camera_body)
+```
+
+It must:
+
+1. read `packet["id"]`, `packet["p1"]`, `packet["p2"]`, `packet["p3"]`, and `packet["p4"]`;
+2. assemble matching `object_points` and `image_points`;
+3. call `cv2.solvePnP`;
+4. convert OpenCV's world-to-camera output into a body pose in the world frame;
+5. return position, roll-pitch-yaw attitude, reprojection error, and number of points used;
+6. return `None` for packets with too few usable correspondences.
+
+Required return shape:
+
+```python
+{
+    "t": packet_time,
+    "position": np.ndarray,      # shape (3,)
+    "rpy": np.ndarray,           # shape (3,)
+    "reprojection_error": float,
+    "num_points": int,
+}
+```
+
+Use all four corners from every observed tag. Do not use only tag centroids.
+
+### Covariance Estimation
+
+Estimate a `6 x 6` measurement covariance matrix `R` from PnP residuals:
+
+```python
+residual = z_pnp - z_vicon_truth
+```
+
+where:
+
+```python
+z = [px, py, pz, roll, pitch, yaw]
+```
+
+Angle residuals must be wrapped into `[-pi, pi)`. Use the Vicon truth reference only for covariance estimation and evaluation. Do not feed it into the filter update.
+
+Report:
+
+- number of valid PnP packets per dataset;
+- median and 90th-percentile reprojection error;
+- estimated `R`;
+- any covariance rounding or inflation you use before filtering, with justification.
+
+### Project 1a Deliverables
+
+Submit:
+
+- `build_apriltag_corner_map()`;
+- `estimate_pose(...)`;
+- a trajectory plot comparing PnP observations against Vicon truth;
+- a roll/pitch/yaw plot comparing PnP observations against Vicon truth;
+- a table of PnP RMSE across all eight datasets;
+- the estimated measurement covariance `R`.
+
+## Project 1b: Forward Mechanization
+
+### Goal
+
+Implement inertial forward propagation using the IMU packet data.
+
+Use the deterministic process model:
+
+```python
+p_dot = v
+rpy_dot = E(rpy) @ (drpy - gyro_bias)
+v_dot = R_world_body(rpy) @ (acc - accel_bias) + gravity_world
+gyro_bias_dot = 0
+accel_bias_dot = 0
+```
+
+Use:
+
+```python
+gravity_world = np.array([0.0, 0.0, -9.81])
+```
+
+The default model above treats `drpy` as the angular-rate input for the roll-pitch-yaw kinematics. If you instead treat `drpy` as direct Euler-rate data, state that choice clearly and keep the propagation and covariance model consistent.
+
+For stochastic filter propagation, model the gyro and accelerometer biases as random walks through the process noise covariance. The deterministic `propagate_state(...)` function may hold them constant between process-noise samples.
+
+Implement:
+
+```python
+propagate_state(x, acc, drpy, dt, params)
+```
+
+It must:
+
+1. accept the 15-state vector defined above;
+2. subtract gyro and accelerometer biases;
+3. convert body angular rates to Euler angle rates;
+4. rotate body-frame acceleration into the world frame;
+5. add gravity;
+6. integrate position, attitude, velocity, and biases over `dt`;
+7. wrap roll, pitch, and yaw after propagation.
+
+Forward Euler integration is acceptable for the base submission. A better integrator is welcome if you explain it and keep the interface stable.
+
+### Initialization
+
+For reported results, initialize the state from the first valid PnP observation and set the initial velocity to zero or to a finite-difference estimate from early PnP observations. You may use the first Vicon sample only for debugging or for a clearly labeled oracle-initialized comparison. Do not make oracle initialization your primary reported result.
+
+### Project 1b Deliverables
+
+Submit:
+
+- `propagate_state(...)`;
+- a dead-reckoning trajectory for each dataset;
+- plots comparing mechanized position and attitude against Vicon truth;
+- position RMSE over time;
+- drift-rate estimates in meters per second or meters per minute;
+- a discussion of dominant error sources: accelerometer bias, gyro bias, gravity/frame errors, integration error, and PnP-based initialization error.
+
+## Project 1c: EKF, UKF, and Particle Filter
+
+### Goal
+
+Implement three filters that use the same state convention, process model, and PnP measurement model:
+
+- Extended Kalman Filter;
+- Unscented Kalman Filter;
+- Particle Filter.
+
+Run all three filters on all eight datasets and compare them honestly.
+
+### Common Filter Requirements
+
+All filters must:
+
+- use the 15-state vector;
+- propagate with `propagate_state(...)`;
+- use PnP observations as the measurement source;
+- skip measurement updates when no valid PnP pose is available;
+- keep Vicon out of the filter update path;
+- wrap attitude residuals and propagated attitudes;
+- report position RMSE against Vicon truth.
+
+Use one development/tuning split unless you justify another:
+
+- development/tuning: `studentdata0.mat` through `studentdata4.mat`;
+- validation/reporting: `studentdata5.mat` through `studentdata7.mat`.
+
+The point is to build a method that generalizes across trajectories, not one that has been hand-polished until it wins on a single file.
+
+### EKF Requirements
+
+Implement `EKFNavigator` with:
+
+- nonlinear prediction using `propagate_state(...)`;
+- a state transition Jacobian, either analytical or finite-difference;
+- measurement Jacobian for `h(x) = x[:6]`;
+- angle-aware innovation handling;
+- Joseph-form covariance update;
+- innovation and normalized innovation squared (NIS) logging.
+
+Your EKF report section must include:
+
+- process noise `Q` and measurement noise `R`;
+- initial covariance `P0`;
+- NIS histogram or time history;
+- mean NIS compared with the expected measurement dimension of 6;
+- explanation of any covariance inflation or tuning.
+
+### UKF Requirements
+
+Implement `UKFNavigator` with:
+
+- sigma-point generation;
+- unscented prediction through `propagate_state(...)`;
+- unscented update through `h(x) = x[:6]`;
+- angle-aware mean and residual handling;
+- additive process and measurement covariance;
+- the same `Q`, `R`, and state convention used by the EKF unless you justify a difference.
+
+Your UKF report section must include:
+
+- sigma-point parameters `alpha`, `beta`, and `kappa`;
+- one short sensitivity study over at least three `alpha` values;
+- NIS or innovation diagnostics comparable to the EKF;
+- discussion of whether the UKF improved accuracy or robustness enough to justify its extra bookkeeping.
+
+### Particle Filter Requirements
+
+Implement `ParticleFilterNavigator` with:
+
+- vectorized particle propagation;
+- process-noise sampling for attitude, velocity, and bias terms;
+- log-weight measurement likelihoods to avoid underflow;
+- effective particle count:
+
+```python
+N_eff = 1.0 / np.sum(weights**2)
+```
+
+- low-variance/systematic resampling;
+- optional roughening after resampling if needed, documented in the report.
+
+Investigate these particle counts:
+
+```python
+[250, 500, 750, 1000, 2000, 3000, 4000, 5000]
+```
+
+For each count, compute navigation solutions using:
+
+1. the highest-weight particle;
+2. the unweighted particle mean;
+3. the weighted particle mean.
+
+Report position RMSE and runtime for each particle count. If a large particle count is too slow on your machine, report the partial results, explain the bottleneck, and show profiling evidence. Do not simply omit the hard cases.
+
+### Project 1c Deliverables
+
+Submit:
+
+- `EKFNavigator`;
+- `UKFNavigator`;
+- `ParticleFilterNavigator`;
+- trajectory plots for Vicon truth, PnP observations, mechanization, EKF, UKF, and PF;
+- RMSE tables for all eight datasets;
+- detailed plots for one development trial and one validation trial;
+- EKF and UKF innovation diagnostics;
+- PF particle-count and runtime study;
+- a comparison discussion covering accuracy, implementation difficulty, tuning difficulty, speed, and failure modes.
+
+## Report Requirements
+
+Submit your code and a written report or notebook. The report should be readable as an engineering document, not just a screenshot archive.
+
+Include:
+
+- a short introduction describing the dataset and the navigation problem;
+- methods for PnP, mechanization, EKF, UKF, and PF;
+- equations or pseudocode for all major models;
+- implementation details needed to reproduce your work;
+- plots and tables with units and labels;
+- analysis of results across all datasets;
+- a conclusion comparing the three filters.
+
+At minimum, include these summary tables:
+
+| Dataset | Valid PnP packets | PnP RMSE | Mechanization RMSE | EKF RMSE | UKF RMSE | Best PF RMSE |
+|---|---:|---:|---:|---:|---:|---:|
+| studentdata0 | | | | | | |
+| studentdata1 | | | | | | |
+| studentdata2 | | | | | | |
+| studentdata3 | | | | | | |
+| studentdata4 | | | | | | |
+| studentdata5 | | | | | | |
+| studentdata6 | | | | | | |
+| studentdata7 | | | | | | |
+
+And:
+
+| Particle count | Highest-weight RMSE | Mean RMSE | Weighted-mean RMSE | Runtime |
+|---:|---:|---:|---:|---:|
+| 250 | | | | |
+| 500 | | | | |
+| 750 | | | | |
+| 1000 | | | | |
+| 2000 | | | | |
+| 3000 | | | | |
+| 4000 | | | | |
+| 5000 | | | | |
 
 ## Grading Rubric
 
-| Component | Full (10) | Partial (5) | Minimal (2) | Missing (0) |
-|-----------|-----------|------------|-----------|-----------|
-| **Part A: Dead Reckoning** | Correct quaternion mechanics, proper gravity removal, trajectory plotted | Mostly correct but minor bugs | Only position or velocity integrated | No implementation |
-| **Part B: Vision Localization** | Camera calibrated, PnP robust, covariance estimated | Camera calibrated but PnP issues | No camera model used | No implementation |
-| **Part C: EKF Fusion** | Correct state propagation, Joseph form, χ² test passes | Working filter but numerical issues | Oversimplified (e.g., linear) | No implementation |
-| **Results & Analysis** | Clear plots, quantitative metrics, consistency proven | Plots present but analysis shallow | Minimal plots, no metrics | No analysis |
-| **Code Quality** | Well-commented, modular, reusable classes | Functional but tangled | Barely functional | Unrunnable |
+Project 1 is graded out of 100 project points.
 
----
+| Component | Points | Excellent |
+|---|---:|---|
+| Project 1a: AprilTag map and PnP observation model | 15 | Correct map geometry, correct corner ordering, correct OpenCV transform convention, robust handling of missing tags |
+| Project 1a: observation analysis and covariance | 10 | Reprojection statistics, Vicon-referenced residuals, justified `R`, clear plots |
+| Project 1b: forward mechanization | 15 | Correct 15-state propagation, bias handling, gravity handling, frame convention, angle wrapping |
+| Project 1b: mechanization analysis | 10 | Clear drift analysis, Vicon-referenced RMSE, explanation of dominant error sources |
+| Project 1c: EKF | 12 | Correct nonlinear prediction, Jacobian, angle-aware update, Joseph form, NIS diagnostics |
+| Project 1c: UKF | 12 | Correct sigma-point implementation, angle-aware mean/residuals, sensitivity study |
+| Project 1c: Particle filter | 12 | Vectorized particles, log weights, effective sample size, low-variance resampling, particle-count study |
+| Cross-filter comparison | 8 | Honest accuracy, speed, tuning, and failure-mode comparison across EKF, UKF, and PF |
+| Code and report quality | 6 | Organized, reproducible, well documented, and technically clear |
+
+Submissions that use a prebuilt filtering library for the EKF, UKF, or PF can still receive credit if they run and are clearly explained, but the standard for a high grade is much higher. The report must demonstrate that you understand the predict/update mathematics and every major design choice.
+
+## Verification Checklist
+
+Before submitting, confirm that:
+
+- `studentdata0.mat` loads with `loadmat(..., simplify_cells=True)`;
+- the code uses `vicon`, `time`, and `data`, not nonexistent top-level `t`, `accel`, `gyro`, or `images` arrays;
+- at least one packet with visible tags produces a valid PnP pose;
+- PnP residuals are computed against interpolated Vicon truth;
+- Vicon is not used as a filter measurement;
+- every filter uses the same 15-state convention;
+- attitude differences are wrapped;
+- covariance matrices are symmetric and positive semidefinite within numerical tolerance;
+- plots have axis labels, units, legends, and readable scales;
+- all eight datasets appear in the final results.
 
 ## References
 
-- Chapter 2: Extended Kalman Filter and Error-State Kalman Filter
-- Chapter 7: INS/GNSS Integration (mechanization equations)
-- Chapter 8: INS Error Models (IMU specifications)
-- Chapter 10: Visual Navigation and Camera Models
-- Chapter 14: Mathematical Reference (quaternion math)
-- Chapter 15: Practical Implementation Guide (debugging and tuning)
+- Sensing and Perception: camera models, measurement noise, and PnP vision.
+- Filtering and State Estimation: EKF, UKF, and particle filters.
+- Practical Implementation Guide: Joseph form, residual checks, numerical stability, and debugging.
+- `data/drone-data/parameters.txt` for camera parameters and AprilTag layout.

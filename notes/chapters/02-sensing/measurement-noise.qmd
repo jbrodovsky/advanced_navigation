@@ -1,0 +1,245 @@
+# Measurement Noise and Range Sensor Models
+
+Measurement noise is not just "Gaussian dust" sprinkled onto a clean signal. Sometimes that approximation is good enough. Sometimes it is a polite fiction. Range sensors make this clear because their errors have several distinct causes: correct returns with small error, unexpected objects, maximum-range failures, and random unexplained readings.
+
+This chapter uses lidar as the main example, but the modeling pattern is broader. A sensor model should describe not only what the ideal measurement is, but also how real measurements deviate from that ideal.
+
+## A 2D Lidar Measurement
+
+A 2D lidar produces a set of range measurements:
+
+$$
+\mathbf{z}_t =
+\begin{bmatrix}
+z_t^1 & z_t^2 & \cdots & z_t^K
+\end{bmatrix}^T,
+$$
+
+where each beam $k$ reports a distance along a known direction relative to the sensor. If the robot pose $\mathbf{x}_t$ and map $m$ are known, ray casting can predict the expected range:
+
+$$
+z_t^{k*} = h_k(\mathbf{x}_t, m).
+$$
+
+The simplest model says:
+
+$$
+z_t^k = z_t^{k*} + \nu_t^k,
+\qquad
+\nu_t^k \sim \mathcal{N}(0, \sigma^2).
+$$
+
+That is the **hit** model. It covers the case where the beam hit the expected object, but the reported distance is slightly wrong. Unfortunately, real lidar does not always cooperate.
+
+## Beam Model Components
+
+The classical beam model represents a lidar range likelihood as a mixture of several causes:
+
+$$
+p(z_t^k | \mathbf{x}_t, m)
+= w_{\text{hit}}p_{\text{hit}}
++ w_{\text{short}}p_{\text{short}}
++ w_{\text{max}}p_{\text{max}}
++ w_{\text{rand}}p_{\text{rand}}.
+$$
+
+The mixture weights are nonnegative and sum to one:
+
+$$
+w_{\text{hit}} + w_{\text{short}} + w_{\text{max}} + w_{\text{rand}} = 1.
+$$
+
+Each term captures a different physical story.
+
+## Correct Hit
+
+The correct-hit term models the sensor seeing the expected object:
+
+$$
+p_{\text{hit}}(z | \mathbf{x}, m)
+\propto
+\exp\left(
+-\frac{(z - z^*)^2}{2\sigma_{\text{hit}}^2}
+\right),
+$$
+
+for measurements within the valid range. The constant of proportionality is chosen so the truncated distribution integrates properly. In many practical filters, the exact normalization is less important than the relative likelihoods, but it should not be forgotten in a careful probabilistic treatment.
+
+## Unexpected Objects
+
+The short-reading term models a real return from an unmapped object between the sensor and the expected map object. A person walks through the beam, a box was moved into the hallway, a wave crest interrupts a marine lidar return, and so on.
+
+This term is usually supported on:
+
+$$
+0 \le z \le z^*.
+$$
+
+A common model is an exponential distribution:
+
+$$
+p_{\text{short}}(z | \mathbf{x}, m)
+=
+\begin{cases}
+\eta \lambda e^{-\lambda z}, & 0 \le z \le z^* \\
+0, & \text{otherwise},
+\end{cases}
+$$
+
+where $\eta$ normalizes the truncated distribution.
+
+## Sensor Failures and Maximum Range
+
+Sometimes the sensor does not get a useful return. The beam may leave the mapped area, hit a poor reflector, saturate, or fail for reasons the robot neither knows nor cares about in the moment. Many range sensors report a maximum value in this case:
+
+$$
+p_{\text{max}}(z | \mathbf{x}, m)
+=
+\begin{cases}
+1, & z = z_{\max} \\
+0, & \text{otherwise}.
+\end{cases}
+$$
+
+In software, exact equality with floating-point range values is often replaced by a small tolerance or by checking a sensor-specific status flag.
+
+## Random Measurements
+
+The random term handles measurements that are not explained by the map or the expected failure mode:
+
+$$
+p_{\text{rand}}(z | \mathbf{x}, m)
+=
+\begin{cases}
+\frac{1}{z_{\max}}, & 0 \le z < z_{\max} \\
+0, & \text{otherwise}.
+\end{cases}
+$$
+
+This is a blunt model, but useful. It prevents a single strange return from having zero probability and completely destroying the likelihood calculation.
+
+```{python}
+#| label: measurement-noise-beam-model
+#| eval: false
+
+import numpy as np
+
+
+def gaussian_pdf(x: float, mean: float, sigma: float) -> float:
+    return float(
+        np.exp(-0.5 * ((x - mean) / sigma) ** 2)
+        / (np.sqrt(2.0 * np.pi) * sigma)
+    )
+
+
+def lidar_beam_likelihood(z: float,
+                          z_expected: float,
+                          z_max: float,
+                          sigma_hit: float,
+                          lambda_short: float,
+                          weights: dict[str, float]) -> float:
+    """Mixture beam-model likelihood for one range beam."""
+    p_hit = gaussian_pdf(z, z_expected, sigma_hit) if 0.0 <= z <= z_max else 0.0
+
+    if 0.0 <= z <= z_expected:
+        normalizer = 1.0 / (1.0 - np.exp(-lambda_short * z_expected))
+        p_short = normalizer * lambda_short * np.exp(-lambda_short * z)
+    else:
+        p_short = 0.0
+
+    p_max = 1.0 if np.isclose(z, z_max) else 0.0
+    p_rand = 1.0 / z_max if 0.0 <= z < z_max else 0.0
+
+    return (
+        weights["hit"] * p_hit
+        + weights["short"] * p_short
+        + weights["max"] * p_max
+        + weights["rand"] * p_rand
+    )
+```
+
+This is more complicated than a single Gaussian, but the complication corresponds to real behavior. The robot can now say, "This reading is unlikely as a correct hit, but plausible as a short return from an unexpected object."
+
+## Conditional Independence of Beams
+
+Beam models often assume conditional independence:
+
+$$
+p(\mathbf{z}_t | \mathbf{x}_t, m)
+=
+\prod_{k=1}^{K} p(z_t^k | \mathbf{x}_t, m).
+$$
+
+This is convenient and usually wrong in detail. Neighboring beams are correlated because they hit the same objects, pass through the same weather, and share the same sensor hardware. Still, the approximation often works well enough and keeps the computation manageable.
+
+The practical danger is overconfidence. Multiplying many correlated likelihoods as if they were independent can make the estimator believe it has more information than it really does. Downsampling beams, inflating measurement covariance, or using robust likelihoods can help.
+
+## Likelihood Field Model
+
+The likelihood field model is a simpler alternative. Instead of ray casting to find the expected range for each beam, it asks how close the measured endpoint is to the nearest occupied map feature.
+
+For a measurement endpoint $\mathbf{p}_{\text{end}}$, let $d$ be the distance to the nearest obstacle in the map. A common likelihood is:
+
+$$
+p_{\text{hit}}(z | \mathbf{x}, m)
+\propto
+\exp\left(
+-\frac{d^2}{2\sigma_{\text{hit}}^2}
+\right).
+$$
+
+This model is often easier to compute if the map has a precomputed distance transform. It is also less sensitive to small pose errors than exact ray casting. The price is that it does not model free space along the beam as explicitly.
+
+```{python}
+#| label: measurement-noise-likelihood-field
+#| eval: false
+
+import numpy as np
+
+
+def endpoint_from_range(robot_xy: np.ndarray,
+                        robot_yaw: float,
+                        beam_angle: float,
+                        measured_range: float) -> np.ndarray:
+    angle = robot_yaw + beam_angle
+    return robot_xy + measured_range * np.array([np.cos(angle), np.sin(angle)])
+
+
+def likelihood_field_hit(distance_to_nearest_obstacle: float,
+                         sigma_hit: float) -> float:
+    d = distance_to_nearest_obstacle
+    return float(np.exp(-0.5 * (d / sigma_hit) ** 2))
+```
+
+The same idea generalizes beyond lidar. If a measurement can be converted into a feature location and the map can answer "how far is this from the nearest expected thing?", then a likelihood-field-style model can often be built.
+
+## Maps as Context for Measurements
+
+A measurement model usually needs a map, but "map" does not always mean a dense image of the world. A map can be:
+
+- a list of landmarks with positions and descriptors;
+- an occupancy grid;
+- a terrain or bathymetry model;
+- a magnetic anomaly map;
+- a GNSS satellite ephemeris;
+- an AprilTag layout on a laboratory floor.
+
+The lecture slides distinguish two broad forms:
+
+- **Feature-based maps** store objects and their properties.
+- **Location-based maps** store information over space.
+
+Feature-based maps are natural when the sensor detects discrete things: AprilTags, trees, doors, buoys, stars, or visual keypoints. Location-based maps are natural when the sensor observes a field or occupancy pattern: terrain height, seafloor depth, magnetic intensity, or obstacle occupancy.
+
+## Measurement Noise Is a Modeling Choice
+
+Students often ask, "What is the correct value of $\mathbf{R}$?" For a real sensor, there is rarely one universal answer. Measurement noise depends on:
+
+- range, geometry, and viewing angle;
+- calibration quality;
+- environment;
+- processing pipeline;
+- data association quality;
+- whether the measurement is being used inside or outside its design envelope.
+
+Manufacturers may provide useful numbers, but those numbers often describe the device under controlled conditions. They may not describe "camera observing AprilTags from a moving drone and then converted through PnP into a robot pose." For that, we often estimate measurement covariance empirically. The PnP chapter returns to this idea directly.

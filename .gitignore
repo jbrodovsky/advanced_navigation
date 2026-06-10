@@ -3,3 +3,5 @@ readings/
 **/*.quarto_ipynb
 attic/
 lectures/
+.venv/
+notes/output/

@@ -1,0 +1,166 @@
+# Features, Maps, and Data Association
+
+Measurements become useful when we know what they refer to. A range to "something" is weaker than a range to a particular wall. A pixel coordinate of "a corner" is weaker than a pixel coordinate of the top-left corner of tag 37. Data association is the problem of connecting measurements to the corresponding objects, features, or map elements.
+
+This chapter is intentionally lighter than the later SLAM data-association chapter. Here the goal is to explain why perception pipelines produce correspondences and why those correspondences are part of the observation model.
+
+## From Raw Signals to Features
+
+Sensors produce raw signals:
+
+- lidar returns ranges and intensities;
+- cameras return pixel arrays;
+- radar returns detections in range, bearing, and Doppler;
+- sonar returns acoustic returns;
+- GPS returns pseudoranges or processed position estimates.
+
+Estimators usually do not consume the raw signal directly. A perception pipeline extracts features:
+
+- a line, corner, plane, tree trunk, or pole from lidar;
+- an AprilTag corner or visual keypoint from an image;
+- a buoy detection from radar or camera;
+- a satellite pseudorange from GNSS receiver tracking loops.
+
+A feature is useful when it is repeatable, localizable, and meaningful to the model. "Bright blob at some pixel" is not enough. "Corner 2 of AprilTag 37 at pixel $(u, v)$" is enough to form a PnP correspondence.
+
+## Feature-Based and Location-Based Maps
+
+A feature-based map stores discrete objects:
+
+$$
+m = \{m_1, m_2, \ldots, m_N\}.
+$$
+
+Each feature may contain position, orientation, size, class, descriptor, covariance, and other properties. Examples include AprilTags on a mat, trees in Victoria Park, runway lights, visual landmarks, or celestial objects.
+
+A location-based map stores values over space. Examples include occupancy grids, terrain maps, contour maps, magnetic anomaly maps, and likelihood fields. These maps answer questions like:
+
+- Is this cell occupied?
+- What is the expected altitude here?
+- How far is this endpoint from the nearest obstacle?
+- What magnetic field should I measure at this location?
+
+Both map types can support navigation. The right choice depends on what the sensor can detect and what the estimator needs.
+
+## What Data Association Does
+
+Suppose a robot detects three landmarks:
+
+$$
+\mathbf{z}_t = \{\mathbf{z}_1, \mathbf{z}_2, \mathbf{z}_3\}.
+$$
+
+The map contains many possible landmarks:
+
+$$
+m = \{m_1, m_2, \ldots, m_N\}.
+$$
+
+Data association chooses which measurement corresponds to which map element:
+
+$$
+\mathbf{z}_i \leftrightarrow m_j.
+$$
+
+Once the association is known, the observation model is straightforward:
+
+$$
+\mathbf{z}_i = h(\mathbf{x}, m_j) + \boldsymbol{\nu}_i.
+$$
+
+If the association is wrong, the update can be worse than no update. A filter that confidently corrects toward the wrong landmark is doing exactly what it was told to do. The bug is not in the Kalman gain. The bug is in the measurement interpretation.
+
+## Gating With Predicted Measurements
+
+A common first defense is gating. Given a candidate state $\hat{\mathbf{x}}$ and map feature $m_j$, predict the measurement:
+
+$$
+\hat{\mathbf{z}}_j = h(\hat{\mathbf{x}}, m_j).
+$$
+
+Then compare a real measurement $\mathbf{z}_i$ with the prediction:
+
+$$
+\mathbf{r}_{ij} = \mathbf{z}_i - \hat{\mathbf{z}}_j.
+$$
+
+If the residual is too large, the association is rejected. With covariance, the usual test is Mahalanobis distance:
+
+$$
+d_{ij}^2 = \mathbf{r}_{ij}^T S_{ij}^{-1}\mathbf{r}_{ij},
+$$
+
+where $S_{ij}$ is the expected residual covariance. This accounts for the fact that a 1 m error may be huge for a short-range sensor and harmless for a rough GPS measurement.
+
+```{python}
+#| label: data-association-nearest-gated
+#| eval: false
+
+import numpy as np
+
+
+def associate_by_mahalanobis(z: np.ndarray,
+                             predictions: list[np.ndarray],
+                             residual_covariances: list[np.ndarray],
+                             gate_threshold: float) -> int | None:
+    """Return the best prediction index if it passes the gate."""
+    best_idx = None
+    best_distance = np.inf
+
+    for idx, (z_hat, S) in enumerate(zip(predictions, residual_covariances)):
+        residual = z - z_hat
+        distance = float(residual.T @ np.linalg.solve(S, residual))
+
+        if distance < best_distance:
+            best_distance = distance
+            best_idx = idx
+
+    if best_distance > gate_threshold:
+        return None
+    return best_idx
+```
+
+For a 2D measurement, a gate threshold of about $5.99$ corresponds to a 95 percent chi-squared gate, and $9.21$ corresponds to about 99 percent. Those numbers only make sense if the residual really is approximately Gaussian and the covariance is credible.
+
+## Ambiguity and Perceptual Aliasing
+
+Data association is easy when every feature is unique. AprilTags are helpful because each tag has an ID. Even then, the corners must be ordered correctly and false detections must be handled. Natural features are harder. One tree trunk can look like another. One hallway corner can look like another. One patch of ocean can look like another, often with less sympathy.
+
+Perceptual aliasing occurs when distinct places or features produce similar measurements. It is a major reason navigation systems need:
+
+- gating;
+- robust loss functions;
+- outlier rejection;
+- temporal consistency checks;
+- multiple hypotheses in difficult cases;
+- maps with distinctive features when possible.
+
+## Failure Modes
+
+Common association failures include:
+
+- **False positive**: a detected feature is not a real mapped object.
+- **False negative**: a real feature is missed.
+- **Wrong identity**: the feature is real but matched to the wrong map object.
+- **Wrong geometry**: the right object is detected but the wrong point on it is used.
+- **Stale map**: the world changed after the map was built.
+- **Frame mismatch**: the measurement and map are expressed in incompatible coordinates.
+
+The last one is not glamorous, but it is common. A beautiful estimator cannot save a pipeline that mixes camera, body, world, ENU, NED, row-column, and x-y conventions casually.
+
+## AprilTags as a Friendly Case
+
+The drone project uses AprilTags because they remove much of the hardest association problem. Each detected tag reports an ID, and each tag has four known corners. This gives direct correspondences:
+
+$$
+\text{tag corner in image} \leftrightarrow \text{tag corner in world}.
+$$
+
+That is exactly what Perspective-n-Point needs. The perception problem becomes:
+
+1. Read the detected tag IDs.
+2. Look up the world coordinates of each tag corner.
+3. Pair those world points with the corresponding image pixel points.
+4. Solve for the camera pose.
+
+This is still not automatic. The map coordinates, corner ordering, camera intrinsics, distortion model, and camera-to-body transform all have to be consistent. The next chapter walks through that complete observation model.

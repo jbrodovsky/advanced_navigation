@@ -42,14 +42,14 @@ book:
     - part: "Introduction"
       chapters:
         - chapters/00-intro/intro.qmd
-        - chapters/00-intro/syllabus.qmd
+        # - chapters/00-intro/syllabus.qmd
         - chapters/00-intro/navigation-overview.qmd
-    - part: "Foundations"
-      chapters:
-        - chapters/01-foundations/foundations.qmd
         - chapters/01-foundations/linear-algebra.qmd
         - chapters/01-foundations/probability-theory.qmd
         - chapters/01-foundations/modern-python.qmd
+    # - part: "Foundations"
+    #   chapters:
+    #     - chapters/01-foundations/foundations.qmd
     - part: "Sensing and Perception"
       chapters:
         - chapters/02-sensing/sensing.qmd
@@ -63,6 +63,7 @@ book:
         - chapters/03-filtering/bayes.qmd
         - chapters/03-filtering/ekf.qmd
         - chapters/03-filtering/ukf.qmd
+        - chapters/03-filtering/information-filter.qmd
         - chapters/03-filtering/pf.qmd
         - assignments/m1-drone-pipeline.qmd
     - part: "Simultaneous Localization and Mapping"
@@ -103,7 +104,7 @@ format:
     number-sections: true
     colorlinks: false
     toc: true
-    toc-depth: 2
+    toc-depth: 1
   epub:
     toc: true
     toc-depth: 2
@@ -112,4 +113,3 @@ format:
 
 metadata:
   copyright: "2024 James Brodovsky"
-

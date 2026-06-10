@@ -1,597 +1,100 @@
-# Loop Closure Detection and Place Recognition
+# Loop Closure and Long-Term Consistency
 
-## Introduction
+Loop closure occurs when a robot recognizes that it has returned to a previously visited place. The measurement is not just "I see a feature." It is "this current region corresponds to that old region."
 
-**The fundamental challenge of visual SLAM**: Drift accumulates over time. After traversing a large loop and returning to the starting location, the estimated position may be meters or kilometers away from ground truth.
+This matters because dead reckoning drifts. A four-kilometer path through Victoria Park can look locally plausible while ending up globally misaligned. Loop closure is the mechanism that can pull the trajectory back into consistency.
 
-**Loop closure** is the mechanism that detects when the robot has returned to a previously visited location and uses this information to **globally correct** accumulated drift.
+For this module, loop closure is a required analysis topic, not a required implementation component. The project already asks students to implement feature extraction, association, and FastSLAM. That is enough for a 25% project.
 
-This chapter covers:
-- Problem formulation and importance
-- Appearance-based loop detection
-- Geometric verification of loop closures
-- Place recognition methods
-- Pose constraint computation
-- Integration with pose graph optimization
-- Robustness and failure cases
+## Why Drift Accumulates
 
----
+Suppose odometry has a small heading bias. Each short motion update looks reasonable. Over hundreds or thousands of updates, the position error grows. When the robot returns near the start, the estimated pose may be far away from where the map says it should be.
 
-## 1. The Loop Closure Problem
+This is the essential loop-closure pattern:
 
-### 1.1 Drift in Visual SLAM
+1. the robot revisits an old place;
+2. the front-end proposes a match to prior map structure;
+3. the system verifies the match geometrically;
+4. the backend uses the constraint to reduce accumulated drift.
 
-In monocular visual SLAM, small errors in each frame compound:
-- Feature matching errors: ±0.5 pixels
-- Triangulation uncertainty: ±10% depth error
-- Scale estimation error: ±5% accumulated
+The difficult part is that a false loop closure can be worse than no loop closure. A single confident wrong match can bend the map into nonsense.
 
-**Drift formula**: Position error grows roughly as $\propto t^{1.5}$ (worse than inertial drift).
+## Recognition and Verification
 
-After 1 hour at 1 m/s (3600 meters):
-- Position error can be 10-50 meters (0.3-1.4%)
-- Orientation error: 1-5 degrees
+Loop closure has two stages:
 
-### 1.2 What is a Loop Closure?
+- **Place recognition:** find candidate revisited locations.
+- **Geometric verification:** check whether the candidate is physically consistent.
 
-**Loop closure**: Detecting that two camera poses are at the **same or nearby location** despite being widely separated in time.
+For visual SLAM, place recognition often uses bag-of-words image retrieval or learned image descriptors. For landmark SLAM, place recognition can use local landmark geometry: relative distances, bearings, and spatial patterns.
 
-**Mathematically**: Find keyframes $i$ and $j$ (with $j >> i$) such that:
-$$\|\mathbf{t}_i - \mathbf{t}_j\| < \epsilon \text{ and } \|\theta_i - \theta_j\| < \epsilon_\theta$$
+In Victoria Park, a simple analysis can ask:
 
-where $\mathbf{t}, \theta$ are positions and orientations.
+- Does the final map show revisited tree clusters lining up?
+- Do candidate old and new landmark sets have compatible geometry?
+- Does the vehicle trajectory return near previously mapped structure?
+- Did particle diversity survive long enough to represent the loop-closing hypothesis?
 
-**Consequence of loop closure**:
-- Constrains the pose graph
-- Allows global optimization to redistribute error backward through trajectory
-- **Corrects years of accumulated drift in a single optimization**
+## Why Filtering SLAM Struggles
 
-### 1.3 Why Loop Closure is Different from Normal Frame-to-Frame
+Filtering methods update the current state as measurements arrive. EKF-SLAM keeps a dense covariance, but the state still evolves causally. FastSLAM keeps a set of particles, but resampling removes low-weight path hypotheses.
 
-**Normal tracking**:
-- Match consecutive frames
-- Small motion between frames
-- Temporal consistency enforces correct association
+This creates a loop-closure problem:
 
-**Loop closure**:
-- Match frames separated by tens of minutes
-- Large viewpoint change
-- No temporal smoothness
-- **Appearance can be radically different** (lighting, other objects, temporary obstacles)
+- If the correct old trajectory hypothesis survives, FastSLAM can benefit from revisiting known landmarks.
+- If the correct hypothesis was resampled away, the filter cannot recover it later.
+- If the map contains duplicate landmarks, the system may treat a revisited place as new territory.
 
-Example: Same hallway seen in opposite directions appears completely different.
+This is why particle count, process noise, data association, and resampling threshold all affect long-loop behavior.
 
----
+## Why GraphSLAM Handles Loops Naturally
 
-## 2. Appearance-Based Loop Detection
+GraphSLAM keeps past poses as variables. A loop closure adds a constraint between two distant poses [@DurrantWhyteBailey2006SLAMTutorial]:
 
-### 2.1 Bag-of-Words (BoW) Model
+$$
+e_{ij} = z_{ij} - h(x_i, x_j).
+$$
 
-The standard approach: represent each image as a histogram over a **visual vocabulary**.
+The optimizer adjusts the entire trajectory to satisfy odometry, landmark, and loop constraints together:
 
-**Construction**:
-1. Train vocabulary from many images (e.g., 100,000 ORB descriptors from diverse scenes)
-2. Cluster descriptors into $K$ clusters (e.g., $K = 30,000$) using k-means
-3. Each cluster is a "visual word"
+$$
+\min_X \sum_k \|e_k(X)\|_{\Omega_k}^2.
+$$
 
-**Representing an image**:
-- Extract features, match to vocabulary
-- Count occurrences of each word → histogram (sparse, 30,000-dimensional)
-- Normalize to probability distribution
+The tradeoff is that the backend is more complex. Sparse linear algebra and robust loss functions become central. This is powerful, but it is outside the required project implementation.
 
-**Example**:
-- Image 1 histogram: word_5: 10 occurrences, word_127: 8 occurrences, ...
-- Image 2 histogram: word_5: 12 occurrences, word_127: 7 occurrences, ...
-- Similarity: High (similar visual content)
+## Loop Closure in the Project Report
 
-### 2.2 Similarity Metrics
+Students should not be asked to implement pose-graph optimization for this project. They should analyze loop closure using their FastSLAM results.
 
-**TF-IDF (Term Frequency-Inverse Document Frequency)**:
-$$\text{score}(I_1, I_2) = \sum_{\text{word}} \text{TF}(w, I_1) \cdot \text{IDF}(w) \cdot \text{TF}(w, I_2) \cdot \text{IDF}(w)$$
+Recommended report questions:
 
-where:
-- TF: frequency of word in image
-- IDF: inverse document frequency (penalize common words like "wall", reward distinctive words)
+- Where does the trajectory appear to revisit previously mapped areas?
+- Did the map show duplicate tree clusters near revisited locations?
+- How did particle count affect long-term consistency?
+- How did the resampling threshold affect particle diversity?
+- Would a graph-based smoother help? Why?
+- What additional front-end information would be needed to add reliable loop closures?
 
-**Cosine similarity**:
-$$\text{score}(I_1, I_2) = \frac{h_1 \cdot h_2}{\|h_1\| \|h_2\|}$$
+This is a compare-and-contrast analysis, not another coding assignment.
 
-where $h$ is the normalized histogram.
+## Robustness Concerns
 
-### 2.3 DBoW2 (Bag of Words Place Recognition)
-
-**DBoW2** (Dorian Galvez-Lopez) is the standard implementation for visual loop detection:
-
-1. **Hierarchical structure**: Words organized in a hierarchical tree (faster search)
-2. **Incremental database**: Add images one at a time without retraining
-3. **Fast querying**: Find similar images in database in milliseconds
-
-**Usage** (conceptual):
-```
-For each new keyframe:
-    1. Extract ORB descriptors
-    2. Convert to BoW histogram
-    3. Query database for similar images
-    4. Return top-N candidates by similarity score
-    5. If candidates exist and pass temporal filter:
-        → Potential loop closure
-```
-
-```python
-# Pseudo-code (actual DBoW2 is C++)
-class PlaceRecognition:
-    def __init__(self, vocab_file):
-        self.db = DBoW2.Database(vocab_file)
-        self.frame_descriptors = []
-
-    def add_frame(self, descriptors, frame_id):
-        """Add new frame to place recognition database"""
-        self.frame_descriptors.append(descriptors)
-        bow_vector = self.db.vocabulary.transform(descriptors)
-        self.db.add(bow_vector, frame_id)
+Loop closure failure cases:
 
-    def query_frame(self, descriptors, min_score=0.3):
-        """Query for loop closure candidates"""
-        bow_vector = self.db.vocabulary.transform(descriptors)
-        scores = self.db.query(bow_vector)
+- **False negative:** the robot revisits a place but fails to recognize it.
+- **False positive:** the robot incorrectly matches two different places.
+- **Perceptual aliasing:** different places look geometrically or visually similar.
+- **Map duplication:** the same physical landmarks are initialized twice.
+- **Particle depletion:** the correct revisited-place hypothesis is gone.
 
-        # Return frames with score > threshold
-        candidates = [(frame_id, score) for frame_id, score in scores if score > min_score]
-        return sorted(candidates, key=lambda x: x[1], reverse=True)
-```
+The right response is conservative verification. In navigation, a missed correction is usually less damaging than a confident false correction.
 
-### 2.4 Failure Modes of BoW
+## Summary
 
-**Perceptual aliasing**: Visually similar but geometrically distant locations
-- Office buildings with identical-looking corridors
-- BoW scores high match but poses are meters/kilometers apart
-- **Mitigation**: Geometric verification (next section)
+Loop closure is essential for long-term consistency, but it is a large topic. In this module:
 
-**Dynamic environments**: Objects move between visits
-- Store changes appearance, loop detection fails
-- **Mitigation**: Robust feature matching, ignore dynamic objects
-
-**Viewpoint change**: Same place from very different angles
-- BoW sometimes fails if features are radically different
-- **Mitigation**: Larger tolerance in BoW threshold; use geometric verification
-
----
-
-## 3. Geometric Loop Closure Verification
-
-### 3.1 The Need for Verification
-
-BoW gives us **candidate** loop closures, but many are false positives:
-- Perceptual aliasing: Same appearance, different location
-- Clutter and dynamic objects
-- Lighting and seasonal changes
-
-**Solution**: Verify loop closure geometrically—check if feature correspondences make geometric sense.
-
-### 3.2 Fundamental Matrix / Essential Matrix
-
-Given two images, if they show the same scene from different viewpoints, the correspondence must satisfy the **epipolar constraint**:
-
-$$\mathbf{p}_2^T F \mathbf{p}_1 = 0$$
-
-where $F$ is the fundamental matrix.
-
-**Algorithm**:
-1. Match features between candidate loop images
-2. Estimate fundamental matrix from matches using RANSAC
-3. Count inliers (matches satisfying epipolar constraint)
-4. If inliers > threshold (e.g., >50): **Geometric verification passed**
-
-```python
-def verify_loop_closure(img1, img2, kp1, kp2, K, min_inliers=50):
-    """
-    Geometrically verify potential loop closure
-
-    Returns: True if loop closure verified, False otherwise
-    """
-    # Match features
-    orb = cv2.ORB_create()
-    des1 = orb.compute(img1, kp1)[1]
-    des2 = orb.compute(img2, kp2)[1]
-
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-    matches = bf.knnMatch(des1, des2, k=2)
-
-    # Lowe's ratio test
-    good_matches = []
-    for pair in matches:
-        if len(pair) == 2:
-            m, n = pair
-            if m.distance < 0.7 * n.distance:
-                good_matches.append(m)
-
-    if len(good_matches) < 10:
-        return False
-
-    # Extract matched points
-    pts1 = np.float32([kp1[m.queryIdx].pt for m in good_matches])
-    pts2 = np.float32([kp2[m.trainIdx].pt for m in good_matches])
-
-    # Normalize using intrinsics
-    pts1_norm = cv2.undistortPoints(pts1.reshape(1, -1, 2), K, None).reshape(-1, 2)
-    pts2_norm = cv2.undistortPoints(pts2.reshape(1, -1, 2), K, None).reshape(-1, 2)
-
-    # Estimate fundamental matrix with RANSAC
-    F, mask = cv2.findFundamentalMat(pts1_norm, pts2_norm, cv2.FM_RANSAC, 0.001, 0.99)
-
-    if F is None:
-        return False
-
-    # Count inliers
-    inliers = np.sum(mask)
-    print(f"Geometric verification: {inliers} inliers out of {len(good_matches)} matches")
-
-    return inliers > min_inliers
-```
-
-### 3.3 Semantic Verification (Optional)
-
-Modern approaches add semantic understanding:
-- **Semantic segmentation**: Ensure both images have similar object categories
-- **Instance recognition**: Detect unique objects (distinctive artwork, signs)
-- **Deep learning**: Learned features more robust to viewpoint change
-
----
-
-## 4. Temporal Filtering
-
-### 4.1 Why Temporal Filter?
-
-Even with geometric verification, spurious loop closures can occur:
-- False positive feature matches happen randomly
-- Different locations with similar appearance
-
-**Temporal filter**: Require loop closure to be consistent over multiple frames.
-
-**Strategy**:
-1. Frame $i$ queries loop candidates
-2. If frames $i, i+1, i+2$ all independently find the same candidate loop area → Strong evidence
-3. Require at least 3 consistent detections before creating constraint
-
-### 4.2 Implementation
-
-```python
-class LoopClosureDetector:
-    def __init__(self, vocab_file, min_temporal_consistency=3):
-        self.db = DBoW2.Database(vocab_file)
-        self.recent_loop_detections = {}  # candidate_id → count
-        self.min_temporal_consistency = min_temporal_consistency
-
-    def process_frame(self, descriptors, frame_id):
-        """Process new frame for loop closures"""
-        # BoW query
-        bow_vector = self.db.vocabulary.transform(descriptors)
-        candidates = self.db.query(bow_vector)
-
-        # Count temporal consistency
-        loop_closures = []
-        for candidate_id, score in candidates:
-            if candidate_id in self.recent_loop_detections:
-                self.recent_loop_detections[candidate_id] += 1
-            else:
-                self.recent_loop_detections[candidate_id] = 1
-
-            # If temporally consistent
-            if self.recent_loop_detections[candidate_id] >= self.min_temporal_consistency:
-                loop_closures.append((candidate_id, score))
-
-        # Decay counts (require consistent recent detection)
-        for cid in self.recent_loop_detections:
-            self.recent_loop_detections[cid] *= 0.9
-
-        return loop_closures
-```
-
----
-
-## 5. Pose Constraint Computation
-
-### 5.1 From Loop Closure to Pose Constraint
-
-Once a loop closure is verified, we need to compute a **pose constraint**: the relative transformation between the two camera poses.
-
-**Input**:
-- Keyframe $i$ at pose $T_i = [R_i | \mathbf{t}_i]$
-- Keyframe $j$ (loop candidate) at pose $T_j$
-- Feature correspondences between images
-
-**Output**:
-- Relative pose: $T_{ij} = T_j^{-1} T_i$ (how pose $i$ relates to pose $j$)
-- Uncertainty: Covariance matrix $\Sigma_{ij}$
-
-### 5.2 Approach: Triangulation + PnP
-
-1. **Triangulate 3D points** from features in frame $i$ (using known pose $T_i$)
-2. **Project points into frame $j$** using estimated loop pose
-3. **Solve Perspective-n-Point (PnP)** to find optimal pose $T_j$ that projects points to observed features
-
-```python
-def compute_loop_constraint(pts1_2d, pts2_2d, depth1, K, T_i, max_iterations=100):
-    """
-    Compute pose constraint for loop closure
-
-    pts1_2d: matched features in image 1
-    pts2_2d: matched features in image 2
-    depth1: depth values for points in frame 1
-    K: intrinsic matrix
-    T_i: pose of frame i
-    """
-    # Triangulate 3D points in frame i
-    pts1_3d = []
-    for (u, v), d in zip(pts1_2d, depth1):
-        x = (u - K[0, 2]) * d / K[0, 0]
-        y = (v - K[1, 2]) * d / K[1, 1]
-        z = d
-        pts1_3d.append([x, y, z])
-
-    pts1_3d = np.array(pts1_3d)
-
-    # Transform to world frame
-    R_i, t_i = T_i[:3, :3], T_i[:3, 3]
-    pts1_world = (R_i.T @ (pts1_3d - t_i).T).T
-
-    # Solve PnP for frame j
-    success, rvec, tvec = cv2.solvePnP(
-        pts1_world, pts2_2d, K, None,
-        useExtrinsicGuess=False,
-        flags=cv2.SOLVEPNP_EPNP
-    )
-
-    if not success:
-        return None, None
-
-    # Convert to rotation matrix
-    R_j, _ = cv2.Rodrigues(rvec)
-    T_j = np.hstack([R_j, tvec.reshape(3, 1)])
-
-    # Relative pose: from j to i
-    T_ij_inv = np.vstack([np.hstack([R_j.T, -R_j.T @ tvec.reshape(3, 1)]), [0, 0, 0, 1]])
-
-    # Estimated uncertainty (rough)
-    uncertainty = np.eye(6)  # 3D translation + 3D rotation
-
-    return T_ij_inv, uncertainty
-```
-
-### 5.3 Similarity Transform vs. Rigid Transform
-
-In monocular SLAM, scale is ambiguous. A loop closure might involve a **similarity transform** (rotation, translation, **and scale**):
-
-$$T_{ij} = [s R | \mathbf{t}]$$
-
-where $s$ is unknown scale.
-
-**Solving for scale**:
-- Estimate scale from feature depth ratios
-- Use multiple loop constraints to consensus estimate of scale
-
-In stereo or RGB-D SLAM, scale is known → use rigid transform.
-
----
-
-## 6. Pose Graph Optimization
-
-### 6.1 Pose Graph Structure
-
-A **pose graph** is a graph where:
-- **Nodes**: Camera poses at each keyframe
-- **Edges**: Constraints between poses
-  - **Odometry edges**: From visual odometry/visual SLAM tracking
-  - **Loop closure edges**: From loop closure detection
-
-**Example**:
-```
-Pose 1 --- Pose 2 --- Pose 3 --- ... --- Pose 100
-  |                                          |
-  └──────────── Loop closure edge ──────────┘
-```
-
-### 6.2 Optimization Problem
-
-Minimize total constraint violation:
-$$\min_{\{T_i\}} \sum_{\text{edges } (i,j)} \|T_i^{-1} T_j - T_{ij}\|^2_{\Sigma_{ij}}$$
-
-where:
-- $T_i, T_j$: estimated poses
-- $T_{ij}$: constraint (expected relative pose)
-- $\Sigma_{ij}$: constraint uncertainty
-- $\|\cdot\|^2_\Sigma$: Mahalanobis distance weighted by constraint covariance
-
-**Effect of loop closure edge**:
-- Before optimization: Large accumulated drift
-- Loop closure creates constraint: $T_i$ and $T_j$ should be approximately same
-- Optimization redistributes error backward through trajectory
-
-### 6.3 Optimization Algorithms
-
-**g2o** (General Graph Optimization):
-- Graph-based, flexible for different constraint types
-- Levenberg-Marquardt optimization
-- Supports manifold constraints (SO(3) for rotations)
-
-**Ceres Solver**:
-- More general-purpose
-- Better performance on large problems
-
-**GTSAM** (Georgia Tech Smoothing and Mapping):
-- Incremental smoothing (online updates without full re-optimization)
-- Factor graphs
-
----
-
-## 7. Loop Closure Failure Cases
-
-### 7.1 False Negatives (Missed Loop Closures)
-
-**Scenario**: Robot returns to previously visited location, but loop closure is not detected.
-
-**Causes**:
-- Severe viewpoint change (visited from different direction)
-- Significant appearance change (seasonal, lighting, temporary objects)
-- BoW threshold too strict
-- Perceptual aliasing (nearby location has similar appearance)
-
-**Prevention**:
-- Lower BoW threshold (accept more candidates)
-- Use geometric verification (catches perceptual aliasing)
-- Augment with other sensors (IMU can predict likely loop candidates based on motion)
-
-### 7.2 False Positives (Spurious Loop Closures)
-
-**Scenario**: Robot wrongly closes a loop to a different part of the environment.
-
-**Causes**:
-- Perceptual aliasing: Identical-looking locations far apart
-- Feature noise: Random matches create spurious geometric consistency
-- Temporal filter not sufficient
-
-**Consequence**: **Catastrophic**: Pose graph optimization can diverge or lock robot into wrong global estimate.
-
-**Prevention**:
-- Stricter geometric verification (more inliers required)
-- Longer temporal consistency requirement
-- Manual verification (human checks candidate loop closures)
-- Conservative BoW thresholds
-
-### 7.3 Dynamic Environments
-
-**Scenario**: Furniture rearrangement, moving people, seasonal changes.
-
-**Challenges**:
-- Features may not match (objects moved)
-- If they do match, geometry is wrong (objects at different positions)
-
-**Mitigation**:
-- Semantic filtering: Ignore dynamic classes (people, cars)
-- Robust matching: Require geometric verification
-- Recency-weighted matching: Recent frames more trustworthy
-
----
-
-## 8. Advanced Techniques
-
-### 8.1 Incremental Loop Closure
-
-**Problem**: Loop closure algorithms traditionally batch-process all data.
-
-**Solution**: Incremental methods
-- Process keyframes as they arrive
-- Update place recognition database on-the-fly
-- Avoid storing full pose graph in memory
-
-### 8.2 Learned Place Recognition
-
-Modern approaches use **deep neural networks**:
-- Convolutional neural networks extract image features
-- Training on large place recognition datasets (KITTI, CMU Seasons)
-- More robust to appearance changes than hand-crafted features
-
-Example systems:
-- **NetVLAD**: Learned aggregation similar to VLAD
-- **Place recognition CNNs**: Direct image-to-image similarity
-
-### 8.3 Multi-Session SLAM
-
-**Problem**: System reinitializes each session; cannot recognize previously visited locations across sessions.
-
-**Solution**: Persistent place recognition database
-- Save visual vocabulary and place descriptors to disk
-- Load on restart
-- Immediately recognize familiar locations
-- Enables lifelong SLAM
-
----
-
-## 9. Integration with Pose Graph Optimization
-
-### 9.1 Hierarchical Optimization
-
-For large systems (10,000+ keyframes), global optimization is expensive:
-
-**Strategy**: Hierarchical decomposition
-1. **Local maps**: Optimize small regions (100-500 keyframes) quickly
-2. **Map-to-map**: Optimize connections between local maps
-3. **Global**: Occasional global refinement (less frequent)
-
-### 9.2 Incremental Optimization (ISAM2)
-
-**iSAM2** allows efficient incremental updates:
-- New loop closure: Only affected variables recomputed
-- Typically 100× faster than full re-optimization
-- Enables real-time loop closure
-
----
-
-## 10. Practical System Integration
-
-### 10.1 Complete SLAM with Loop Closure
-
-```
-Tracking:
-    For each frame:
-        → Estimate pose (relative to previous)
-        → Extract features for place recognition
-
-Local Mapping:
-    For each keyframe:
-        → Create new 3D points
-        → Optimize local bundle
-
-Loop Closure Detection:
-    For each keyframe:
-        → Query place recognition database
-        → Verify geometrically
-        → Compute pose constraint
-
-Loop Closure Optimization:
-    When loop closure detected:
-        → Add constraint to pose graph
-        → Optimize pose graph (g2o, Ceres, GTSAM)
-        → Update all keyframe poses
-        → Optionally: Re-optimize local maps
-```
-
-### 10.2 Failure Recovery
-
-When loop closure fails:
-1. **Detect**: Monitor pose graph consistency (high residuals)
-2. **Recover**:
-   - Remove spurious loop edge
-   - Re-optimize
-   - Flag for operator review
-3. **Prevent**: Add sanity checks (e.g., expected scale of environment)
-
----
-
-## 11. Summary
-
-**Loop closure detection is the key to long-term visual SLAM**:
-- Appearance-based methods (BoW) find candidates quickly
-- Geometric verification rejects perceptual aliasing
-- Temporal filtering provides robustness
-- Pose graph optimization globally corrects drift
-
-**Critical design choices**:
-- BoW vocabulary size (larger → more discriminative, slower)
-- Geometric verification threshold (strict → fewer false positives, more missed loops)
-- Temporal consistency requirement (higher → more robust, slower loop closure)
-- Optimization frequency (more frequent → better drift, higher compute)
-
-**State of the art**:
-- ORB-SLAM3: Visual-inertial, excellent robustness
-- DBoW2: Proven, efficient place recognition
-- g2o/Ceres: Mature optimization backends
-- Learned features: Emerging, promising for extreme appearance changes
-
-**Future directions**:
-- Semantic loop closure: Use object detection for more robust recognition
-- Lifelong SLAM: Continuous learning, parameter adaptation
-- Multi-robot SLAM: Collaborative mapping with loop closure between robots
-- Visual-inertial-GNSS fusion: Robust navigation combining all sensors
-
-Loop closure closes both the **spatial** loop (returning to same location) and the **algorithmic** loop (correcting drift via global optimization)—the ultimate goal of navigation systems.
+1. FastSLAM is the required implementation.
+2. Loop closure is analyzed through the behavior of that implementation.
+3. GraphSLAM is introduced as the natural backend for global loop corrections.
+4. Students should explain the tradeoff rather than build every possible solution.

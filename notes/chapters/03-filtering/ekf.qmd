@@ -1,0 +1,876 @@
+# Kalman Filtering and the Extended Kalman Filter
+
+The Bayes filter gives the exact recursive structure, but exact belief
+distributions are usually too expensive to maintain. The Kalman filter makes
+the problem practical by assuming the belief is Gaussian and the models are
+linear with additive Gaussian noise.
+
+That sounds restrictive because it is. It is also one of the most useful
+approximations in navigation.
+
+This chapter starts with the linear Kalman filter, then extends it to nonlinear
+systems through local linearization. The final section connects the EKF idea to
+error-state inertial navigation, where the filter estimates small errors rather
+than the full navigation state directly.
+
+## Linear Gaussian Systems
+
+The discrete-time linear system model is
+
+$$
+\mathbf{x}_k =
+\mathbf{F}_k \mathbf{x}_{k-1}
++
+\mathbf{B}_k \mathbf{u}_k
++
+\mathbf{w}_k,
+\qquad
+\mathbf{w}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{Q}_k),
+$$
+
+with measurement model
+
+$$
+\mathbf{z}_k =
+\mathbf{H}_k \mathbf{x}_k
++
+\mathbf{v}_k,
+\qquad
+\mathbf{v}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{R}_k).
+$$
+
+The state belief is represented by a mean and covariance:
+
+$$
+\mathbf{x}_{k-1}
+\sim
+\mathcal{N}(\hat{\mathbf{x}}_{k-1}, \mathbf{P}_{k-1}).
+$$
+
+The symbols have standard roles:
+
+- $\mathbf{F}_k$ propagates the state.
+- $\mathbf{B}_k$ maps known inputs into the state.
+- $\mathbf{Q}_k$ describes process noise and unmodeled dynamics.
+- $\mathbf{H}_k$ maps state into measurement space.
+- $\mathbf{R}_k$ describes measurement noise.
+
+If these assumptions are true, the Kalman filter is the exact Bayes filter for
+the linear Gaussian system.
+
+## Prediction
+
+The predicted state mean is
+
+$$
+\hat{\mathbf{x}}_k^-
+=
+\mathbf{F}_k \hat{\mathbf{x}}_{k-1}
++
+\mathbf{B}_k \mathbf{u}_k.
+$$
+
+The predicted covariance is
+
+$$
+\mathbf{P}_k^-
+=
+\mathbf{F}_k \mathbf{P}_{k-1} \mathbf{F}_k^T
++
+\mathbf{Q}_k.
+$$
+
+The covariance equation says two things at once. First, uncertainty is
+transformed by the dynamics. Second, new uncertainty enters through process
+noise. If $\mathbf{Q}_k$ is too small, the filter becomes overconfident and may
+reject valid measurements. If $\mathbf{Q}_k$ is too large, the filter will
+wander around and let measurements dominate.
+
+## Measurement Update
+
+The innovation is the difference between the actual measurement and the
+predicted measurement:
+
+$$
+\mathbf{y}_k
+=
+\mathbf{z}_k - \mathbf{H}_k \hat{\mathbf{x}}_k^-.
+$$
+
+The innovation covariance is
+
+$$
+\mathbf{S}_k
+=
+\mathbf{H}_k \mathbf{P}_k^- \mathbf{H}_k^T + \mathbf{R}_k.
+$$
+
+The Kalman gain is
+
+$$
+\mathbf{K}_k
+=
+\mathbf{P}_k^- \mathbf{H}_k^T \mathbf{S}_k^{-1}.
+$$
+
+Then the posterior state and covariance are
+
+$$
+\hat{\mathbf{x}}_k
+=
+\hat{\mathbf{x}}_k^- + \mathbf{K}_k \mathbf{y}_k,
+$$
+
+$$
+\mathbf{P}_k
+=
+(\mathbf{I} - \mathbf{K}_k \mathbf{H}_k)\mathbf{P}_k^-.
+$$
+
+In software, prefer solving the linear system for the gain rather than forming
+an explicit matrix inverse. For numerical robustness, the Joseph covariance
+update is often better:
+
+$$
+\mathbf{P}_k
+=
+(\mathbf{I} - \mathbf{K}_k \mathbf{H}_k)
+\mathbf{P}_k^-
+(\mathbf{I} - \mathbf{K}_k \mathbf{H}_k)^T
++
+\mathbf{K}_k \mathbf{R}_k \mathbf{K}_k^T.
+$$
+
+It is a few more matrix multiplies, but it is less likely to destroy symmetry
+or positive semidefiniteness through roundoff.
+
+## Kalman Gain Intuition
+
+In a scalar measurement problem, the gain is
+
+$$
+K = \frac{P^-}{P^- + R}.
+$$
+
+If measurement noise $R$ is small, $K$ approaches one and the filter trusts the
+measurement. If $R$ is large, $K$ approaches zero and the filter trusts the
+prediction.
+
+```{python}
+#| label: fig-kalman-gain-noise
+#| fig-cap: "Scalar Kalman gain as measurement noise changes. Larger predicted uncertainty increases measurement influence; larger measurement noise decreases it."
+#| code-fold: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+R_values = np.logspace(-3, 2, 500)
+predicted_variances = [0.05, 0.2, 1.0, 5.0]
+
+fig, ax = plt.subplots(figsize=(8, 4))
+for P_minus in predicted_variances:
+    gain = P_minus / (P_minus + R_values)
+    ax.semilogx(R_values, gain, label=fr"$P^-={P_minus}$")
+
+ax.set_xlabel("measurement variance R")
+ax.set_ylabel("Kalman gain K")
+ax.set_title("Measurement trust decreases as measurement noise increases")
+ax.grid(True, which="both", alpha=0.25)
+ax.legend()
+plt.show()
+```
+
+The gain is not a magic tuning knob. It is the consequence of the uncertainty
+model. If the gain seems wrong, inspect $\mathbf{P}^-$ and $\mathbf{R}$ before
+you start sprinkling constants into the code.
+
+## A Constant-Velocity Example
+
+For 1D motion with position $s$ and velocity $\dot{s}$,
+
+$$
+\mathbf{x}
+=
+\begin{bmatrix}
+s \\
+\dot{s}
+\end{bmatrix}.
+$$
+
+If acceleration $a$ is treated as a known input over one time step $\Delta t$,
+the discrete model is
+
+$$
+\mathbf{x}_k
+=
+\begin{bmatrix}
+1 & \Delta t \\
+0 & 1
+\end{bmatrix}
+\mathbf{x}_{k-1}
++
+\begin{bmatrix}
+\frac{1}{2}\Delta t^2 \\
+\Delta t
+\end{bmatrix}
+a_k
++
+\mathbf{w}_k.
+$$
+
+If the sensor measures position only,
+
+$$
+z_k =
+\begin{bmatrix}
+1 & 0
+\end{bmatrix}
+\mathbf{x}_k
++
+v_k.
+$$
+
+A minimal implementation follows the equations directly:
+
+```{python}
+#| label: kalman-constant-velocity-code
+#| eval: false
+
+import numpy as np
+
+
+def kalman_predict(x, P, F, B, u, Q):
+    x_bar = F @ x + B @ u
+    P_bar = F @ P @ F.T + Q
+    return x_bar, P_bar
+
+
+def kalman_update(x_bar, P_bar, z, H, R):
+    innovation = z - H @ x_bar
+    S = H @ P_bar @ H.T + R
+    K = np.linalg.solve(S.T, (P_bar @ H.T).T).T
+    x = x_bar + K @ innovation
+    I = np.eye(P_bar.shape[0])
+    P = (I - K @ H) @ P_bar @ (I - K @ H).T + K @ R @ K.T
+    return x, P, innovation, S
+```
+
+This is the basic pattern behind many navigation filters. The state and matrix
+dimensions grow, but the loop remains prediction, innovation, gain, correction.
+
+## Continuous Models and Discretization
+
+Real motion is continuous. Digital filters run at discrete time steps. A common
+continuous-time linear model is
+
+$$
+\dot{\mathbf{x}}(t)
+=
+\mathbf{A}\mathbf{x}(t)
++
+\mathbf{B}\mathbf{u}(t)
++
+\mathbf{G}\mathbf{w}(t).
+$$
+
+For small time steps, one-step Euler integration gives
+
+$$
+\mathbf{F}
+\approx
+\mathbf{I} + \mathbf{A}\Delta t.
+$$
+
+For some simple systems, the exact discretization is easy. The constant-velocity
+model has
+
+$$
+\mathbf{A}
+=
+\begin{bmatrix}
+0 & 1 \\
+0 & 0
+\end{bmatrix},
+\qquad
+\mathbf{F}
+=
+\exp(\mathbf{A}\Delta t)
+=
+\begin{bmatrix}
+1 & \Delta t \\
+0 & 1
+\end{bmatrix}.
+$$
+
+If acceleration noise with variance $\sigma_a^2$ is modeled as constant over
+the interval and enters through
+
+$$
+\mathbf{G}_d
+=
+\begin{bmatrix}
+\frac{1}{2}\Delta t^2 \\
+\Delta t
+\end{bmatrix},
+$$
+
+then a simple discrete process covariance is
+
+$$
+\mathbf{Q}
+=
+\mathbf{G}_d \sigma_a^2 \mathbf{G}_d^T
+=
+\sigma_a^2
+\begin{bmatrix}
+\frac{1}{4}\Delta t^4 & \frac{1}{2}\Delta t^3 \\
+\frac{1}{2}\Delta t^3 & \Delta t^2
+\end{bmatrix}.
+$$
+
+This is not the only valid noise model. The important point is that
+$\mathbf{Q}$ should reflect how uncertainty enters the state, not just be a
+small diagonal matrix because the code needed one.
+
+## Why the Linear Kalman Filter Breaks
+
+The linear Kalman filter relies on two assumptions:
+
+- the process and measurement models are linear;
+- the relevant uncertainties are well represented by Gaussians.
+
+Navigation rarely gives us that much kindness. A ground robot's global position
+depends on heading through sine and cosine. A landmark range measurement depends
+on Euclidean distance. A bearing wraps around at $\pm \pi$. Attitude lives on a
+rotation group, not in ordinary Euclidean coordinates. None of this is linear.
+
+The Extended Kalman Filter keeps the Gaussian belief but replaces nonlinear
+models with local linear approximations.
+
+## Nonlinear System Model
+
+The nonlinear process and measurement models are
+
+$$
+\mathbf{x}_k
+=
+f(\mathbf{x}_{k-1}, \mathbf{u}_k) + \mathbf{w}_k,
+\qquad
+\mathbf{w}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{Q}_k),
+$$
+
+$$
+\mathbf{z}_k
+=
+h(\mathbf{x}_k) + \mathbf{v}_k,
+\qquad
+\mathbf{v}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{R}_k).
+$$
+
+The EKF evaluates the nonlinear functions directly for the mean, but propagates
+the covariance through first-order Taylor approximations.
+
+For the process model,
+
+$$
+f(\mathbf{x})
+\approx
+f(\hat{\mathbf{x}})
++
+\mathbf{F}
+(\mathbf{x} - \hat{\mathbf{x}}),
+$$
+
+where
+
+$$
+\mathbf{F}
+=
+\left.
+\frac{\partial f}{\partial \mathbf{x}}
+\right|_{\hat{\mathbf{x}}, \mathbf{u}}.
+$$
+
+For the measurement model,
+
+$$
+h(\mathbf{x})
+\approx
+h(\hat{\mathbf{x}}^-)
++
+\mathbf{H}
+(\mathbf{x} - \hat{\mathbf{x}}^-),
+$$
+
+where
+
+$$
+\mathbf{H}
+=
+\left.
+\frac{\partial h}{\partial \mathbf{x}}
+\right|_{\hat{\mathbf{x}}^-}.
+$$
+
+## EKF Prediction
+
+The EKF prediction is
+
+$$
+\hat{\mathbf{x}}_k^-
+=
+f(\hat{\mathbf{x}}_{k-1}, \mathbf{u}_k),
+$$
+
+$$
+\mathbf{P}_k^-
+=
+\mathbf{F}_k
+\mathbf{P}_{k-1}
+\mathbf{F}_k^T
++
+\mathbf{Q}_k.
+$$
+
+The nonlinear function moves the mean. The Jacobian moves the covariance.
+
+## EKF Update
+
+The innovation is
+
+$$
+\mathbf{y}_k
+=
+\mathbf{z}_k - h(\hat{\mathbf{x}}_k^-).
+$$
+
+The innovation covariance is
+
+$$
+\mathbf{S}_k
+=
+\mathbf{H}_k
+\mathbf{P}_k^-
+\mathbf{H}_k^T
++
+\mathbf{R}_k.
+$$
+
+The gain and correction are
+
+$$
+\mathbf{K}_k
+=
+\mathbf{P}_k^-
+\mathbf{H}_k^T
+\mathbf{S}_k^{-1},
+$$
+
+$$
+\hat{\mathbf{x}}_k
+=
+\hat{\mathbf{x}}_k^-
++
+\mathbf{K}_k \mathbf{y}_k.
+$$
+
+The covariance update can again use the Joseph form:
+
+$$
+\mathbf{P}_k
+=
+(\mathbf{I} - \mathbf{K}_k\mathbf{H}_k)
+\mathbf{P}_k^-
+(\mathbf{I} - \mathbf{K}_k\mathbf{H}_k)^T
++
+\mathbf{K}_k\mathbf{R}_k\mathbf{K}_k^T.
+$$
+
+## Example: Range to a Landmark
+
+For a 2D state
+
+$$
+\mathbf{x}
+=
+\begin{bmatrix}
+x & y & v_x & v_y
+\end{bmatrix}^T,
+$$
+
+the range to a known landmark $\mathbf{m} = [m_x, m_y]^T$ is
+
+$$
+h(\mathbf{x})
+=
+\sqrt{(m_x - x)^2 + (m_y - y)^2}.
+$$
+
+Let
+
+$$
+r = \sqrt{(m_x - x)^2 + (m_y - y)^2}.
+$$
+
+The measurement Jacobian is
+
+$$
+\mathbf{H}
+=
+\begin{bmatrix}
+\frac{x - m_x}{r}
+&
+\frac{y - m_y}{r}
+&
+0
+&
+0
+\end{bmatrix}.
+$$
+
+The zero columns matter. This measurement does not directly observe velocity,
+but it can still reduce velocity uncertainty if position and velocity are
+correlated in $\mathbf{P}$.
+
+```{python}
+#| label: fig-ekf-linearization-error
+#| fig-cap: "First-order EKF linearization of a nonlinear range measurement. The approximation is good near the linearization point and degrades as the state moves away."
+#| code-fold: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+landmark = np.array([0.0, 0.0])
+y_fixed = 2.0
+x_values = np.linspace(0.2, 7.0, 500)
+
+def range_measurement(x_position):
+    dx = x_position - landmark[0]
+    dy = y_fixed - landmark[1]
+    return np.sqrt(dx**2 + dy**2)
+
+x0 = 3.0
+r0 = range_measurement(x0)
+drdx0 = (x0 - landmark[0]) / r0
+linearized = r0 + drdx0 * (x_values - x0)
+true_range = range_measurement(x_values)
+
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.plot(x_values, true_range, label="true range")
+ax.plot(x_values, linearized, linestyle="--", label="first-order approximation")
+ax.axvline(x0, color="0.4", linestyle=":", label="linearization point")
+ax.set_xlabel("candidate x position [m], with y = 2 m")
+ax.set_ylabel("range to landmark [m]")
+ax.set_title("EKF measurement linearization is local")
+ax.grid(True, alpha=0.25)
+ax.legend()
+plt.show()
+```
+
+This figure is the EKF's central bargain. Near the current estimate, the
+linearization may be excellent. Far away, it may be misleading. If the estimate
+is already wrong enough, the EKF can confidently walk itself away from the
+truth.
+
+## Computing Jacobians
+
+Analytical Jacobians are usually preferred when the model is small and stable.
+They are fast, exact for the written model, and make the coupling between states
+visible. Numerical Jacobians are useful for testing and for models that are
+awkward to differentiate by hand.
+
+```{python}
+#| label: ekf-jacobian-check-code
+#| eval: false
+
+import numpy as np
+
+
+def range_to_landmark(state, landmark):
+    dx = state[0] - landmark[0]
+    dy = state[1] - landmark[1]
+    return np.array([np.sqrt(dx * dx + dy * dy)])
+
+
+def range_jacobian(state, landmark):
+    dx = state[0] - landmark[0]
+    dy = state[1] - landmark[1]
+    r = np.sqrt(dx * dx + dy * dy)
+    return np.array([[dx / r, dy / r, 0.0, 0.0]])
+
+
+def numerical_jacobian(func, x, eps=1e-6):
+    y0 = func(x)
+    J = np.zeros((y0.size, x.size))
+    for i in range(x.size):
+        x_perturbed = x.copy()
+        x_perturbed[i] += eps
+        J[:, i] = (func(x_perturbed) - y0) / eps
+    return J
+
+
+state = np.array([3.0, 2.0, 0.5, -0.1])
+landmark = np.array([0.0, 0.0])
+
+H_analytical = range_jacobian(state, landmark)
+H_numerical = numerical_jacobian(lambda s: range_to_landmark(s, landmark), state)
+
+np.testing.assert_allclose(H_analytical, H_numerical, atol=1e-5)
+```
+
+Do not treat finite differences as a substitute for understanding the model.
+They are a good smoke test. They are not a license to ignore singularities,
+angle wrapping, units, or frame conventions.
+
+## Consistency Checks
+
+An EKF can produce reasonable-looking state estimates while its covariance is
+wrong. Consistency checks compare residual behavior against the uncertainty the
+filter claims to have.
+
+The normalized innovation squared is
+
+$$
+\epsilon_k
+=
+\mathbf{y}_k^T
+\mathbf{S}_k^{-1}
+\mathbf{y}_k.
+$$
+
+For a correct linear Gaussian model, $\epsilon_k$ follows a chi-square
+distribution with degrees of freedom equal to the measurement dimension. In
+practice, we use this as a diagnostic, not as a sacred contract.
+
+Large innovations can mean:
+
+- the state estimate is wrong;
+- the measurement is an outlier;
+- the measurement covariance is too optimistic;
+- the wrong feature was associated with the measurement;
+- the linearization point is poor;
+- the model is missing real physics.
+
+The EKF is not fragile because it uses matrices. It is fragile because it is
+very good at hiding bad modeling assumptions behind clean matrices.
+
+## Practical Implementation Considerations
+
+The Kalman and Extended Kalman filters are simple on paper. Most implementation
+failures come from numerical linear algebra, state representation, or bad
+linearization.
+
+Use the Joseph covariance update unless there is a measured reason not to:
+
+$$
+\mathbf{P}_k
+=
+(\mathbf{I} - \mathbf{K}_k\mathbf{H}_k)
+\mathbf{P}_k^-
+(\mathbf{I} - \mathbf{K}_k\mathbf{H}_k)^T
++
+\mathbf{K}_k\mathbf{R}_k\mathbf{K}_k^T.
+$$
+
+The simpler update $(\mathbf{I}-\mathbf{K}\mathbf{H})\mathbf{P}^-$ is
+algebraically equivalent under exact arithmetic, but software does not run on
+exact arithmetic. The Joseph form is more robust against loss of symmetry and
+small negative eigenvalues.
+
+Avoid explicit matrix inverses. Compute gains and consistency metrics with
+linear solves:
+
+```{python}
+#| label: ekf-linear-solve-code
+#| eval: false
+
+import numpy as np
+
+
+def kalman_gain(P_bar: np.ndarray, H: np.ndarray, R: np.ndarray) -> np.ndarray:
+    S = H @ P_bar @ H.T + R
+    return np.linalg.solve(S.T, (P_bar @ H.T).T).T
+
+
+def normalized_innovation_squared(y: np.ndarray, S: np.ndarray) -> float:
+    return float(y.T @ np.linalg.solve(S, y))
+```
+
+Keep covariance matrices symmetric. After an update, it is reasonable to enforce
+symmetry at machine precision and check positive semidefiniteness:
+
+```{python}
+#| label: ekf-covariance-check-code
+#| eval: false
+
+import numpy as np
+
+
+def symmetrize_covariance(P: np.ndarray) -> np.ndarray:
+    return 0.5 * (P + P.T)
+
+
+def assert_covariance_is_reasonable(P: np.ndarray, tolerance: float = 1e-10) -> None:
+    eigvals = np.linalg.eigvalsh(symmetrize_covariance(P))
+    if np.min(eigvals) < -tolerance:
+        raise ValueError(f"covariance is not positive semidefinite: min eigenvalue {eigvals.min()}")
+```
+
+Prefer analytical Jacobians for production when they are tractable, but test
+them against numerical Jacobians. Numerical Jacobians are useful as checks and
+prototypes; they are sensitive to step size, scaling, discontinuities, and angle
+wrapping.
+
+Finally, treat angles and attitude states explicitly. Innovations involving
+angles should be wrapped into the correct interval before applying the update.
+For 3D attitude, use an error-state or manifold-aware representation rather than
+pretending Euler angles behave nicely everywhere.
+
+## Error-State Filtering
+
+Many inertial navigation systems use an error-state Kalman filter rather than a
+full-state EKF. The nominal navigation state is propagated by the inertial
+mechanization equations:
+
+$$
+\hat{\mathbf{x}}_\text{nominal}
+=
+\begin{bmatrix}
+\hat{\mathbf{p}} &
+\hat{\mathbf{v}} &
+\hat{\mathbf{R}} &
+\hat{\mathbf{b}}_g &
+\hat{\mathbf{b}}_a
+\end{bmatrix}.
+$$
+
+The filter state is a small perturbation:
+
+$$
+\delta \mathbf{x}
+=
+\begin{bmatrix}
+\delta \mathbf{p} &
+\delta \mathbf{v} &
+\delta \boldsymbol{\theta} &
+\delta \mathbf{b}_g &
+\delta \mathbf{b}_a
+\end{bmatrix}^T.
+$$
+
+The relationship is
+
+$$
+\mathbf{x}
+=
+\hat{\mathbf{x}}_\text{nominal}
+\boxplus
+\delta \mathbf{x},
+$$
+
+where $\boxplus$ means "apply the error to the nominal state." For ordinary
+position and velocity this is addition. For attitude it is a small rotation
+applied to the nominal orientation.
+
+The workflow is:
+
+1. Propagate the nominal state with IMU measurements.
+2. Propagate the error covariance with linearized error dynamics.
+3. Use external measurements, such as GNSS position or velocity, to estimate the
+   error state.
+4. Inject the estimated error into the nominal state.
+5. Reset the error-state mean to zero while keeping the corrected covariance.
+
+This works well because many inertial navigation errors are small and locally
+linear even though the full attitude and position dynamics are nonlinear. It
+also keeps the attitude representation on the correct geometric object instead
+of pretending Euler angles are harmless everywhere.
+
+## INS/GNSS Bridge
+
+In loosely coupled INS/GNSS integration, the inertial navigation solution is
+propagated at high rate using IMU data, while GNSS provides slower position or
+velocity updates. A simple measurement model might be
+
+$$
+\mathbf{z}_\text{GNSS}
+=
+\hat{\mathbf{p}}_\text{INS}
++
+\delta \mathbf{p}
++
+\mathbf{v}_\text{GNSS}.
+$$
+
+In error-state form, the innovation is approximately
+
+$$
+\mathbf{y}
+=
+\mathbf{z}_\text{GNSS} - \hat{\mathbf{p}}_\text{INS}
+\approx
+\delta \mathbf{p} + \mathbf{v}_\text{GNSS}.
+$$
+
+The measurement matrix simply selects the position-error portion of the error
+state:
+
+$$
+\mathbf{H}
+=
+\begin{bmatrix}
+\mathbf{I}_{3 \times 3} &
+\mathbf{0}_{3 \times 3} &
+\mathbf{0}_{3 \times 3} &
+\mathbf{0}_{3 \times 3} &
+\mathbf{0}_{3 \times 3}
+\end{bmatrix}.
+$$
+
+The full implementation becomes more involved once Earth rotation, transport
+rate, gravity, lever arms, time synchronization, and attitude error definitions
+are included. The important filtering idea is simple: use the high-rate inertial
+system for propagation and slower external measurements to bound drift.
+
+## When the EKF Is a Good Choice
+
+The EKF is a good practical filter when:
+
+- the belief is mostly unimodal;
+- the estimate is usually close enough that local linearization is valid;
+- analytical or tested numerical Jacobians are available;
+- measurement models are differentiable in the operating region;
+- the system needs the speed and memory efficiency of a Gaussian filter.
+
+The EKF is a poor fit when:
+
+- the posterior is strongly multimodal;
+- the initial estimate can be far from the truth;
+- the models have hard discontinuities;
+- data association is highly ambiguous;
+- angle wrapping or attitude parameterization is handled casually.
+
+The EKF is popular because it is effective, not because it is forgiving.
+
+## Algorithm Summary
+
+For each time step:
+
+```text
+predict:
+    x_bar = f(x, u)
+    F = df/dx evaluated at the previous estimate
+    P_bar = F P F.T + Q
+
+update:
+    y = z - h(x_bar)
+    H = dh/dx evaluated at x_bar
+    S = H P_bar H.T + R
+    K = P_bar H.T inv(S)
+    x = x_bar + K y
+    P = Joseph covariance update
+```
+
+The notation is compact. The real work is in choosing the state, models,
+frames, noise parameters, and consistency checks well enough that these
+equations mean what we think they mean.

@@ -1,485 +1,534 @@
-# Simultaneous Localization and Mapping (SLAM)
+# Simultaneous Localization and Mapping
 
-## Introduction
+Simultaneous Localization and Mapping (SLAM) estimates the robot trajectory and the map at the same time:
 
-**SLAM** (Simultaneous Localization and Mapping) is the fundamental problem in autonomous navigation: estimate both the robot's trajectory and the environment map when neither is known a priori.
+$$
+p(x_{1:t}, m \mid z_{1:t}, u_{1:t}).
+$$
 
-It's often called the "chicken-and-egg" problem:
-- To localize, you need a map
-- To map, you need to know your location
+The problem is hard because localization needs a map, while mapping needs a pose estimate. The usual joke is that SLAM is a chicken-and-egg problem. The less funny version is that a wrong data association can quietly poison the map and then use that poisoned map to justify future wrong poses.
 
-This chapter presents three major paradigms for solving SLAM, each with different computational and accuracy trade-offs. The choice depends on the system requirements and available computational resources.
+This chapter gives a broad view of EKF-SLAM, FastSLAM, and GraphSLAM, but it goes deepest on FastSLAM because that is the implementation target for the Victoria Park project [@Montemerlo2002FastSLAM; @Thrun2004FastSLAM].
 
----
+## Online SLAM and Full SLAM
 
-## 1. The SLAM Problem Formulation
+**Online SLAM** estimates only the current robot pose and the map:
 
-### 1.1 Problem Definition
+$$
+p(x_t, m \mid z_{1:t}, u_{1:t}).
+$$
 
-**Given**:
-- Control inputs: $u_{1:t} = \{u_1, u_2, \ldots, u_t\}$
-- Measurements: $z_{1:t} = \{z_1, z_2, \ldots, z_t\}$
-- (Robot position is unknown; map is unknown)
+**Full SLAM** estimates the whole trajectory and the map:
 
-**Estimate**:
-- Robot trajectory: $x_{1:t} = \{x_1, x_2, \ldots, x_t\}$
-- Environment map: $m = \{\ell_1, \ell_2, \ldots, \ell_M\}$ (set of landmarks)
+$$
+p(x_{1:t}, m \mid z_{1:t}, u_{1:t}).
+$$
 
-**Objective**: Compute the joint posterior:
-$$p(x_{1:t}, m | z_{1:t}, u_{1:t})$$
+Filtering methods such as EKF-SLAM and FastSLAM are usually presented as online algorithms. GraphSLAM and factor-graph methods are usually presented as full-trajectory smoothing algorithms.
 
-### 1.2 SLAM Variants
+## EKF-SLAM in One Page
 
-**Online SLAM**: Estimate current pose and map:
-$$p(x_t, m | z_{1:t}, u_{1:t})$$
+EKF-SLAM augments the robot state with all landmark positions. The compressed EKF work around Victoria Park is a useful historical reference for why dense covariance management became a practical bottleneck [@GuivantNebot2001CompressedEKFSLAM]:
 
-Used in real-time applications where only the current state matters.
+$$
+y_t =
+\begin{bmatrix}
+x_t \\
+\ell_1 \\
+\ell_2 \\
+\vdots \\
+\ell_N
+\end{bmatrix}.
+$$
 
-**Full SLAM**: Estimate entire trajectory and map:
-$$p(x_{1:t}, m | z_{1:t}, u_{1:t})$$
+For a planar robot and 2D point landmarks,
 
-Used in offline applications where the full trajectory history is valuable (e.g., post-processing, loop closure).
+$$
+y_t =
+\begin{bmatrix}
+x & y & \theta & \ell_{1,x} & \ell_{1,y} & \cdots & \ell_{N,x} & \ell_{N,y}
+\end{bmatrix}^T.
+$$
 
-The relationship: Online SLAM is obtained from Full SLAM by integrating out all past poses:
-$$p(x_t, m | z_{1:t}, u_{1:t}) = \int p(x_{1:t}, m | z_{1:t}, u_{1:t}) dx_{1:t-1}$$
+The covariance is dense:
 
----
+$$
+P_t =
+\begin{bmatrix}
+P_{xx} & P_{xm} \\
+P_{mx} & P_{mm}
+\end{bmatrix}.
+$$
 
-## 2. EKF-SLAM: The Classical Filtering Approach
+Those cross-correlations are not decorative. They are how the filter remembers that landmark uncertainty and robot uncertainty came from the same observations.
 
-### 2.1 The Idea: Augment the State
+The update for one landmark uses the normal EKF equations:
 
-The simplest SLAM approach: treat landmarks as part of the state vector and apply the Extended Kalman Filter.
+$$
+S = H P^- H^T + R,
+$$
 
-**Augmented state**:
-$$\mathbf{y}_t = \begin{bmatrix} x_t \\ m_{1:N} \end{bmatrix} = \begin{bmatrix} x \\ y \\ \theta \\ m_{1,x} \\ m_{1,y} \\ m_{2,x} \\ m_{2,y} \\ \vdots \\ m_{N,x} \\ m_{N,y} \end{bmatrix}$$
+$$
+K = P^- H^T S^{-1},
+$$
 
-where:
-- $(x, y, \theta)$: robot pose (3 DOF in 2D)
-- $m_{i,x}, m_{i,y}$: coordinates of landmark $i$ (2 DOF each)
-- Total state dimension: $3 + 2N$
+$$
+y = y^- + K(z - h(y^-)).
+$$
 
-**Augmented covariance**:
-$$\boldsymbol{\Sigma}_t = \begin{bmatrix}
-\Sigma_x & \Sigma_{xm} \\
-\Sigma_{mx} & \Sigma_m
-\end{bmatrix}$$
+The issue is scale. The covariance grows with all landmarks, and updating it becomes expensive as the map grows. EKF-SLAM is conceptually elegant and historically important, but it is not the project backend.
 
-where:
-- $\Sigma_x \in \mathbb{R}^{3 \times 3}$: robot pose uncertainty
-- $\Sigma_m \in \mathbb{R}^{2N \times 2N}$: landmark uncertainties
-- $\Sigma_{xm}$: coupling between robot and landmarks (crucial!)
+## FastSLAM: The Project Backend
 
-### 2.2 EKF-SLAM Prediction Step
+FastSLAM uses a Rao-Blackwellized particle filter [@Montemerlo2002FastSLAM]. The key factorization is
 
-When the robot moves with control $u_t$ but without observing landmarks:
+$$
+p(x_{1:t}, m \mid z_{1:t}, u_{1:t})
+=
+p(x_{1:t} \mid z_{1:t}, u_{1:t})
+\prod_{n=1}^{N} p(\ell_n \mid x_{1:t}, z_{1:t}).
+$$
 
-**Update robot pose**:
-$$\hat{x}_t^- = f({\hat{x}}_{t-1}, u_t)$$
+Given a full robot path, landmarks become conditionally independent. FastSLAM therefore represents:
 
-(Same as localization-only motion model)
+- the robot path with particles;
+- each landmark inside each particle with a small EKF;
+- the particle weight with the likelihood of recent observations.
 
-**Landmarks don't move**:
-$$\hat{m}_i^- = \hat{m}_{i,t-1}$$
+For Victoria Park, each particle carries its own hypothesis about the vehicle path through the park and its own tree map.
 
-**Update covariance**:
-$$\Sigma_t^- = \begin{bmatrix}
-F_x & 0 \\
-0 & I
-\end{bmatrix} \Sigma_{t-1} \begin{bmatrix}
-F_x^T & 0 \\
-0 & I
-\end{bmatrix} + Q$$
+### Particle State
 
-where $F_x = \frac{\partial f}{\partial x}\big|_{\hat{x}_{t-1}}$ is the motion model Jacobian (3×3).
+A practical particle contains:
 
-The key: the landmark positions evolve according to the identity (don't change), but their uncertainty grows due to **robot pose drift** propagating through the coupling terms $\Sigma_{xm}$.
-
-### 2.3 EKF-SLAM Update Step
-
-When a measurement $z_t$ observes landmark $j$:
-
-**Measurement model**: For landmark $j$ at position $\mathbf{m}_j$:
-$$z_t = h(\mathbf{y}_t) = \begin{bmatrix}
-\sqrt{(m_{j,x} - x)^2 + (m_{j,y} - y)^2} \\
-\text{atan2}(m_{j,y} - y, m_{j,x} - x) - \theta
-\end{bmatrix} + v_t$$
-
-This is range-bearing measurement to the landmark.
-
-**Measurement Jacobian**:
-$$H_t = \begin{bmatrix} H_x & \ldots & H_j & \ldots & 0 \end{bmatrix}$$
-
-where $H_x$ (1×3) relates the measurement to robot position/orientation, $H_j$ (2×2) relates to landmark $j$, and other landmarks have zero contribution.
-
-**Kalman gain**:
-$$K_t = \Sigma_t^- H_t^T (H_t \Sigma_t^- H_t^T + R_t)^{-1}$$
-
-**Update**:
-$$\hat{\mathbf{y}}_t = \hat{\mathbf{y}}_t^- + K_t(z_t - h(\hat{\mathbf{y}}_t^-))$$
-
-$$\Sigma_t = (I - K_t H_t) \Sigma_t^-$$
-
-Crucially, the update to landmark position **correlates the robot and landmark uncertainties**. This coupling is what makes EKF-SLAM work: when observing a landmark, we refine both our estimate of the landmark's position *and* the robot's position relative to the landmark.
-
-### 2.4 EKF-SLAM Data Association
-
-A critical step: when a measurement arrives, which landmark does it correspond to?
-
-**Gating**: Compute predicted measurement for each landmark and Mahalanobis distance:
-$$D_j^2 = (z_t - \hat{z}_j)^T S_j^{-1} (z_t - \hat{z}_j)$$
-
-where $S_j = H_j \Sigma_t^- H_j^T + R_t$ is the predicted measurement covariance.
-
-**Association rule**:
-- If $D_j^2 < \chi^2_{\alpha, n}$ for exactly one landmark $j$: associate measurement with landmark $j$
-- If $D_j^2 < \chi^2_{\alpha, n}$ for multiple landmarks: ambiguous (use multi-hypothesis tracking)
-- If no landmark passes the gate: treat as new landmark (initialize)
-
-### 2.5 The O(N²) Problem: Why EKF-SLAM Fails at Scale
-
-The update step requires:
-- Computing $K_t = \Sigma_t^- H_t^T (\ldots)^{-1}$
-- Inverting matrix of size $(3 + 2N) \times (3 + 2N)$: **O(N³) per update**
-
-For real-time SLAM, we need $O(N)$ or $O(N \log N)$ complexity. EKF-SLAM becomes intractable for $N > 1000$ landmarks.
-
-**Solutions**:
-1. **Submapping**: Divide large maps into submaps, run EKF-SLAM on each
-2. **Sparse extended information filter (SEIF)**: Exploit sparsity in the information matrix
-3. Use a different algorithm altogether (FastSLAM or GraphSLAM)
-
----
-
-## 3. FastSLAM: Particle Filter with Per-Landmark EKFs
-
-### 3.1 The Key Insight: Rao-Blackwellization
-
-FastSLAM exploits conditional independence: **given the robot's trajectory, landmarks are independently observable**.
-
-Proof: The landmark posterior factors as:
-$$p(m | x_{1:t}, z_{1:t}) = \prod_{i=1}^{N} p(m_i | x_{1:t}, z_{1:t})$$
-
-This means:
-- Use a **particle filter** to estimate the robot trajectory $p(x_{1:t} | z_{1:t}, u_{1:t})$
-- For each particle (sampled trajectory), maintain a separate **tiny EKF for each landmark**
-- Each landmark's EKF is 2×2 (position only, no coupling to other landmarks)
-
-**Computational benefit**:
-- Particle filter: O(M) where M is number of particles
-- Per-landmark EKF updates: O(M × N) where N is number of landmarks
-- **Total: O(M × N) instead of O(N³)**
-
-Typically M << N (e.g., 100 particles for 10,000 landmarks → O(10⁶) vs. O(10¹⁵)).
-
-### 3.2 FastSLAM Algorithm
-
-**Initialize**: Create M particles, each with:
-- A pose sample: $x^{(m)}_0$
-- Landmark estimates: One tiny EKF per landmark
-
-**For each time step** $t = 1, 2, 3, \ldots$:
-
-**Prediction** (Same for all particles):
-1. Apply motion model to each particle: $x^{(m)}_t = f(x^{(m)}_{t-1}, u_t)$
-2. Add process noise: $x^{(m)}_t \sim p(x_t | x^{(m)}_{t-1}, u_t)$
-
-**Update** (For each particle):
-1. **Data association**: Using particle's current pose, associate measurement $z_t$ with landmark $j$
-2. **Landmark update**: Update particle's landmark $j$ EKF using the measurement
-   - Compute expected measurement from particle's pose and landmark estimate
-   - Update landmark position using measurement residual
-3. **Particle weight**: Weight particle by measurement likelihood
-4. **Resampling**: Resample particles proportional to weights
-
-### 3.3 FastSLAM Data Association
-
-Each particle makes its own data association decisions. This is a form of **multi-hypothesis tracking**—different particles hypothesize different associations.
-
-For particle $m$ with pose $x^{(m)}_t$:
-
-**For each landmark** $i$:
-- Compute predicted measurement: $\hat{z}_i = h(x^{(m)}_t, m_i)$
-- Compute Mahalanobis distance: $D_i^2 = (z_t - \hat{z}_i)^T S_i^{-1} (z_t - \hat{z}_i)$
-- Compute measurement likelihood: $\mathcal{L}_i = \mathcal{N}(z_t; \hat{z}_i, S_i)$
-
-**Associate** with landmark $j^* = \arg\max_i \mathcal{L}_i$ if $D_{j^*}^2 < \chi^2_{\text{threshold}}$.
-
-### 3.4 Resampling and Particle Degeneracy
-
-After many updates, particles' weights diverge: most particles have negligible weight, only a few represent high-probability trajectories.
-
-**Low-variance resampling** preserves diversity:
-1. Compute cumulative weights
-2. Draw M uniform random numbers
-3. Select particles according to these numbers
-
-```python
-def low_variance_resample(particles, weights):
-    """Resample particles using low-variance scheme"""
-    N = len(particles)
-    new_particles = []
-
-    r = np.random.uniform(0, 1/N)
-    c = weights[0]
-    j = 0
-
-    for i in range(N):
-        U = r + i / N
-        while U > c:
-            j += 1
-            c += weights[j]
-        new_particles.append(particles[j])
-
-    return new_particles
+```text
+pose:          [x, y, theta]
+trajectory:    previous poses for plotting and analysis
+landmarks:     dictionary landmark_id -> LandmarkEKF
+log_weight:    measurement log-likelihood
 ```
 
----
+The per-landmark EKF state is only two-dimensional:
 
-## 4. GraphSLAM: Batch Optimization
+$$
+\ell_i =
+\begin{bmatrix}
+x_i \\
+y_i
+\end{bmatrix},
+\qquad
+P_i \in \mathbb{R}^{2 \times 2}.
+$$
 
-### 4.1 The Batch Formulation
+That is why FastSLAM is attractive for large landmark maps.
 
-Instead of updating one pose/landmark at a time, GraphSLAM reformulates SLAM as a **batch optimization problem**:
+## A Small Range-Bearing World
 
-**Minimize**:
-$$\sum_{t=1}^{T} \|\dot{x}_t - f(x_{t-1}, u_t)\|_{Q_t}^2 + \sum_{t,i} \|z_t^{(i)} - h(x_t, m_i)\|_{R_t}^2$$
+Before working with the dataset, it helps to make the geometry concrete.
 
-where:
-- First term: motion model constraints (how movements connect poses)
-- Second term: measurement constraints (how measurements relate poses to landmarks)
-- $\|\cdot\|_A^2 = (\cdot)^T A^{-1} (\cdot)$ is weighted squared error (Mahalanobis distance)
+```{python}
+#| label: fastslam-toy-world
+#| echo: true
+import copy
+import math
 
-This is a **Nonlinear Least Squares** problem: find configuration of poses and landmarks that best fits all constraints.
-
-### 4.2 Factor Graphs
-
-GraphSLAM is naturally represented as a **factor graph**:
-
-**Nodes**:
-- Pose nodes: $x_1, x_2, \ldots, x_T$ (one per time step)
-- Landmark nodes: $m_1, m_2, \ldots, m_N$
-
-**Factors (Edges)**:
-- **Odometry factors**: $f_{\text{motion}}(x_t, x_{t-1}, u_t)$ (prior on motion)
-- **Measurement factors**: $f_{\text{meas}}(x_t, m_i, z_t)$ (measurement constraints)
-- **Prior factors**: $f_{\text{prior}}(x_1)$ (initial pose prior)
-
-Each factor contributes an error term to the overall objective.
-
-### 4.3 Loop Closure: The Power of Optimization
-
-When the robot revisits a previously mapped region, we obtain a **loop closure constraint** relating widely separated poses.
-
-**Before loop closure**: Accumulated drift in both pose estimates.
-
-**Loop closure measurement**: Observe a landmark (or recognize a place) that creates a constraint between poses $x_t$ and $x_s$ (where $t >> s$).
-
-**After optimization**: The solver redistributes error across the entire trajectory, correcting years of accumulated drift in a single optimization.
-
-**Filtering approaches** (EKF, FastSLAM) struggle with loop closure because they operate causally (can't "undo" past decisions). **Batch optimization** naturally handles loop closure by considering all constraints simultaneously.
-
-### 4.4 Sparse Matrix Structure
-
-The key to GraphSLAM efficiency: **sparsity**.
-
-The Jacobian matrix of all constraints has a block structure:
-
-$$J = \begin{bmatrix}
-\frac{\partial f_1}{\partial x_1} & \frac{\partial f_1}{\partial x_2} & 0 & \cdots & 0 \\
-0 & \frac{\partial f_2}{\partial x_2} & \frac{\partial f_2}{\partial x_3} & \cdots & 0 \\
-\vdots & & \ddots & & \vdots \\
-\frac{\partial f_{loop}}{\partial x_s} & 0 & \cdots & 0 & \frac{\partial f_{loop}}{\partial x_t}
-\end{bmatrix}$$
-
-Each row represents one constraint and touches only a few variables. The Hessian $H = J^T J$ is **sparse**: most entries are zero.
-
-Modern solvers (Ceres Solver, g2o) exploit this sparsity, achieving **O(N)** complexity.
-
-### 4.5 Solving the Nonlinear Least Squares Problem
-
-**Gauss-Newton iteration**:
-
-1. **Linearize** around current estimate $\hat{\mathbf{v}}$:
-   $$\mathbf{r} \approx \mathbf{r}_0 + J \Delta \mathbf{v}$$
-   where $\mathbf{r}_0$ is residual at current estimate, $J$ is Jacobian.
-
-2. **Solve normal equations**:
-   $$(J^T J) \Delta \mathbf{v} = -J^T \mathbf{r}_0$$
-
-3. **Update**:
-   $$\hat{\mathbf{v}} \leftarrow \hat{\mathbf{v}} + \Delta \mathbf{v}$$
-
-4. **Repeat** until convergence.
-
-**Levenberg-Marquardt** adds a damping term for better numerical stability:
-$$(J^T J + \lambda I) \Delta \mathbf{v} = -J^T \mathbf{r}_0$$
-
-The damping parameter $\lambda$ adjusts between Gauss-Newton (small $\lambda$, faster convergence) and gradient descent (large $\lambda$, more robust).
-
----
-
-## 5. Comparison of SLAM Algorithms
-
-| Aspect | EKF-SLAM | FastSLAM | GraphSLAM |
-|--------|----------|----------|-----------|
-| **Type** | Filtering (recursive) | Particle + Filtering | Optimization (batch) |
-| **Complexity** | O(N²) or O(N³) | O(M log N) | O(N) sparse |
-| **Loop closure** | Difficult | Implicit (particles) | Natural |
-| **Convergence** | Real-time | Real-time | Offline/batch |
-| **Accuracy** | Good for small N | Good for nonlinear | Excellent |
-| **Implementation** | Simple | Moderate | Complex (needs solver) |
-| **Best for** | <100 landmarks | Ambiguous data | Large-scale, long-term |
-
----
-
-## 6. Implementation Example: Minimal FastSLAM
-
-```python
 import numpy as np
-from scipy.linalg import inv
 
-class FastSLAMParticle:
-    """Single particle for FastSLAM"""
 
-    def __init__(self, pose, n_landmarks):
-        self.pose = pose  # [x, y, theta]
-        self.landmark_mus = [np.zeros(2) for _ in range(n_landmarks)]  # landmarks
-        self.landmark_sigmas = [np.eye(2) for _ in range(n_landmarks)]  # landmark covs
-        self.weight = 1.0
+def wrap_angle(angle):
+    """Wrap an angle to [-pi, pi)."""
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
 
-    def motion_update(self, u, dt, Q):
-        """Predict pose"""
-        v, omega = u
-        x, y, theta = self.pose
 
-        x_new = x + v * np.cos(theta) * dt
-        y_new = y + v * np.sin(theta) * dt
-        theta_new = theta + omega * dt
+def predict_pose(pose, control, dt):
+    """Planar unicycle motion model."""
+    x, y, theta = pose
+    v, omega = control
 
-        self.pose = np.array([x_new, y_new, theta_new])
+    if abs(omega) < 1e-9:
+        x = x + v * math.cos(theta) * dt
+        y = y + v * math.sin(theta) * dt
+    else:
+        x = x + (v / omega) * (math.sin(theta + omega * dt) - math.sin(theta))
+        y = y + (v / omega) * (-math.cos(theta + omega * dt) + math.cos(theta))
 
-        # Add process noise
-        noise = np.random.multivariate_normal([0, 0, 0], Q)
-        self.pose += noise
+    theta = wrap_angle(theta + omega * dt)
+    return np.array([x, y, theta], dtype=float)
 
-    def measurement_update(self, z, landmark_idx, R):
-        """Update landmark EKF with measurement"""
-        x, y, theta = self.pose
-        z_range, z_bearing = z
 
-        # Current landmark estimate
-        mu = self.landmark_mus[landmark_idx]
-        sigma = self.landmark_sigmas[landmark_idx]
+def observe_landmark(pose, landmark_xy):
+    """Range-bearing observation of one 2D landmark."""
+    dx, dy = np.asarray(landmark_xy) - pose[:2]
+    return np.array([
+        math.hypot(dx, dy),
+        wrap_angle(math.atan2(dy, dx) - pose[2]),
+    ])
 
-        # Predicted measurement
-        dx = mu[0] - x
-        dy = mu[1] - y
-        z_pred_range = np.sqrt(dx**2 + dy**2)
-        z_pred_bearing = np.arctan2(dy, dx) - theta
 
-        # Measurement Jacobian (2x2 for 2D landmark)
-        H = np.array([
-            [-dx / z_pred_range, -dy / z_pred_range],
-            [dy / z_pred_range**2, -dx / z_pred_range**2]
+true_landmarks = np.array([
+    [4.0, 1.0],
+    [7.0, -1.5],
+    [10.0, 2.0],
+])
+
+pose = np.array([0.0, 0.0, 0.0])
+first_observation = observe_landmark(pose, true_landmarks[0])
+first_observation
+```
+
+## Per-Landmark EKF
+
+Each landmark EKF estimates a fixed point in the world. The robot pose is treated as known within a particle.
+
+```{python}
+#| label: landmark-ekf
+#| echo: true
+class LandmarkEKF:
+    """Tiny EKF for one 2D landmark conditioned on one particle path."""
+
+    def __init__(self, mean, covariance):
+        self.mean = np.asarray(mean, dtype=float)
+        self.covariance = np.asarray(covariance, dtype=float)
+
+    @classmethod
+    def initialize(cls, pose, measurement, measurement_covariance):
+        """Initialize from one range-bearing observation."""
+        r, bearing = measurement
+        angle = pose[2] + bearing
+
+        mean = np.array([
+            pose[0] + r * math.cos(angle),
+            pose[1] + r * math.sin(angle),
         ])
 
-        # Innovation
-        y_innovation = np.array([z_range - z_pred_range, z_bearing - z_pred_bearing])
+        jacobian = np.array([
+            [math.cos(angle), -r * math.sin(angle)],
+            [math.sin(angle), r * math.cos(angle)],
+        ])
+        covariance = jacobian @ measurement_covariance @ jacobian.T
+        return cls(mean, covariance)
 
-        # Update (EKF)
-        S = H @ sigma @ H.T + R
-        K = sigma @ H.T @ inv(S)
+    def expected_measurement(self, pose):
+        """Predict range-bearing measurement and Jacobian wrt landmark position."""
+        dx, dy = self.mean - pose[:2]
+        q = dx * dx + dy * dy
+        r = math.sqrt(q)
 
-        mu_new = mu + K @ y_innovation
-        sigma_new = (np.eye(2) - K @ H) @ sigma
+        z_hat = np.array([
+            r,
+            wrap_angle(math.atan2(dy, dx) - pose[2]),
+        ])
 
-        # Update landmark
-        self.landmark_mus[landmark_idx] = mu_new
-        self.landmark_sigmas[landmark_idx] = sigma_new
+        H = np.array([
+            [dx / r, dy / r],
+            [-dy / q, dx / q],
+        ])
+        return z_hat, H
 
-        # Update particle weight
-        self.weight *= 1.0 / np.sqrt(np.linalg.det(2 * np.pi * S)) * \
-                      np.exp(-0.5 * y_innovation @ inv(S) @ y_innovation)
+    def innovation(self, pose, measurement):
+        z_hat, H = self.expected_measurement(pose)
+        residual = np.asarray(measurement) - z_hat
+        residual[1] = wrap_angle(residual[1])
+        return residual, H
+
+    def likelihood(self, pose, measurement, measurement_covariance):
+        residual, H = self.innovation(pose, measurement)
+        S = H @ self.covariance @ H.T + measurement_covariance
+        solved = np.linalg.solve(S, residual)
+        exponent = -0.5 * residual @ solved
+        normalizer = 2.0 * math.pi * math.sqrt(np.linalg.det(S))
+        return float(math.exp(exponent) / normalizer), residual, S
+
+    def update(self, pose, measurement, measurement_covariance):
+        residual, H = self.innovation(pose, measurement)
+        S = H @ self.covariance @ H.T + measurement_covariance
+        K = np.linalg.solve(S, H @ self.covariance).T
+
+        self.mean = self.mean + K @ residual
+
+        I_KH = np.eye(2) - K @ H
+        self.covariance = (
+            I_KH @ self.covariance @ I_KH.T
+            + K @ measurement_covariance @ K.T
+        )
+
+
+R = np.diag([0.25**2, np.deg2rad(2.0)**2])
+landmark = LandmarkEKF.initialize(pose, first_observation, R)
+landmark.mean
+```
+
+The Joseph-form covariance update is used here for the same reason it was used in the filtering chapter: it is slightly more expensive and much less annoying.
+
+## FastSLAM Algorithm
+
+For each time step:
+
+1. **Predict each particle pose** using the motion model and sampled control noise.
+2. **Associate each observation** to an existing landmark in that particle, or create a new landmark.
+3. **Update landmark EKFs** using the associated measurements.
+4. **Update particle weights** using measurement likelihoods.
+5. **Resample** when the effective sample size is too small.
+
+The effective sample size is
+
+$$
+N_\text{eff} = \frac{1}{\sum_m (w^{[m]})^2}.
+$$
+
+Resampling every step is usually too aggressive. Resampling only when $N_\text{eff}$ drops below a threshold preserves more particle diversity.
+
+```{python}
+#| label: minimal-fastslam
+#| echo: true
+class FastSLAMParticle:
+    """One FastSLAM particle."""
+
+    def __init__(self, pose):
+        self.pose = np.asarray(pose, dtype=float)
+        self.trajectory = [self.pose.copy()]
+        self.landmarks = {}
+        self.log_weight = 0.0
+
+    def copy(self):
+        return copy.deepcopy(self)
 
 
 class FastSLAM:
-    """Minimal FastSLAM implementation"""
+    """Minimal FastSLAM implementation for range-bearing landmarks."""
 
-    def __init__(self, n_particles, n_landmarks, Q, R):
-        self.n_particles = n_particles
-        self.n_landmarks = n_landmarks
-        self.Q = Q
-        self.R = R
+    def __init__(
+        self,
+        num_particles,
+        initial_pose,
+        control_covariance,
+        measurement_covariance,
+        *,
+        gate_threshold=5.99,
+        resample_fraction=0.5,
+        rng=None,
+    ):
+        self.particles = [FastSLAMParticle(initial_pose) for _ in range(num_particles)]
+        self.control_covariance = np.asarray(control_covariance, dtype=float)
+        self.measurement_covariance = np.asarray(measurement_covariance, dtype=float)
+        self.gate_threshold = gate_threshold
+        self.resample_fraction = resample_fraction
+        self.rng = np.random.default_rng(0) if rng is None else rng
+        self.next_landmark_id = 0
 
-        # Initialize particles
-        self.particles = [FastSLAMParticle(np.zeros(3), n_landmarks)
-                         for _ in range(n_particles)]
-        self.weights = np.ones(n_particles) / n_particles
-
-    def predict(self, u, dt):
-        """Predict step"""
+    def predict(self, control, dt):
         for particle in self.particles:
-            particle.motion_update(u, dt, self.Q)
+            noisy_control = control + self.rng.multivariate_normal(
+                np.zeros(2), self.control_covariance
+            )
+            particle.pose = predict_pose(particle.pose, noisy_control, dt)
+            particle.trajectory.append(particle.pose.copy())
 
-    def update(self, z, landmark_idx):
-        """Update step"""
-        for particle in self.particles:
-            particle.measurement_update(z, landmark_idx, self.R)
+    def associate(self, particle, measurement):
+        best_id = None
+        best_distance = np.inf
 
-        # Update weights
-        self.weights = np.array([p.weight for p in self.particles])
-        self.weights /= np.sum(self.weights)
+        for landmark_id, landmark in particle.landmarks.items():
+            residual, H = landmark.innovation(particle.pose, measurement)
+            S = H @ landmark.covariance @ H.T + self.measurement_covariance
+            distance = float(residual @ np.linalg.solve(S, residual))
+
+            if distance < best_distance:
+                best_id = landmark_id
+                best_distance = distance
+
+        if best_distance < self.gate_threshold:
+            return best_id, best_distance
+        return None, best_distance
+
+    def update(self, measurements):
+        for measurement in measurements:
+            new_landmark_id = self.next_landmark_id
+            used_new_landmark = False
+
+            for particle in self.particles:
+                landmark_id, _ = self.associate(particle, measurement)
+
+                if landmark_id is None:
+                    particle.landmarks[new_landmark_id] = LandmarkEKF.initialize(
+                        particle.pose, measurement, self.measurement_covariance
+                    )
+                    used_new_landmark = True
+                    continue
+
+                landmark = particle.landmarks[landmark_id]
+                likelihood, _, _ = landmark.likelihood(
+                    particle.pose, measurement, self.measurement_covariance
+                )
+                particle.log_weight += math.log(max(likelihood, 1e-300))
+                landmark.update(particle.pose, measurement, self.measurement_covariance)
+
+            if used_new_landmark:
+                self.next_landmark_id += 1
+
+        self._normalize_log_weights()
+
+        if self.effective_sample_size() < self.resample_fraction * len(self.particles):
+            self.resample()
+
+    def _normalize_log_weights(self):
+        log_weights = np.array([p.log_weight for p in self.particles])
+        max_log_weight = np.max(log_weights)
+        weights = np.exp(log_weights - max_log_weight)
+        weights = weights / np.sum(weights)
+
+        for particle, weight in zip(self.particles, weights):
+            particle.log_weight = math.log(float(weight))
+
+    def weights(self):
+        return np.array([math.exp(p.log_weight) for p in self.particles])
+
+    def effective_sample_size(self):
+        weights = self.weights()
+        return float(1.0 / np.sum(weights * weights))
 
     def resample(self):
-        """Low-variance resampling"""
-        indices = np.argsort(self.weights)[::-1]
+        weights = self.weights()
+        n = len(self.particles)
+        step = 1.0 / n
+        start = self.rng.uniform(0.0, step)
+        positions = start + step * np.arange(n)
+        cumulative = np.cumsum(weights)
 
-        # Keep best particles and resample others
-        n_keep = self.n_particles // 10
-        new_particles = [self.particles[i] for i in indices[:n_keep]]
+        indexes = np.searchsorted(cumulative, positions)
+        self.particles = [self.particles[i].copy() for i in indexes]
 
-        # Resample remaining
-        for _ in range(self.n_particles - n_keep):
-            idx = np.random.choice(range(self.n_particles), p=self.weights)
-            new_particles.append(self.particles[idx])
+        log_uniform = math.log(1.0 / n)
+        for particle in self.particles:
+            particle.log_weight = log_uniform
 
-        self.particles = new_particles
-        self.weights = np.ones(self.n_particles) / self.n_particles
+    def estimated_pose(self):
+        weights = self.weights()
+        poses = np.array([p.pose for p in self.particles])
 
-    def get_best_estimate(self):
-        """Get pose/landmark estimate from best particle"""
-        best_idx = np.argmax(self.weights)
-        return self.particles[best_idx]
+        xy = weights @ poses[:, :2]
+        theta = math.atan2(
+            weights @ np.sin(poses[:, 2]),
+            weights @ np.cos(poses[:, 2]),
+        )
+        return np.array([xy[0], xy[1], theta])
+
+    def best_map(self):
+        best_particle = self.particles[int(np.argmax(self.weights()))]
+        return {i: lm.mean.copy() for i, lm in best_particle.landmarks.items()}
+
+
+rng = np.random.default_rng(4)
+slam = FastSLAM(
+    num_particles=30,
+    initial_pose=np.array([0.0, 0.0, 0.0]),
+    control_covariance=np.diag([0.05**2, np.deg2rad(1.0)**2]),
+    measurement_covariance=R,
+    rng=rng,
+)
+
+true_pose = np.array([0.0, 0.0, 0.0])
+for _ in range(12):
+    control = np.array([0.8, 0.05])
+    true_pose = predict_pose(true_pose, control, dt=1.0)
+    slam.predict(control, dt=1.0)
+
+    measurements = []
+    for landmark_xy in true_landmarks:
+        z = observe_landmark(true_pose, landmark_xy)
+        if z[0] < 8.0:
+            noisy_z = z + rng.multivariate_normal(np.zeros(2), R)
+            noisy_z[1] = wrap_angle(noisy_z[1])
+            measurements.append(noisy_z)
+
+    slam.update(measurements)
+
+slam.estimated_pose(), len(slam.best_map()), slam.effective_sample_size()
 ```
 
----
+This is a minimal implementation, not a production one. The project version should add better feature filtering, better landmark management, timing measurements, diagnostic plots, and careful tuning.
 
-## 7. Summary
+## Data Association Inside FastSLAM
 
-**SLAM fundamentally requires solving the joint estimation problem** for both robot and environment.
+In EKF-SLAM, there is one global association decision for each measurement. In FastSLAM, each particle can make its own association decision. This is one of FastSLAM's advantages: different particles can preserve different hypotheses when the pose is uncertain.
 
-Three major approaches exist:
+For one particle and one observation:
 
-1. **EKF-SLAM**: Elegant filtering approach, O(N²-N³) complexity, fails at large scale
-2. **FastSLAM**: Particle-based, exploits conditional independence, O(M log N)
-3. **GraphSLAM**: Batch optimization, naturally handles loop closure, O(N) with sparsity
+1. predict the measurement to every nearby landmark;
+2. compute Mahalanobis distance;
+3. accept the best landmark if it passes a $\chi^2$ gate;
+4. otherwise initialize a new landmark.
 
-**Modern systems** predominantly use GraphSLAM variants (Ceres Solver, g2o, GTSAM) because:
-- Loop closure is critical for long-term navigation
-- Sparsity exploitation enables large-scale operation
-- Batch processing allows for post-processing and off-line refinement
+The gate threshold matters. A gate that is too tight creates duplicate trees. A gate that is too loose fuses distinct trees. Both failure modes are visible in the final map.
 
-**Remaining challenges**:
-- Data association in large-scale, ambiguous environments
-- Dynamic obstacles
-- Perceptual aliasing (identical-looking places in different locations)
-- Computational limits on real-time optimization
+## FastSLAM 1.0 vs. FastSLAM 2.0
 
-In practice, modern SLAM systems often integrate:
-- **Visual front-end**: Feature detection/matching (Chapter on vision SLAM)
-- **Optimization back-end**: Graph-based SLAM solver
-- **Loop closure module**: Place recognition for detecting revisited areas
-- **Dynamic object filtering**: Robust handling of moving obstacles
+FastSLAM 1.0 samples pose from the motion model:
 
-The next frontier is **collaborative SLAM** (multiple robots mapping together) and **semantic SLAM** (understanding *what* is being mapped, not just *where*).
+$$
+x_t^{[m]} \sim p(x_t \mid x_{t-1}^{[m]}, u_t).
+$$
+
+FastSLAM 2.0 uses the current measurement to build a better proposal distribution:
+
+$$
+x_t^{[m]} \sim p(x_t \mid x_{t-1}^{[m]}, u_t, z_t).
+$$
+
+FastSLAM 2.0 can need fewer particles, especially when sensor measurements are accurate relative to odometry. It is also more complex. For this course project, a solid FastSLAM 1.0 implementation with honest diagnostics is preferable to a fragile FastSLAM 2.0 implementation.
+
+## GraphSLAM in One Page
+
+GraphSLAM treats poses and landmarks as variables in a nonlinear least-squares problem. The Durrant-Whyte and Bailey tutorial is a good high-level bridge between the filtering and graph views of SLAM [@DurrantWhyteBailey2006SLAMTutorial]:
+
+$$
+\min_X \sum_i \|e_i(X)\|_{\Omega_i}^2.
+$$
+
+Each residual $e_i$ comes from a motion constraint, landmark observation, GPS prior, loop closure, or other measurement. The graph is sparse because each measurement touches only a few variables.
+
+This is the dominant style in many modern systems:
+
+- pose graph optimization for loop closure;
+- bundle adjustment for visual SLAM;
+- factor graphs in libraries such as GTSAM, Ceres, and g2o.
+
+GraphSLAM handles loop closure naturally because past poses remain variables. Filtering methods are causal; once they have marginalized or resampled away a past hypothesis, they cannot easily revise the entire trajectory.
+
+## Comparison for the Project Report
+
+| Aspect | EKF-SLAM | FastSLAM | GraphSLAM |
+|---|---|---|---|
+| State representation | one joint Gaussian | particles plus landmark EKFs | graph of variables and factors |
+| Landmark correlations | explicit dense covariance | conditional independence per particle | implicit through graph solution |
+| Data association | one decision per measurement | per-particle hypotheses | front-end plus robust optimization |
+| Loop closure | difficult for long loops | possible but particle-hungry | natural |
+| Scaling concern | dense covariance | particle count and map copies | sparse linear algebra |
+| Project role | compare only | implement | compare only |
+
+Students should use this comparison to interpret their Victoria Park results, not as a second implementation assignment.
+
+## Practical Failure Modes
+
+FastSLAM fails in recognizable ways:
+
+- **Particle depletion:** too few particles survive after repeated informative measurements.
+- **Duplicate landmarks:** the gate is too tight or the pose uncertainty is too large.
+- **Merged landmarks:** the gate is too loose or measurement covariance is too optimistic.
+- **Outlier landmarks:** moving objects, non-tree returns, or bad segmentation are accepted.
+- **Delayed loop closure:** the correct revisited-place hypothesis may no longer exist in the particle set.
+
+The cure is not one magic parameter. It is measurement modeling, feature filtering, enough particles, careful resampling, and diagnostic plots.
+
+## Summary
+
+EKF-SLAM teaches why landmark correlations matter. GraphSLAM teaches why sparse optimization dominates many modern systems. FastSLAM is the implementation target because it sits directly between the particle filters students already know and the landmark-based Victoria Park dataset.
+
+For the project, the expected backend is:
+
+1. sample particle poses from odometry;
+2. maintain per-particle landmark EKFs;
+3. use per-particle data association;
+4. weight particles by measurement likelihood;
+5. resample by effective sample size;
+6. report both map quality and failure modes.

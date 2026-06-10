@@ -1,0 +1,233 @@
+# Filtering and State Estimation
+
+Navigation is not a single measurement. It is a sequence of educated guesses.
+At each time step we have a belief about the vehicle state, a model of how the
+vehicle moves, and sometimes a sensor measurement that tells us whether the
+belief still makes sense.
+
+The filtering problem is to update that belief recursively:
+
+$$
+\text{old belief} + \text{motion information} + \text{measurement information}
+\rightarrow \text{new belief}.
+$$
+
+That sentence is the whole course in miniature. The hard part is deciding how
+to represent the belief and how much of the physics we can afford to model.
+
+## The Navigation State
+
+The state vector collects the quantities we want to estimate. For a small
+ground robot, a minimal state might be
+
+$$
+\mathbf{x}_t =
+\begin{bmatrix}
+x_t & y_t & \theta_t
+\end{bmatrix}^T,
+$$
+
+where $x_t$ and $y_t$ are position and $\theta_t$ is heading. For an inertial
+navigation system, the state may include position, velocity, attitude, IMU
+biases, clock states, sensor calibration parameters, and sometimes map
+features. Real filters can get crowded quickly. This is why we care about
+notation and computational structure.
+
+The state is not usually known exactly. We treat it as a random variable and
+track a belief distribution:
+
+$$
+\operatorname{bel}(\mathbf{x}_t)
+= p(\mathbf{x}_t \mid \mathbf{z}_{1:t}, \mathbf{u}_{1:t}).
+$$
+
+Here $\mathbf{z}_{1:t}$ is the measurement history and $\mathbf{u}_{1:t}$ is the
+input or control history. The belief is the estimator's best summary of
+everything it has seen so far.
+
+## Prediction and Update
+
+Most recursive navigation filters use two operations.
+
+The **prediction** step pushes the previous belief through a motion model:
+
+$$
+p(\mathbf{x}_t \mid \mathbf{z}_{1:t-1}, \mathbf{u}_{1:t})
+=
+\int
+p(\mathbf{x}_t \mid \mathbf{x}_{t-1}, \mathbf{u}_t)
+p(\mathbf{x}_{t-1} \mid \mathbf{z}_{1:t-1}, \mathbf{u}_{1:t-1})
+d\mathbf{x}_{t-1}.
+$$
+
+The **update** step incorporates the new measurement:
+
+$$
+p(\mathbf{x}_t \mid \mathbf{z}_{1:t}, \mathbf{u}_{1:t})
+=
+\eta
+p(\mathbf{z}_t \mid \mathbf{x}_t)
+p(\mathbf{x}_t \mid \mathbf{z}_{1:t-1}, \mathbf{u}_{1:t}),
+$$
+
+where $\eta$ is the normalizing constant that makes the posterior integrate to
+one.
+
+The prediction step usually increases uncertainty. The update step usually
+decreases it. If a filter's uncertainty only ever shrinks, be suspicious. That
+is usually not confidence. That is bookkeeping with a blindfold on.
+
+```{python}
+#| label: fig-filtering-predict-update
+#| fig-cap: "A scalar filtering step. Motion prediction shifts and broadens the belief; the measurement likelihood pulls the posterior toward states that explain the observation."
+#| code-fold: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def gaussian_pdf(x, mean, sigma):
+    return np.exp(-0.5 * ((x - mean) / sigma) ** 2) / (np.sqrt(2.0 * np.pi) * sigma)
+
+
+def normalize_density(p, x):
+    return p / np.trapezoid(p, x)
+
+
+x = np.linspace(-2.0, 10.0, 1000)
+
+prior = gaussian_pdf(x, mean=2.0, sigma=0.7)
+prediction = gaussian_pdf(x, mean=3.2, sigma=1.1)
+likelihood = gaussian_pdf(x, mean=4.1, sigma=0.55)
+posterior = normalize_density(prediction * likelihood, x)
+
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.plot(x, prior, label="prior belief")
+ax.plot(x, prediction, label="after prediction")
+ax.plot(x, likelihood, label="measurement likelihood")
+ax.plot(x, posterior, label="posterior", linewidth=2.5)
+ax.set_xlabel("state")
+ax.set_ylabel("relative probability density")
+ax.set_title("Prediction spreads belief; update concentrates it")
+ax.grid(True, alpha=0.25)
+ax.legend()
+plt.show()
+```
+
+## What Makes a Filter Different?
+
+All filters in this part of the course are trying to solve the same recursive
+Bayesian estimation problem. They differ mainly in how they represent the
+belief.
+
+| Filter family | Belief representation | Strength | Main cost |
+|---|---:|---|---|
+| Bayes filter | Full probability distribution | Conceptually exact | Explodes with state dimension |
+| Kalman filter | Mean and covariance | Fast and elegant for linear Gaussian systems | Needs linear models and Gaussian uncertainty |
+| Extended Kalman filter | Mean and covariance with local linearization | Practical nonlinear workhorse | Jacobians and linearization error |
+| Unscented Kalman filter | Mean and covariance from sigma points | Avoids Jacobians and handles curvature better | More model evaluations |
+| Information filter | Information vector and precision matrix | Additive measurement fusion and sparse structure | Prediction is less natural |
+| Histogram filter | Probability mass over grid cells | Handles non-Gaussian beliefs | Grid resolution scales badly |
+| Particle filter | Weighted samples | Handles nonlinear, multimodal beliefs | Needs enough particles and careful resampling |
+
+This table is not a ranking. A well-designed simple Kalman filter is often more
+valuable than a particle filter that is tuned by optimism and caffeine.
+
+## Parametric and Nonparametric Filters
+
+Kalman-style filters are **parametric**. They assume the belief can be
+represented by a fixed set of parameters, usually the mean $\boldsymbol{\mu}$
+and covariance $\mathbf{P}$ of a Gaussian:
+
+$$
+\operatorname{bel}(\mathbf{x})
+\approx
+\mathcal{N}(\boldsymbol{\mu}, \mathbf{P}).
+$$
+
+That approximation is powerful. Instead of carrying a probability value for
+every possible state, the filter carries a vector and a matrix. The price is
+that the belief has one main peak and elliptical uncertainty. If the robot
+could be in either of two identical corridors, a single Gaussian may place the
+mean in the wall between them. The math did not fail; the representation did.
+
+The Information Filter is still a Gaussian parametric filter, but it stores the
+same belief in inverse-covariance form. This makes independent measurement
+updates add cleanly, which is useful in sparse multi-sensor fusion and
+factor-graph-style thinking.
+
+Histogram and particle filters are **nonparametric**. They do not require the
+belief to have a specific analytic shape. A histogram filter stores probability
+mass over discrete regions. A particle filter stores weighted samples. These
+methods can represent multimodal beliefs, but they pay for that flexibility
+with computation and tuning.
+
+## Why Linear Gaussian Models Matter
+
+The Kalman filter appears in navigation because linear transformations of
+Gaussian random variables are still Gaussian. If
+
+$$
+\mathbf{x} \sim \mathcal{N}(\boldsymbol{\mu}, \mathbf{P})
+$$
+
+and
+
+$$
+\mathbf{y} = \mathbf{A}\mathbf{x} + \mathbf{b},
+$$
+
+then
+
+$$
+\mathbf{y}
+\sim
+\mathcal{N}
+\left(
+\mathbf{A}\boldsymbol{\mu} + \mathbf{b},
+\mathbf{A}\mathbf{P}\mathbf{A}^T
+\right).
+$$
+
+That closure property is the reason the Kalman filter can track only a mean and
+covariance. Once the dynamics or measurements become nonlinear, the posterior
+is generally not Gaussian anymore. EKFs and UKFs are disciplined ways of saying:
+"We know the posterior is not exactly Gaussian, but we are going to keep a
+Gaussian approximation because the engineering trade is worth it."
+
+## The Practical Design Questions
+
+Before writing a filter, answer these questions:
+
+- What is the state, and which frame is each quantity expressed in?
+- Which sensors drive propagation, and which sensors provide measurement
+  updates?
+- What noise sources are modeled explicitly, and what is being hidden inside
+  process noise?
+- Is the belief expected to be unimodal, or can the system genuinely have
+  multiple plausible hypotheses?
+- How will filter consistency be checked from innovations, residuals, or
+  ground-truth experiments?
+
+The equations are important, but these modeling decisions are where navigation
+systems usually succeed or quietly get weird.
+
+## What This Part Covers
+
+This part starts with the full Bayes filter because it is the cleanest
+statement of the problem. It then moves to Kalman filtering, where Gaussian
+assumptions make the problem computationally practical. The EKF and UKF relax
+the linearity assumption in different ways, while the Information Filter shows
+how the same Gaussian belief can be stored in a form that favors additive
+measurement fusion. Finally, histogram and particle filters show what changes
+when we stop forcing the belief to be Gaussian.
+
+The recurring pattern is always the same:
+
+$$
+\boxed{\text{predict with motion}}
+\qquad
+\boxed{\text{update with measurements}}
+\qquad
+\boxed{\text{check whether the assumptions still make sense}}.
+$$

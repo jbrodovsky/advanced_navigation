@@ -1,17 +1,16 @@
----
-title: "Modern Python Refresher"
-subtitle: "Practical Python patterns for navigation coursework"
-author: "James Brodovsky"
-date: "2026-06-06"
----
-
 # Modern Python Refresher
 
-This chapter is a practical refresh on Python tools and patterns used throughout the course. It assumes prior Python experience and focuses on habits that make numerical and estimation code reliable.
+This chapter is a practical refresh on Python tools and patterns used throughout the course. It assumes prior Python experience and focuses on habits that make numerical and estimation code reliable. Much of this is borrowed or adopted from the scientific Python community and best practices for numerical computing. The goal is to establish a common baseline for code style, project structure, and testing that will be used in all code examples and assignments in this class. This chapter is not meant to be an exhaustive (or even quick and light) introduction to Python programming, but rather a focused refresher on the specific tools and best practices that are most relevant for implementing autonomous navigation algorithms. If you are new to Python or want a more comprehensive introduction, there are many excellent resources available online, including the official Python tutorial and various books and courses on Python programming. 
+
+I further suggest you take a detour to the [Scientific Python Library Development Guide](https://learn.scientific-python.org/development/) for a more in-depth look at how to write high-quality, maintainable, and performant scientific Python code. If you are not very familiar with scientific Python programming, instead start with the [Scientific Python Lectures](https://lectures.scientific-python.org/). Teaching engineers, and especially engineering researchers and scientists, programming is a critical skill, but one that is rather fractured. Count yourself fortunate if your undergraduate engineering curriculum taught engineering programming in Python and not MATLAB. That said, to borrow a phrase from the Silicon Valley tech world: Software is eating the world, but hardware gives it teeth. If you want to have a career in autonomous systems and robotics engineering, you will need to be proficient in software development, and Python is a great language to learn the basic principles that can be applied to rigorous research code that makes organizing your results and papers easier, as well as providing for straight forward principles that you can apply when working on an industrial production code base. The Scientific Python Library Development Guide is a great resource for learning how to write high-quality scientific Python code, and it covers many of the best practices and patterns that are relevant for writing code for autonomous navigation algorithms.
+
+The guide covers topics such as project structure, testing, documentation, and performance optimization, all of which are important for writing code that is not only correct but also easy to understand and maintain. While the guide is focused on library development, many of the principles and practices it covers are applicable to writing any kind of scientific Python code, including the code you will be writing for this class. Then follow that up and correction that I would make is to not use their suggested template. Its overkill. All you need is a PEP 621 compliant `pyproject.toml` file to manage your dependencies and project metadata, and then usually just three simple directories: `src/<package_name>` for your code, `tests/` for your tests, and `scripts/` or `notebooks/` for your experiments.
+
+While not required or even neccessarily standard, I highly recommend using a package manager such as `uv` for Python projects. If you delve more into the machine learning or data science side of things, I recommend using `pixi` as a package manager, which is built on top of `uv` and provides additional features for managing compiled project dependencies. Both `uv` and `pixi` are great tools for managing dependencies and project metadata in Python, and they can help you keep your projects organized and reproducible. However, for the purposes of this class, you can get by with just using `pip` and virtual environments to manage your dependencies, as long as you are careful to pin your versions for reproducibility. While I use `uv` personally, all example code will only be using `pip` and virtual environments, so you can follow along with the examples without needing to learn a new tool if you don't want to. The most important thing is to have a consistent and reproducible workflow for managing your dependencies and project structure, regardless of the specific tools you choose to use.
 
 ## Python Version and Environment
 
-Use a modern Python 3 release and isolate dependencies per project.
+Use a modern Python 3 release and isolate dependencies per project. At time of writing (Summer 2026), Python 3.14 is the latest stable release and will be preferred, but any Python 3.10+ should work fine for the examples in this class. *Avoid using the system Python or installing packages globally!* This can cause conflicts between projects and your operating system's dependencies. Only install packages to the system Python is you expressly know what you are doing and why you are doing it! For project development purposes _**always**_ use virtual environments to create isolated Python environments as this allows you to manage dependencies and avoid version conflicts.
 
 Recommended baseline workflow:
 
@@ -25,11 +24,46 @@ source .venv/bin/activate
 pip install numpy scipy matplotlib jupyter
 ```
 
+Depending on system configuration, you may need to use `python3` instead of `python` in the above command. You can also use `python -m pip` instead of just `pip` to ensure you are using the pip associated with your virtual environment. If you are using a package manager like `uv` or `pixi`, they will handle the creation of virtual environments and installation of dependencies for you, so you can follow their documentation for setting up your project environment.
+
 ## Core Language Features to Use
 
 ### Type Hints and Dataclasses
 
-Type hints improve readability and editor/tooling support.
+Type hints improve readability and editor/tooling support. While not nearly as rigid as a statically typed language, using type hints can help catch bugs and improve the clarity of your code. While Python is incredibly useful, the dynamic nature of the language and 'duck typing' can sometimes lead to subtle bugs. You should avoid using dynamic typing in critical parts of your code where clarity and correctness are paramount. 
+
+For example, when given a function that takes two inputs: `foo(x, y)`, it is not clear what types `x` and `y` are supposed to be, and this can lead to confusion and bugs. By using type hints, you can make it clear what types are expected for each input, which can help catch bugs and improve the readability of your code. Now, the name of the function can certainly help with this: `add(x, y)` or `sum(x,y)` makes it clear more apparent that we're doing some kind of mathematical operation on `x` and `y`, and this is the one instance where I find Python's dynamic typing to actually be incredibly useful. Python treats `1 + 2.0` as a perfectly valid operation and simply casts the resulting sum to a float. Whereas in a statically typed language like C++ or Rust you would need to do something like this: `let a = (1 + 2.0) as f64;` to achieve the same result.
+
+However, `add` might mean something more like 'append to a list' or 'concatenate two strings', and in those cases, the dynamic typing can lead to bugs if you accidentally pass in the wrong types. By using type hints, you can make it clear that `add` is supposed to take two numbers and return their sum, which can help catch bugs and improve the readability of your code. For instance:
+
+```python
+def add(x, y) -> float:
+		return x + y
+
+add(1, 2) # returns 3
+add('abc', '123') # returns 'abc123'
+add(1, '123') # throws an error at runtime
+```
+
+If the intended use case of `add` is to concatenate two strings, then the second use case isn't exactly a bug, but could very much be a source of confusion and lead to code being misused. By using type hints, you can make it clear that `add` is supposed to take two strings and return their concatenation, or add together two numbers and return their sum, which can help catch bugs and improve the readability of your code. For instance:
+
+```python
+def add(x: str, y: str) -> str:
+		return x + y # Concatenates two strings
+add('abc', '123') # returns 'abc123'
+add(1, 2) # throws an error at runtime and is caught by type checkers in your editor
+```
+
+```python
+def add(x: int | float, y: int | float) -> int | float:
+	return x + y # Adds two numbers together
+add(1, 2) # returns 3
+add(1.0, 2.0) # returns 3.0
+add(1, 2.0) # returns 3.0
+add('abc', '123') # again, likely to be caught by your editor's type checker
+```
+
+Dataclasses provide a convenient way to define simple classes for storing data without having to write boilerplate code for initialization, representation, and comparison methods.
 
 ```python
 from dataclasses import dataclass
