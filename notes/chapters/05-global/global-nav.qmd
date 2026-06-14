@@ -1,0 +1,369 @@
+# Global Navigation and GNSS Measurements
+
+Until now, most of our examples have lived in a friendly local world: a flat
+plane, a fixed Cartesian reference frame, and distances small enough that Earth's
+curvature is not the dominant problem. That approximation is useful. It is also
+limited.
+
+For global navigation, the vehicle moves over a rotating, curved Earth. A local
+flat frame can still be useful, but only as a frame attached to a particular
+location. If the vehicle moves far enough, the meaning of north, east, and down
+changes with position. Gravity changes with latitude and height. The Earth rotates
+under inertial space. A navigation algorithm that ignores those facts will slowly
+turn geometry into error and then act surprised when the map does not forgive it.
+
+This chapter introduces the external measurements that will bound that drift:
+satellite radio navigation from a Global Navigation Satellite System (GNSS). We
+will treat the GNSS receiver mostly as a black box that outputs timestamped
+position, velocity, and uncertainty. That is enough for loosely coupled INS/GNSS
+integration, which is the architecture used in the project.
+
+The signal-processing and receiver-design details are important, but they are not
+the focus here. Our goal is to understand what a GNSS receiver is estimating, why
+it needs multiple satellites, why its errors are not simple Gaussian dust, and how
+its position and velocity outputs become measurements in an INS/GNSS filter.
+
+## From Local Coordinates to Global Coordinates
+
+The flat-Earth approximation assumes that a local navigation frame can be treated
+as fixed over the region of interest. For indoor robots, small drones, and many
+short-range experiments, this is usually acceptable. For aircraft, ships, long-range
+ground vehicles, and strategic navigation, it is not.
+
+Global navigation commonly uses three frame ideas:
+
+- **Earth-centered inertial (ECI)**: centered at Earth, but not rotating with
+  Earth. This is the cleanest frame for Newtonian inertial dynamics.
+- **Earth-centered Earth-fixed (ECEF)**: centered at Earth and rotating with
+  Earth. Coordinates are fixed to the planet, so a point on Earth's surface has
+  nearly constant ECEF coordinates.
+- **Local navigation frame**: a tangent frame attached to the vehicle or a local
+  reference point. In this course we usually use North-East-Down (NED), where
+  position is represented by latitude, longitude, and height, and velocity is
+  resolved into north, east, and down components.
+
+The body frame is attached to the vehicle. The IMU measures angular rate and
+specific force in this body frame. The navigation algorithm must transform those
+measurements into the navigation frame, integrate the state, and keep track of the
+fact that the navigation frame itself moves and rotates as the vehicle moves over
+the ellipsoid.
+
+::: {.callout-note title="Figure placeholder: flat tangent plane vs WGS84 ellipsoid"}
+Add a diagram showing a local flat tangent plane touching the WGS84 ellipsoid at
+one point. Show that the flat approximation remains close near the tangent point
+but separates from the ellipsoid over longer distances.
+:::
+
+::: {.callout-note title="Figure placeholder: ECI, ECEF, NED, and body frames"}
+Add a frame diagram with ECI fixed in inertial space, ECEF rotating with Earth,
+local NED attached to the vehicle position, and body axes fixed to the vehicle.
+:::
+
+The WGS84 ellipsoid gives the standard geometric model used by GPS and most
+modern navigation systems. A geodetic position is normally written as latitude
+$\phi$, longitude $\lambda$, and height $h$ above the ellipsoid. Latitude and
+longitude are angular coordinates, not meters, so changes in latitude and longitude
+must be scaled by the local radii of curvature before they behave like distances.
+
+That detail matters in software. A filter state may store position errors in meters
+while the nominal state stores latitude and longitude in radians. Mixing those
+without an explicit conversion is a good way to create a bug that looks like a
+physics problem.
+
+## What GNSS Provides
+
+GNSS is the generic term for satellite navigation constellations such as GPS,
+Galileo, GLONASS, and BeiDou. A receiver estimates its position and clock offset
+by listening to radio signals transmitted by satellites whose positions and clock
+corrections are known from the broadcast navigation message.
+
+At a high level, each satellite transmits:
+
+- a time-tagged ranging signal;
+- satellite orbit information, often called ephemeris;
+- satellite clock correction information;
+- additional navigation data used by the receiver.
+
+The receiver compares the received signal timing against its own clock. If the
+satellite clock and receiver clock were perfectly synchronized, signal travel time
+would give range directly:
+
+$$
+\rho = c(t_r - t_s),
+$$
+
+where $c$ is the speed of light, $t_s$ is the transmit time, and $t_r$ is the receive
+time.
+
+The receiver clock is not perfect, so the measured quantity is a **pseudorange**:
+
+$$
+\tilde{\rho}_s =
+\left\|\mathbf{r}_u - \mathbf{r}_s\right\|
++ c\,\delta t_u
+- c\,\delta t_s
++ \epsilon_s.
+$$
+
+Here $\mathbf{r}_u$ is the receiver antenna position, $\mathbf{r}_s$ is the satellite
+position, $\delta t_u$ is the receiver clock offset, $\delta t_s$ is the satellite clock
+offset, and $\epsilon_s$ collects unmodeled errors such as atmospheric delay,
+multipath, receiver noise, and residual orbit or clock error.
+
+The receiver has four basic unknowns in a standard single-antenna position fix:
+three position components and receiver clock offset. That is why a three-dimensional
+GNSS solution needs at least four satellites. More satellites make the solution
+overdetermined, which lets the receiver estimate a better solution and reject bad
+measurements when the geometry and integrity checks support it.
+
+::: {.callout-note title="Figure placeholder: GNSS pseudorange geometry"}
+Add a diagram showing several satellites, the receiver antenna, true geometric
+ranges, pseudorange spheres, and the receiver clock-bias term that shifts all ranges.
+:::
+
+GNSS can also estimate velocity. A receiver often uses carrier Doppler or
+pseudorange-rate measurements to estimate range rate to each satellite. These range
+rates constrain the receiver velocity and receiver clock drift. For our loosely
+coupled treatment, the receiver output is simply:
+
+$$
+\mathbf{z}_{GNSS,k}
+=
+\begin{bmatrix}
+\mathbf{p}_{GNSS,k} \\
+\mathbf{v}_{GNSS,k}
+\end{bmatrix},
+$$
+
+with a timestamp and some statement of uncertainty. The receiver may report that
+uncertainty as a covariance matrix, horizontal and vertical accuracy estimates, a
+dilution-of-precision value, or a vendor-specific quality flag. In real projects, the
+exact receiver interface matters. In this course, we will model it as a position and
+velocity measurement with covariance $\mathbf{R}_{GNSS,k}$.
+
+## GNSS Error Sources
+
+GNSS is an external reference, but it is not truth. A receiver solution is an estimate
+from radio measurements, and radio measurements are sensitive to the environment.
+
+Common GNSS error sources include:
+
+- **Satellite geometry**: if all visible satellites are clustered in the same part of
+  the sky, the position solution is weak in some directions.
+- **Atmospheric propagation**: ionospheric and tropospheric delays change the
+  apparent signal travel time.
+- **Multipath**: signals can reflect off buildings, water, terrain, or vehicle
+  structure before reaching the antenna.
+- **Non-line-of-sight reception**: the direct signal may be blocked, leaving only a
+  reflected signal.
+- **Receiver noise and tracking limits**: weak signals, low carrier-to-noise ratio,
+  and high dynamics can degrade the measurement.
+- **Outages and obstruction**: tunnels, indoor spaces, dense urban corridors,
+  foliage, and vehicle body masking can remove satellites from view.
+- **Interference and jamming**: GNSS signals are weak by the time they reach the
+  receiver, so interference can deny or corrupt measurements.
+- **Timing and synchronization error**: a GNSS measurement must be compared
+  against the INS state at the same time of validity.
+
+These errors are not all independent, zero-mean, or white. Multipath can be
+time-correlated. Receiver filtering can smooth noise but increase its correlation
+time. Satellite geometry changes slowly. A high-rate GNSS output does not
+automatically mean that every sample contains independent information.
+
+That point matters for Kalman filtering. If $\mathbf{R}_{GNSS}$ is too small, the
+filter will believe GNSS too aggressively and may inject jumps or multipath errors
+into the inertial solution. If $\mathbf{R}_{GNSS}$ is too large, the filter will fail to
+correct INS drift quickly enough. A practical implementation should adapt or gate
+GNSS measurements using receiver quality flags, innovation size, reported accuracy,
+satellite count, geometry, and knowledge of the operating environment.
+
+## Why INS and GNSS Fit Together
+
+An inertial navigation system and a GNSS receiver fail in different ways. That is
+why they are useful together.
+
+| Sensor | Strength | Weakness |
+|---|---|---|
+| INS / IMU | high-rate, smooth, self-contained short-term motion | drifts over time because biases and noise are integrated |
+| GNSS | globally referenced position and velocity | lower rate, noisier short term, vulnerable to obstruction and interference |
+
+INS gives the filter a high-rate propagation model. GNSS gives the filter an
+external correction. During a short GNSS outage, the INS can coast. When GNSS
+returns, it can pull the inertial solution back toward the global reference frame.
+The system is not magic; it is a trade between short-term continuity and long-term
+bounded error.
+
+::: {.callout-note title="Figure placeholder: GNSS outage and INS drift"}
+Add a timeline plot showing GNSS updates bounding INS drift, followed by an
+outage interval where uncertainty grows, then recovery when GNSS returns.
+:::
+
+## Loosely Coupled INS/GNSS Integration
+
+In a loosely coupled architecture, the GNSS receiver computes its own navigation
+solution first. The INS/GNSS filter then uses that receiver solution as a measurement.
+The filter does not process raw satellite pseudoranges or carrier-phase observables.
+
+This is the architecture we will use:
+
+1. The IMU drives high-rate strapdown propagation.
+2. The GNSS receiver outputs timestamped position and velocity.
+3. The filter forms a GNSS-minus-INS innovation.
+4. The Kalman update estimates the INS error state.
+5. The estimated error is injected back into the nominal navigation state.
+
+::: {.callout-note title="Figure placeholder: loosely coupled INS/GNSS architecture"}
+Add a block diagram showing raw IMU measurements feeding strapdown propagation,
+GNSS position/velocity feeding the measurement update, and estimated error-state
+corrections being injected into the nominal INS state.
+:::
+
+The nominal inertial state may be represented as
+
+$$
+\mathbf{x}_{nom}
+=
+\left[
+\mathbf{p},
+\mathbf{v},
+\mathbf{q},
+\mathbf{b}_a,
+\mathbf{b}_g
+\right],
+$$
+
+where $\mathbf{p}$ is position, $\mathbf{v}$ is velocity, $\mathbf{q}$ is attitude,
+$\mathbf{b}_a$ is accelerometer bias, and $\mathbf{b}_g$ is gyroscope bias. The
+error-state filter estimates small corrections:
+
+$$
+\delta \mathbf{x}
+=
+\left[
+\delta \mathbf{p},
+\delta \mathbf{v},
+\delta \boldsymbol{\theta},
+\delta \mathbf{b}_a,
+\delta \mathbf{b}_g
+\right]^T.
+$$
+
+For a basic loose position and velocity update, the measurement innovation is
+
+$$
+\mathbf{y}_k
+=
+\begin{bmatrix}
+\mathbf{p}_{GNSS,k} - \mathbf{p}_{INS,k} \\
+\mathbf{v}_{GNSS,k} - \mathbf{v}_{INS,k}
+\end{bmatrix}.
+$$
+
+If the GNSS antenna is not located at the same physical point as the IMU, this
+innovation must include a lever-arm correction. If $\boldsymbol{\ell}^b$ is the
+known vector from the IMU origin to the GNSS antenna expressed in body axes,
+then the antenna position is approximately
+
+$$
+\mathbf{p}_{ant}
+=
+\mathbf{p}_{INS}
++ \mathbf{C}_b^n \boldsymbol{\ell}^b,
+$$
+
+with an analogous velocity correction when angular motion of the lever arm is
+significant. Do not ignore the lever arm just because it is inconvenient. On a small
+ground robot it may be negligible. On an aircraft, ship, or high-dynamics vehicle,
+it can be the difference between a clean innovation and a self-inflicted residual.
+
+The simplest measurement matrix for a position and velocity update is
+
+$$
+\mathbf{H}
+=
+\begin{bmatrix}
+\mathbf{I}_3 & \mathbf{0}_3 & \mathbf{0}_3 & \mathbf{0}_3 & \mathbf{0}_3 \\
+\mathbf{0}_3 & \mathbf{I}_3 & \mathbf{0}_3 & \mathbf{0}_3 & \mathbf{0}_3
+\end{bmatrix}.
+$$
+
+Depending on sign convention, some texts write the innovation as INS-minus-GNSS
+and use negative identity blocks instead. Either convention is fine if it is used
+consistently. In this course, use GNSS-minus-INS for the innovation above.
+
+```{python}
+#| label: loose-gnss-update-interface
+#| echo: true
+#| eval: false
+import numpy as np
+
+
+def loose_gnss_update(error_state_mean, P, ins_position, ins_velocity,
+                      gnss_position, gnss_velocity, R_gnss):
+    """One loose INS/GNSS Kalman update for position and velocity."""
+    innovation = np.concatenate([
+        gnss_position - ins_position,
+        gnss_velocity - ins_velocity,
+    ])
+
+    H = np.zeros((6, 15))
+    H[0:3, 0:3] = np.eye(3)  # position error
+    H[3:6, 3:6] = np.eye(3)  # velocity error
+
+    S = H @ P @ H.T + R_gnss
+    K = np.linalg.solve(S, H @ P).T
+
+    delta_x = error_state_mean + K @ (innovation - H @ error_state_mean)
+
+    I = np.eye(P.shape[0])
+    P_updated = (I - K @ H) @ P @ (I - K @ H).T + K @ R_gnss @ K.T
+
+    return delta_x, P_updated
+```
+
+The code above is not a complete INS/GNSS system. It is the measurement-update
+shape. A complete implementation also needs strapdown propagation, error-state
+propagation, measurement gating, timestamp handling, lever-arm compensation,
+error injection, and error-state reset.
+
+## Loose, Tight, and Deep Coupling
+
+The coupling terms describe where GNSS information enters the integrated
+navigation algorithm [@groves].
+
+- **Loosely coupled**: use the GNSS receiver position and velocity solution.
+  This is position-domain integration. It is straightforward and matches the
+  project architecture.
+- **Tightly coupled**: use raw or corrected satellite ranging measurements such
+  as pseudorange and pseudorange rate. This is range-domain integration. It can
+  keep using partial satellite information when a receiver-level position fix is
+  unavailable, but it requires receiver measurements and more detailed models.
+- **Deeply coupled**: integrate INS aiding directly with receiver tracking loops.
+  This is receiver-design territory and is outside this course's implementation
+  scope.
+
+For this course, tight and deep coupling are comparison points only. They are worth
+knowing because they explain why professional GNSS/INS systems can look more
+complicated than the filter we implement here. They are not required for the
+assignment.
+
+## Practical Checklist for the Project
+
+When using GNSS measurements in the INS/GNSS project, check the following:
+
+- Confirm the coordinate frame of the GNSS position and velocity.
+- Convert latitude and longitude errors to metric errors before filtering, or use
+  an ECEF/local NED representation consistently.
+- Use the GNSS timestamp, not the time at which your code happened to process the
+  message.
+- Account for the IMU-to-antenna lever arm when it is non-negligible.
+- Gate large innovations before letting them update the filter.
+- Choose $\mathbf{R}_{GNSS}$ from reported uncertainty when available; otherwise
+  choose conservative values and tune using innovation statistics.
+- Treat outages explicitly. Do not feed stale GNSS measurements as if they were
+  current.
+
+The next chapter develops the curved-Earth strapdown equations used for INS
+propagation. After that, the IMU error chapter explains why the error-state model
+needs bias and noise states. Together, those pieces give us the loose INS/GNSS
+system used in the final project.

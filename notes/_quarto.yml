@@ -42,7 +42,7 @@ book:
     - part: "Introduction"
       chapters:
         - chapters/00-intro/intro.qmd
-        # - chapters/00-intro/syllabus.qmd
+        - chapters/00-intro/syllabus.qmd
         - chapters/00-intro/navigation-overview.qmd
         - chapters/01-foundations/linear-algebra.qmd
         - chapters/01-foundations/probability-theory.qmd

@@ -1,620 +1,552 @@
 ---
 title: "Practical Implementation Guide"
-subtitle: "From theory to production: real-world engineering for navigation systems"
+subtitle: "From offline INS/GNSS prototypes to deployed vehicle software"
 author: "James Brodovsky"
 date: "2026-05-19"
 ---
 
 # Practical Implementation Guide
 
-This chapter bridges the gap between theoretical navigation algorithms and production systems. It addresses the practical challenges, debugging strategies, and engineering decisions that emerge when implementing navigation systems in real robots and vehicles.
+The projects in this course are mostly written in Python and usually run against recorded data. That is the right place to learn the math. It is also not the same thing as putting an inertial navigation system on a real vehicle.
 
-## Numerical Stability in Production Code
+This chapter is a field guide for that gap. The topics here are not meant to add a new assignment requirement. They are meant to help you recognize the engineering problems that appear when a navigation algorithm leaves the notebook, talks to real sensors, runs under timing constraints, and feeds an autonomous vehicle.
 
-### Problem: Covariance Matrix Breakdown
+The short version is this:
 
-In long-running systems, the estimated covariance matrix $\mathbf{P}_k$ can lose positive-definiteness due to accumulated rounding errors. Symptoms include:
+1. First make the estimator correct on recorded data.
+2. Then make it replayable and debuggable.
+3. Then make it real-time.
+4. Then make it survive bad timing, bad measurements, and boring software mistakes.
+5. Only then should it be trusted by a controller.
 
-- Negative eigenvalues appearing in $\mathbf{P}_k$
-- Kalman gain $\mathbf{K}_k$ becoming non-physical
-- Filter divergence when "confidence" becomes negative
-- NaN (Not a Number) propagating through subsequent iterations
+Skipping steps is a traditional way to create a very expensive random number generator.
 
-**Root cause:** Standard covariance updates are not numerically stable when $\mathbf{P}$ is poorly conditioned (condition number > 1000).
+## From Laptop Replay to Vehicle Software
 
-### Solution 1: Joseph Form Update
+A useful navigation package usually moves through several stages.
 
-Replace the standard update:
-```
-P_updated = (I - K*H)*P_predicted
-```
+| Stage | Main question | Typical evidence |
+|---|---|---|
+| Offline prototype | Does the math work on recorded data? | Plots, innovations, comparison to truth |
+| Replay tool | Can the same log reproduce the same answer? | Deterministic replay and regression tests |
+| Real-time host implementation | Can it keep up with live sensor rates? | Timing logs, dropped-message counts |
+| Embedded or vehicle implementation | Can it run within CPU, memory, and I/O limits? | Benchmarks on target hardware |
+| Vehicle integration | Does the autonomy stack receive the right state at the right time? | Closed-loop tests and safety monitors |
+| Field validation | Does it fail honestly in realistic conditions? | Test reports across representative trajectories |
 
-with:
-```python
-def joseph_update(P, K, H, R):
-    """Joseph form covariance update - guaranteed positive-definite."""
-    I_KH = np.eye(P.shape[0]) - K @ H
-    P_updated = I_KH @ P @ I_KH.T + K @ R @ K.T
-    # Force symmetry
-    P_updated = 0.5 * (P_updated + P_updated.T)
-    return P_updated
-```
+The offline prototype answers a narrow question: "Can this estimator produce a reasonable answer when fed cleanly recorded data?" That is important, but deployed software has more contracts:
 
-This form requires one additional matrix multiplication ($\mathcal{O}(n^3)$ vs $\mathcal{O}(n^3)$) but guarantees positive-definiteness.
+- every sensor sample must have a clear time of validity;
+- every state estimate must declare its coordinate frame and timestamp;
+- all calibration and tuning parameters must be recoverable from a log;
+- the estimator must handle missing, late, duplicated, and rejected measurements;
+- the vehicle must know whether the navigation state is healthy enough to use.
 
-### Solution 2: Square-Root Cholesky Implementation
+The most important engineering habit is to keep replay alive. If a field test produces a bad result and you cannot replay the exact sensor stream, calibration, configuration, and estimator version, then you do not really have a debugging workflow. You have a story about what probably happened.
 
-Maintain the Cholesky decomposition $\mathbf{P} = \mathbf{L}\mathbf{L}^T$ explicitly:
+## Reference Architecture for a Navigation Package
 
-```python
-def cholesky_update(L, H, R_chol, z, z_pred):
-    """Update using Cholesky factor directly."""
-    # QR decomposition on augmented matrix
-    # This avoids explicitly forming P
-    innovation = z - z_pred
+A vehicle navigation package is more than an EKF loop. A practical layout looks something like this:
 
-    # Use QR for numeric stability
-    F = H @ L  # m x n
-    G = R_chol  # m x m
-
-    # Perform QR on [F; G]
-    Q, R_aug = np.linalg.qr(np.vstack([F, G]))
-
-    # Extract updated Cholesky factor
-    L_updated = R_aug[:, :L.shape[1]]  # Upper-triangular part
-
-    return L_updated
+```text
+sensor drivers
+    -> timestamp normalization
+    -> calibration and frame transforms
+    -> measurement queues
+    -> estimator core
+    -> health monitor
+    -> state publisher
+    -> logger and replay interface
 ```
 
-**Advantage:** The triangular form prevents loss of positive-definiteness to machine precision.
+Each block should have a narrow responsibility.
 
-### Solution 3: Regularization
+**Sensor drivers** read bytes from hardware or middleware and turn them into typed messages. They should not quietly apply estimator-specific assumptions.
 
-Add a small positive diagonal term to prevent near-singularity:
+**Timestamp normalization** converts hardware clocks, receiver clocks, and host clocks into one estimator time base. A GNSS receiver, camera, IMU, and onboard computer may not agree about time unless you force the issue.
 
-```python
-def regularize_covariance(P, regularization=1e-6):
-    """Add small diagonal term to maintain positive-definiteness."""
-    return P + regularization * np.eye(P.shape[0])
-```
+**Calibration and frame transforms** apply known lever arms, sensor mounting rotations, IMU axis conventions, camera intrinsics, and antenna offsets. These values belong in configuration files or calibration records, not buried in random source lines.
 
-Use judiciously: too much regularization artificially inflates uncertainty; too little provides no protection.
+**Measurement queues** buffer asynchronous sensors. The estimator should be able to request the measurements needed for a specific time interval instead of hoping that callbacks arrive in a convenient order.
 
----
+**The estimator core** should be as platform-independent as practical. It should take calibrated, timestamped measurements as input and produce timestamped state, covariance, and health outputs. This is the part most closely related to the course mathematics.
 
-## Debugging and Validation Strategies
+**The health monitor** decides whether the navigation solution is usable. It checks stale sensors, large innovations, covariance growth, rejected-measurement rates, NaNs, and mode changes.
 
-### The Normalized Innovation Test
+**The state publisher** converts the estimator output into the interface expected by guidance, planning, control, logging, or operator displays. This is where you make the latency and frame contract explicit.
 
-The **normalized innovation** $\chi^2_k$ is the most diagnostic quantity for filter health:
+**The logger and replay interface** records enough information to reproduce the run. At minimum, log raw sensor messages, calibrated measurements, state estimates, covariances or selected covariance diagnostics, innovations, rejected measurements, configuration, calibration, software version, and estimator mode.
 
-$$\chi^2_k = (\mathbf{z}_k - \mathbf{H}_k\hat{\mathbf{x}}_{k|k-1})^T \mathbf{S}_k^{-1} (\mathbf{z}_k - \mathbf{H}_k\hat{\mathbf{x}}_{k|k-1})$$
+The estimator core should not need to know whether a measurement came from a serial port, ROS topic, flight controller bus, recorded log, or simulator. That separation is not aesthetic. It is what lets you test the math without the vehicle and test the vehicle plumbing without rewriting the math.
 
-For a consistent filter, $\chi^2_k$ should follow a $\chi^2_m$ distribution (where $m$ is measurement dimension).
+## Time, Latency, and Delayed Measurements
 
-```python
-def diagnose_filter(innovations, S_sequence, meas_dim):
-    """Diagnostic: are innovations consistent with predicted covariance?"""
-    chi2_sequence = []
-    for nu, S in zip(innovations, S_sequence):
-        chi2 = nu.T @ np.linalg.inv(S) @ nu
-        chi2_sequence.append(float(chi2))
+Timing mistakes are one of the easiest ways to make a good estimator look bad. There are three different times that matter:
 
-    chi2_sequence = np.array(chi2_sequence)
-    mean_chi2 = np.mean(chi2_sequence)
+| Time | Meaning | Example |
+|---|---|---|
+| Measurement time | When the physical quantity was valid | Camera exposure midpoint |
+| Arrival time | When the packet reached the computer | GNSS message received over serial |
+| Processing time | When the estimator handled the packet | EKF update callback time |
 
-    # Should be approximately equal to measurement dimension
-    if mean_chi2 > 2 * meas_dim:
-        print(f"⚠ UNDERCONFIDENT: E[χ²] = {mean_chi2:.2f} >> {meas_dim}")
-        print("  Covariance too optimistic. Increase Q or R.")
-    elif mean_chi2 < 0.5 * meas_dim:
-        print(f"⚠ OVERCONFIDENT: E[χ²] = {mean_chi2:.2f} << {meas_dim}")
-        print("  Covariance too pessimistic. Decrease Q or R.")
-    else:
-        print(f"✓ CONSISTENT: E[χ²] = {mean_chi2:.2f} ≈ {meas_dim}")
+The estimator should update against the state at the **measurement time**, not the arrival time or processing time.
 
-    return chi2_sequence
-```
+This matters immediately for INS/GNSS. If a vehicle is moving at 30 m/s, a 100 ms timestamp error creates a 3 m position innovation before GNSS noise or IMU drift even enter the problem. If you then "fix" the filter by inflating measurement noise, you are hiding a timing bug with tuning.
 
-**Action items:**
-- If overconfident (mean χ² << m): Measurements are better than filter believes. Decrease R (measurement noise covariance).
-- If underconfident (mean χ² >> m): Measurements are worse than filter expects or process is more uncertain. Increase Q (process noise covariance).
+### State Buffers
 
-### Whiteness Test for Residuals
+A common solution is to keep a time-indexed buffer of recent INS states. When a delayed measurement arrives, retrieve or interpolate the state at the measurement time, form the innovation there, and then propagate the corrected state forward.
 
-The innovation sequence should be **white** (uncorrelated across time) if the filter is optimal.
+In simplified Python, the idea is:
 
 ```python
-def test_innovation_whiteness(innovations, max_lag=20):
-    """Test if innovations are white (uncorrelated)."""
-    acf = np.correlate(innovations - np.mean(innovations),
-                       innovations - np.mean(innovations),
-                       mode='full')
-    acf = acf / acf[len(acf)//2]  # Normalize
+from dataclasses import dataclass
+import bisect
+import numpy as np
 
-    # Plot autocorrelation
-    lags = np.arange(-max_lag, max_lag+1)
-    acf_plot = acf[len(acf)//2 - max_lag:len(acf)//2 + max_lag + 1]
 
-    # 95% confidence bounds
-    confidence = 1.96 / np.sqrt(len(innovations))
+@dataclass
+class NavState:
+    time_s: float
+    position_m: np.ndarray
+    velocity_mps: np.ndarray
 
-    non_white_lags = np.where(np.abs(acf_plot) > confidence)[0]
-    if len(non_white_lags) > 0:
-        print(f"⚠ COLORED NOISE: correlation at lags {non_white_lags - max_lag}")
-        print("  Innovation is not white; filter model may be wrong.")
-    else:
-        print("✓ WHITE: innovations are uncorrelated (as expected)")
+
+class StateBuffer:
+    def __init__(self, max_age_s: float):
+        self.max_age_s = max_age_s
+        self._times = []
+        self._states = []
+
+    def push(self, state: NavState) -> None:
+        self._times.append(state.time_s)
+        self._states.append(state)
+
+        newest = state.time_s
+        while self._times and newest - self._times[0] > self.max_age_s:
+            self._times.pop(0)
+            self._states.pop(0)
+
+    def interpolate_position_velocity(self, time_s: float) -> NavState:
+        i = bisect.bisect_left(self._times, time_s)
+        if i == 0 or i == len(self._times):
+            raise ValueError("requested time is outside the state buffer")
+
+        a = self._states[i - 1]
+        b = self._states[i]
+        alpha = (time_s - a.time_s) / (b.time_s - a.time_s)
+
+        return NavState(
+            time_s=time_s,
+            position_m=(1.0 - alpha) * a.position_m + alpha * b.position_m,
+            velocity_mps=(1.0 - alpha) * a.velocity_mps + alpha * b.velocity_mps,
+        )
 ```
 
-### Batch Consistency Check
+Real INS implementations also need attitude interpolation, covariance handling, and careful reintegration after a delayed correction. The point here is the contract: measurements are compared against state at the time they describe.
 
-Compute statistics over a batch (e.g., 100 filter cycles) rather than individual samples:
+### Sensor-Specific Delays
+
+Different sensors make timing painful in different ways.
+
+**IMU:** high rate, usually low latency, but sensitive to clock stability. IMU samples drive propagation, so dropped samples or irregular `dt` values affect the entire solution.
+
+**GNSS:** low rate and often delayed. Receiver messages may report the GNSS fix time, not the serial arrival time. Use the fix time.
+
+**Camera:** the useful timestamp is usually the exposure midpoint, not the moment the image finished moving through the driver. Rolling-shutter cameras add another layer of trouble because different rows correspond to different times.
+
+**Barometer and magnetometer:** often low rate and filtered internally. Treat their outputs as delayed measurements unless the hardware documentation says otherwise.
+
+**Middleware:** queues can add delay and jitter. A message timestamp should come from the sensor or acquisition layer, not from a late subscriber callback.
+
+The autonomy stack also needs a latency contract. A controller can tolerate some delay if it knows what time the state represents. It cannot safely use a state whose timestamp convention changes from one software path to another.
+
+## INS Error Behavior in the Real World
+
+An INS does not fail randomly. It tends to fail in recognizable ways.
+
+### Bias Drift
+
+Accelerometer bias integrates into velocity error and then position error. Gyro bias integrates into attitude error. Attitude error is especially dangerous because it rotates gravity incorrectly. A small tilt error can project part of the gravity vector into horizontal acceleration, creating horizontal velocity and position drift.
+
+That is why a stationary IMU test is useful but incomplete. It can reveal bias, noise, and warm-up behavior, but it does not excite every error mode that matters on a moving vehicle.
+
+### GNSS Outages
+
+During a GNSS outage, the inertial solution should coast and its covariance should
+grow. If position covariance stays tiny through a long outage, the filter is
+probably overconfident. That may look clean in a plot until GNSS returns and the
+innovation is enormous.
+
+For testing, deliberately create short GNSS outages in replay:
 
 ```python
-def batch_consistency_check(chi2_sequence, meas_dim, batch_size=100):
-    """Compute consistency over batches to reduce noise."""
-    n_batches = len(chi2_sequence) // batch_size
-    batch_means = [np.mean(chi2_sequence[i*batch_size:(i+1)*batch_size])
-                   for i in range(n_batches)]
-
-    batch_means = np.array(batch_means)
-
-    # Check if batches consistently deviate
-    deviation = np.abs(batch_means - meas_dim)
-    outlier_batches = np.where(deviation > 2*meas_dim)[0]
-
-    for i in outlier_batches:
-        print(f"Batch {i}: χ² mean = {batch_means[i]:.2f}, "
-              f"suggests filter miscalibration at this period")
-
-    return batch_means
+def hide_gnss_between(samples, start_s, stop_s):
+    """Yield all samples except GNSS fixes in the outage interval."""
+    for sample in samples:
+        is_gnss = sample.kind == "gnss"
+        in_outage = start_s <= sample.time_s <= stop_s
+        if is_gnss and in_outage:
+            continue
+        yield sample
 ```
 
----
+Then check whether the estimator uncertainty grows, whether the return-to-GNSS
+innovation is plausible, and whether the filter recovers without a discontinuity
+that would surprise the controller.
 
-## Performance Optimization
+### Schuler Cycles
 
-### Computational Bottlenecks
+In a curved-Earth INS, horizontal position and velocity errors couple through the
+gravity model and local-level frame. The resulting error dynamics include the
+Schuler period, roughly 84 minutes:
 
-Identify the slowest operations in your filter loop:
+$$
+T_S \approx 2\pi\sqrt{\frac{R_E}{g}}.
+$$
+
+For this course, the important point is not to derive every Schuler-mode equation.
+The important point is to know that inertial error dynamics have physical
+structure. A high-quality INS does not simply drift as an arbitrary polynomial
+forever. Earth curvature, gravity, attitude error, and velocity error interact.
+
+On a short robot dataset, you may never see a clean Schuler cycle. On marine,
+aerospace, or long-duration inertial systems, Schuler behavior is part of the
+background reality. If you work in that domain, read a dedicated strapdown INS
+text and treat the simplified course implementation as the beginning, not the
+finish line.
+
+## Translating Python Prototypes to Embedded Code
+
+Python is excellent for learning, plotting, and building reference
+implementations. It is usually not what runs inside a flight controller or tightly
+constrained navigation computer.
+
+Moving from Python to C, C++, or Rust changes the engineering problem.
+
+| Python prototype | Embedded implementation |
+|---|---|
+| Dynamic arrays | Fixed-size arrays where possible |
+| NumPy hides loops | Loops and memory layout are explicit |
+| Exceptions are common | Error states are often explicit return values |
+| Heap allocation is easy | Heap allocation may be banned in real-time paths |
+| Units live in variable names | Units may need strong types or strict conventions |
+| Plots are immediate | Diagnostics must be logged and decoded later |
+
+### Keep a Reference Model
+
+Do not throw away the Python version after porting. Keep it as a reference model.
+For each low-level function in the embedded implementation, build small test
+vectors from Python and compare outputs within tolerances.
+
+Good candidates for cross-language tests include:
+
+- coordinate transforms;
+- quaternion propagation;
+- gravity and Earth-rate calculations;
+- process-noise discretization;
+- measurement prediction;
+- innovation and Kalman gain calculations;
+- covariance update symmetry and positive definiteness.
+
+### Prefer Fixed Dimensions
+
+Many navigation filters have known state and measurement dimensions. In Python,
+it is natural to let arrays carry shape at runtime. In embedded code, fixed
+dimensions make timing, allocation, and stack usage easier to reason about.
+
+For example, the Python prototype might say:
+
+```python
+innovation = z - H @ x
+S = H @ P @ H.T + R
+K = np.linalg.solve(S, H @ P).T
+```
+
+The embedded version should make the dimensions explicit: a 15-state error model,
+a 3D position measurement, a 6D position/velocity GNSS measurement, and so on. It
+should also avoid explicit matrix inverses. Use linear solves or factorizations.
+
+### Control Memory Allocation
+
+Real-time loops should not allocate memory unpredictably. In C++ that usually
+means fixed-size Eigen matrices or preallocated buffers. In Rust it usually means
+stack-allocated arrays, fixed-capacity containers, or caller-owned workspaces. In C
+it means being honest about every buffer size and checking every index.
+
+The rule is simple: if a loop must run at 400 Hz, do not let it discover at runtime
+that memory allocation is slow today.
+
+### Use Types to Protect Conventions
+
+Some bugs are just convention mistakes:
+
+- seconds vs. milliseconds;
+- radians vs. degrees;
+- NED vs. ENU;
+- body-to-navigation vs. navigation-to-body rotation;
+- latitude/longitude in degrees vs. radians;
+- quaternion component order.
+
+Python can still be disciplined, but C++ and Rust give you more tools to encode
+these constraints in types. Use those tools when the added complexity buys real
+safety. At minimum, name variables with units and frames:
+
+```python
+gyro_radps_b = imu.gyro_radps
+accel_mps2_b = imu.accel_mps2
+position_ned_m = state.position_ned_m
+```
+
+This looks fussy until the day it prevents a degree/radian bug from steering a
+vehicle into the wrong patch of reality.
+
+## Calibration, Configuration, and Frame Management
+
+Calibration is not a side quest. It is part of the estimator.
+
+A practical system needs records for:
+
+- IMU bias estimates at startup;
+- accelerometer and gyro scale factors if modeled;
+- IMU axis conventions and mounting rotation;
+- GNSS antenna lever arm relative to the IMU/body frame;
+- camera extrinsics and intrinsics if vision is used;
+- time offsets between sensors;
+- covariance and process-noise tuning values;
+- firmware, estimator, and configuration versions.
+
+These values should be loaded from explicit configuration or calibration files and
+included in logs. A field result without the matching calibration is only partly
+useful.
+
+Frame management deserves the same care. Pick conventions and write them down:
+
+- What is the body frame?
+- Is the local navigation frame NED or ENU?
+- Are rotations stored as body-to-navigation or navigation-to-body?
+- Are quaternions ordered `[w, x, y, z]` or `[x, y, z, w]`?
+- Are latitude and longitude stored in radians internally?
+
+The convention itself is less important than consistency. Mixed conventions are
+the source of many navigation failures that look mysterious until someone draws
+the axes.
+
+## Real-Time Execution and Health Monitoring
+
+A real-time navigation package has timing budgets. Approximate values might look
+like this:
+
+| Component | Typical rate | Practical concern |
+|---|---:|---|
+| IMU propagation | 100-1000 Hz | Must be deterministic and low latency |
+| GNSS update | 1-20 Hz | Must use fix time, not arrival time |
+| Camera or lidar update | 5-60 Hz | Processing delay can dominate |
+| Health monitor | 1-50 Hz | Must detect stale or inconsistent state |
+| State output to control | 20-200 Hz | Must publish a fresh, timestamped state |
+| Logging | Sensor rate | Must not block estimator deadlines |
+
+The estimator should measure its own timing:
 
 ```python
 import time
 
-def profile_filter_step(kf, imu_sample, image, gnss_sample):
-    """Profile a complete filter iteration."""
 
-    # IMU update (fastest, ~1-2 ms)
-    t0 = time.perf_counter()
-    kf.process_imu(imu_sample)
-    imu_time = (time.perf_counter() - t0) * 1000
-
-    # Visual odometry (slowest, ~30-50 ms due to feature matching)
-    t0 = time.perf_counter()
-    vo_result = kf.process_image(image)
-    vision_time = (time.perf_counter() - t0) * 1000
-
-    # GNSS update (fast, ~0.5 ms if available)
-    if gnss_sample:
-        t0 = time.perf_counter()
-        kf.process_gnss(gnss_sample)
-        gnss_time = (time.perf_counter() - t0) * 1000
-
-    print(f"IMU: {imu_time:.1f}ms | Vision: {vision_time:.1f}ms | "
-          f"GNSS: {gnss_time:.1f}ms")
-
-    return imu_time, vision_time, gnss_time
-```
-
-**Typical profile for vision-based navigation:**
-- IMU propagation: 1-3 ms (must run at 400 Hz)
-- Feature detection: 5-15 ms
-- Feature matching: 10-30 ms (bottleneck!)
-- Bundle adjustment: 20-100 ms
-- Loop closure detection: 5-50 ms (sparse, every N frames)
-
-### Optimization Strategies
-
-**1. Use NumPy/SciPy for matrix operations, not Python loops:**
-```python
-# SLOW: Python loop
-for i in range(n):
-    x[i] = A[i,:] @ b[i]
-
-# FAST: NumPy vectorized
-x = np.array([A[i,:] @ b[i] for i in range(n)])
-
-# FASTEST: Fully vectorized
-x = np.sum(A * b, axis=1)
-```
-
-**2. Cache Jacobian computations:**
-```python
-class EfficientEKF:
+class StepTimer:
     def __init__(self):
-        self._jacobian_cache = {}
+        self.records_ms = []
 
-    def get_jacobian(self, x, timestamp):
-        # Return cached Jacobian if state hasn't changed much
-        key = (tuple(np.round(x, 4)), timestamp)
-        if key in self._jacobian_cache:
-            return self._jacobian_cache[key]
-
-        J = self._compute_jacobian(x)
-        self._jacobian_cache[key] = J
-
-        # Limit cache size
-        if len(self._jacobian_cache) > 100:
-            oldest_key = next(iter(self._jacobian_cache))
-            del self._jacobian_cache[oldest_key]
-
-        return J
-```
-
-**3. Use sparse matrix formats for large pose graphs:**
-```python
-from scipy.sparse import csr_matrix, csc_matrix
-
-# Store Hessian as sparse matrix
-H_sparse = csr_matrix(H_dense)  # Only store non-zero entries
-
-# Solve with sparse methods
-from scipy.sparse.linalg import spsolve
-dx = spsolve(H_sparse, -g)
-```
-
-**4. Parallelize feature matching across image patches:**
-```python
-from multiprocessing import Pool
-
-def match_features_parallel(features_new, features_old, n_workers=4):
-    """Match features in parallel."""
-    patch_size = len(features_new) // n_workers
-    patches = [(features_new[i*patch_size:(i+1)*patch_size],
-               features_old)
-              for i in range(n_workers)]
-
-    with Pool(n_workers) as pool:
-        matches_list = pool.starmap(match_features_brute, patches)
-
-    # Combine results
-    return np.vstack(matches_list)
-```
-
----
-
-## Sensor Interfacing
-
-### IMU Data Integration
-
-**Challenge:** IMU data arrives at high frequency (typically 200-400 Hz) with microsecond-level timestamps. Standard Kalman filter loop may only run at 30-50 Hz.
-
-**Solution:** Buffer IMU samples and integrate them at prediction time:
-
-```python
-class IMUBuffer:
-    def __init__(self, max_buffer_size=1000):
-        self.buffer = []
-        self.max_size = max_buffer_size
-
-    def add_imu_sample(self, accel, gyro, timestamp):
-        self.buffer.append({
-            'accel': accel,
-            'gyro': gyro,
-            'timestamp': timestamp
-        })
-
-        # Keep buffer bounded
-        if len(self.buffer) > self.max_size:
-            self.buffer.pop(0)
-
-    def get_and_clear_newer_than(self, timestamp):
-        """Return all IMU samples since last update."""
-        result = [s for s in self.buffer if s['timestamp'] > timestamp]
-        # Keep only the most recent for next call
-        if result:
-            last_old = next(s for s in self.buffer
-                          if s['timestamp'] <= timestamp)
-            self.buffer = [last_old] + result
+    def time_step(self, name, fn, *args, **kwargs):
+        start = time.perf_counter()
+        result = fn(*args, **kwargs)
+        elapsed_ms = 1000.0 * (time.perf_counter() - start)
+        self.records_ms.append((name, elapsed_ms))
         return result
 ```
 
-### Camera Timestamp Synchronization
+Profiling is not only for optimization. Timing spikes often reveal logging,
+allocation, blocking I/O, or lock contention in places where the estimator should
+be predictable.
 
-Vision systems often have different timestamp conventions than IMU. Synchronize using cross-timestamp correlation:
+### Concurrency
 
-```python
-class TimestampSynchronizer:
-    def __init__(self, buffer_size=500):
-        self.imu_times = collections.deque(maxlen=buffer_size)
-        self.image_times = collections.deque(maxlen=buffer_size)
-        self.offset = None
+Most vehicle systems receive sensors asynchronously. A common pattern is to let
+sensor drivers, perception front ends, logging, and health monitoring run in
+separate tasks while keeping the estimator state protected by a small, explicit
+critical section.
 
-    def add_imu_timestamp(self, t):
-        self.imu_times.append(t)
+The practical rule is to do expensive work outside the estimator lock. Feature
+tracking, packet parsing, file I/O, and visualization should not block IMU
+propagation. If a shared state lock is held long enough to miss sensor deadlines,
+the software architecture is part of the navigation error budget now.
 
-    def add_image_timestamp(self, t):
-        self.image_times.append(t)
+### Numerical Health
 
-    def compute_offset(self):
-        """Find constant time offset between IMU and camera."""
-        if len(self.imu_times) < 100 or len(self.image_times) < 100:
-            return None
+Long-running Kalman filters need numerical checks. At minimum:
 
-        # Assume linear relationship: t_imu = t_image + offset
-        imu_array = np.array(list(self.imu_times))
-        image_array = np.array(list(self.image_times))
+- force covariance symmetry after updates;
+- check for NaNs and infinities;
+- check that covariance diagonal entries are nonnegative;
+- monitor condition number or Cholesky failures;
+- gate large innovations before applying updates;
+- use Joseph form or square-root methods when long-duration stability matters.
 
-        # Fit offset assuming fixed delay
-        offset = np.median(imu_array - image_array[-len(imu_array):])
-        self.offset = offset
-        return offset
-
-    def convert_image_to_imu_time(self, t_image):
-        if self.offset is None:
-            self.compute_offset()
-        return t_image + self.offset
-```
-
-### GNSS Data Handling
-
-GNSS updates arrive infrequently (1-10 Hz) and may have gaps:
+The Joseph covariance update is a useful default:
 
 ```python
-def process_gnss_with_timeout(kf, gnss_sample, max_age_sec=30):
-    """Process GNSS with fallback for outages."""
+import numpy as np
 
-    current_time = kf.get_state()['timestamp']
 
-    if gnss_sample:
-        age = (current_time - gnss_sample['timestamp']).total_seconds()
-
-        if age > max_age_sec:
-            print(f"GNSS sample is {age:.1f}s old; using IMU-only")
-            return False
-
-        # Process fresh GNSS
-        kf.process_gnss(gnss_sample)
-        return True
-    else:
-        # No GNSS available; rely on visual-inertial odometry
-        age_since_last_gnss = kf.time_since_last_gnss()
-
-        if age_since_last_gnss > 60:
-            print("⚠ GNSS outage > 1 minute; drift accumulating")
-
-        return False
+def joseph_update(P, K, H, R):
+    """Return a numerically robust covariance update."""
+    I = np.eye(P.shape[0])
+    I_KH = I - K @ H
+    P_new = I_KH @ P @ I_KH.T + K @ R @ K.T
+    return 0.5 * (P_new + P_new.T)
 ```
 
----
+Do not use this as an excuse to ignore bad modeling. Joseph form protects against
+some numerical damage. It does not rescue a filter with wrong units, wrong signs,
+or fake measurement covariances.
 
-## Real-Time Requirements and Constraints
+### Innovation Health
 
-### Timing Constraints
+The normalized innovation squared is one of the most useful estimator diagnostics:
 
-Most autonomous systems have strict timing requirements:
+$$
+d^2 = \mathbf{y}^T \mathbf{S}^{-1}\mathbf{y}.
+$$
 
-| System Component | Update Rate | Latency Budget | Notes |
-|---|---|---|---|
-| IMU Integration | 400 Hz | 2.5 ms | **Critical** for attitude stability |
-| Visual Odometry | 30 Hz | 30-50 ms | Can accumulate up to one frame |
-| GNSS Processing | 1-5 Hz | 200 ms | Sparse; can batch process |
-| Loop Closure | 1-2 Hz | 500 ms | Sparse; can run in background thread |
-| Planning & Control | 50 Hz | 20 ms | Real-time controller can't wait |
-
-### Multi-Threading Architecture
-
-A practical implementation uses three threads:
+Here $\mathbf{y}$ is the innovation and $\mathbf{S}$ is the innovation covariance.
+For a consistent filter, this statistic should be plausible for the measurement
+dimension. It will not be perfect on real data, but it should not be absurd for
+long stretches.
 
 ```python
-class MultiThreadedNavigationStack:
-    def __init__(self):
-        self.kf = ErrorStateKalmanFilter()
-        self.loop_closure_detector = PlaceRecognitionModule()
-
-        # Synchronization
-        self.state_lock = threading.RLock()
-        self.latest_state = None
-
-    def imu_thread(self):
-        """High-frequency IMU integration (400 Hz)."""
-        while True:
-            imu_sample = self.imu_queue.get()  # Blocking
-
-            with self.state_lock:
-                self.kf.predict_with_imu(imu_sample)
-
-    def vision_thread(self):
-        """Vision processing (30 Hz)."""
-        while True:
-            image, timestamp = self.image_queue.get()
-
-            # Expensive feature matching (doesn't need lock)
-            vo_result = self.visual_odometry.process(image)
-
-            with self.state_lock:
-                self.kf.update_with_visual_odometry(vo_result)
-
-    def loop_closure_thread(self):
-        """Loop closure (1-2 Hz, can be slower)."""
-        while True:
-            keyframe = self.keyframe_queue.get()
-
-            # Expensive place recognition (no lock)
-            candidates = self.loop_closure_detector.query(keyframe)
-
-            for candidate in candidates:
-                if self.verify_loop_closure(candidate):
-                    with self.state_lock:
-                        self.kf.add_loop_closure_constraint(candidate)
-
-    def get_state(self):
-        """Thread-safe state retrieval."""
-        with self.state_lock:
-            return copy.deepcopy(self.latest_state)
+def normalized_innovation_squared(y, S):
+    """Compute y.T @ inv(S) @ y without forming inv(S)."""
+    return float(y.T @ np.linalg.solve(S, y))
 ```
 
-**Key principle:** Lock only when accessing shared state (the filter and position estimate). All expensive computations happen outside the lock.
+Use innovation statistics to detect bad timing, bad noise assumptions, multipath,
+miscalibration, or sign errors. If the innovations are always large in one
+direction, do not start by tuning harder. Start by checking frames, lever arms,
+timestamps, and units.
 
-### Watchdog and Recovery
+### Watchdogs and Degraded Modes
 
-For safety-critical systems, implement watchdog timers to detect failures:
+The vehicle needs to know when navigation is unhealthy. A watchdog can check:
 
-```python
-class NavigationWatchdog:
-    def __init__(self, timeout_sec=2.0):
-        self.timeout = timeout_sec
-        self.last_filter_update = time.time()
-        self.failure_recovery = None
+- time since last IMU sample;
+- time since last external aiding measurement;
+- time since last successful state output;
+- fraction of measurements rejected by gating;
+- covariance growth beyond a configured bound;
+- estimator mode changes;
+- NaN or invalid-state events.
 
-    def heartbeat(self):
-        """Called whenever filter updates."""
-        self.last_filter_update = time.time()
+The fallback does not have to be glamorous. It might be "hold position," "slow
+down," "return control to a human," "use attitude-only stabilization," or "coast
+briefly on IMU-only navigation." The unacceptable behavior is silently publishing
+a confident state estimate after the estimator knows it is unhealthy.
 
-    def check_health(self):
-        """Periodically called by safety monitor."""
-        elapsed = time.time() - self.last_filter_update
+## Validation Ladder
 
-        if elapsed > self.timeout:
-            print(f"⚠ FILTER TIMEOUT: {elapsed:.1f}s without update")
-            return False  # Trigger recovery
+Do not jump from a plot on recorded data to a full autonomous field test. Build a
+validation ladder.
 
-        return True
+| Level | Purpose | Example |
+|---|---|---|
+| Unit tests | Check small math blocks | Quaternion update against known rotation |
+| Static datasets | Check estimator behavior | Replay a bag/log with GNSS and IMU |
+| Synthetic faults | Check failure handling | Drop GNSS for 30 seconds |
+| Monte Carlo | Check sensitivity | Randomize sensor noise and initial errors |
+| Hardware-in-the-loop | Check I/O and timing | Feed logged IMU/GNSS to target computer |
+| Low-risk vehicle tests | Check integration | Slow straight-line and stop/go tests |
+| Representative field tests | Check real operation | Terrain, vibration, multipath, outages |
 
-    def emergency_recovery(self):
-        """Fallback: use IMU-only dead reckoning."""
-        print("Activating IMU-only backup navigation")
-        # Switch to high-rate IMU integration without vision
-        # Acceptable for short-term emergencies (< 60 seconds)
-```
+The early tests should be boring. Stationary tests, straight-line motion, slow
+turns, known lever arms, and short outages catch many errors before the system
+gets near a difficult autonomy scenario.
 
----
+Useful plots and tables include:
 
-## Common Pitfalls and Solutions
+- position, velocity, and attitude over time;
+- estimated IMU biases;
+- covariance diagonals;
+- GNSS innovations and normalized innovation squared;
+- accepted vs. rejected measurements;
+- timing latency histograms;
+- state-output age at the controller;
+- comparison to ground truth when available.
 
-### Pitfall 1: Forgetting Measurement Noise Covariance
+If you cannot explain a failure from the logs, add better logs before the next
+test. Repeating a field test without better instrumentation is usually just
+collecting more confusion.
 
-```python
-# WRONG: Assumes measurements are perfect
-H_k = [[1, 0]]
-S_k = H_k @ P_k @ H_k.T  # Missing R_k!
+## Common Failure Modes
 
-# CORRECT: Include sensor noise
-R_k = np.array([[0.01]])  # 10 cm std dev for position
-S_k = H_k @ P_k @ H_k.T + R_k
-```
+Most deployed navigation failures are not exotic. They are ordinary mistakes with
+large consequences.
 
-**Impact:** Kalman gain is overconfident, filter diverges when measurements disagree with model.
+**Timestamp bugs:** measurements are processed at arrival time instead of
+measurement time.
 
-**Fix:** Always add R to the innovation covariance.
+**Frame convention bugs:** ENU and NED are mixed, or a rotation is applied in the
+wrong direction.
 
-### Pitfall 2: Incorrect Jacobian Sign
+**Unit bugs:** milliseconds are used as seconds, degrees are used as radians, or
+latitude/longitude differences are treated as meters.
 
-```python
-# WRONG: Common sign error in nonlinear update
-H_k = -dh/dx  # Should be positive!
+**Lever-arm bugs:** GNSS antenna measurements are compared directly to the IMU
+position even though the antenna is somewhere else on the vehicle.
 
-# CORRECT
-H_k = dh/dx
+**Overconfident covariance:** the filter claims high certainty during outages or
+after rejected aiding measurements.
 
-# VERIFY: Numerical derivative check
-eps = 1e-6
-H_numerical = (h(x + eps) - h(x - eps)) / (2*eps)
-assert np.allclose(H_k, H_numerical), "Jacobian sign is wrong!"
-```
+**Bad initialization:** the system starts before gyro bias, attitude, or sensor
+time offsets are reasonable.
 
-### Pitfall 3: Using Attitude Angles Instead of Quaternions
+**Silent sensor degradation:** GNSS multipath, IMU saturation, vibration, thermal
+shift, or camera blur enters the estimator as if nothing changed.
 
-Euler angles have **gimbal lock** near ±90° pitch:
+**Logging gaps:** the system logs state estimates but not raw measurements,
+configuration, calibration, or rejected updates, making failures hard to replay.
 
-```python
-# WRONG: Euler angles have singularities
-roll, pitch, yaw = extract_euler_angles(R)
-# Near pitch = 90°, yaw and roll become coupled
+**Controller mismatch:** the controller assumes the state is current, in a
+different frame, or smoother than the estimator actually provides.
 
-# CORRECT: Use quaternion or rotation matrix
-q = R.as_quat()  # Smooth, no singularities
-```
+These are not glamorous problems. They are also the problems that consume real
+engineering time.
 
-### Pitfall 4: Inconsistent Timestamp Units
+## Practical Checklist
 
-```python
-# WRONG: Mixed timestamp units
-dt_sec = 0.01  # seconds
-dt_ms = dt_sec * 1000  # now milliseconds
-v = v + a * dt_ms  # WRONG: a is in m/s², dt is milliseconds!
+Before trusting a navigation system on a vehicle, check the following:
 
-# CORRECT: Always convert to consistent units
-dt_sec = 0.01
-v = v + a * dt_sec  # a and dt both in SI units
-```
+- The estimator can replay recorded logs deterministically.
+- Raw sensor data, calibrated measurements, state, innovations, health flags,
+  configuration, and calibration are logged together.
+- Every measurement has a documented time of validity.
+- Delayed measurements are handled with state buffering or an explicit latency
+  model.
+- IMU, GNSS, camera, and vehicle frames are documented with direction conventions.
+- Lever arms and mounting rotations are configured outside estimator source code.
+- Position, velocity, attitude, bias, and covariance outputs use explicit units.
+- GNSS outages cause covariance growth.
+- Large innovations are gated and counted.
+- Joseph form, square-root filtering, or another numerically robust covariance
+  strategy is used for long-running filters.
+- The estimator detects stale sensors, invalid states, and missed deadlines.
+- The autonomy stack receives timestamped state and health information, not just
+  position and attitude.
+- The embedded implementation is tested against the Python reference on small
+  numerical cases.
+- Field tests begin with stationary, straight-line, and low-speed maneuvers before
+  aggressive autonomy.
 
-### Pitfall 5: Not Handling Measurement Outliers
+The goal is not to make students afraid of implementation. The goal is to make the
+boundary visible. A navigation algorithm is the mathematical center of the system,
+but a navigation package is a real-time software product wrapped around sensors,
+calibration, timing, logging, health monitoring, and vehicle contracts.
 
-```python
-# WRONG: Blindly trust all measurements
-measurement = sensor.read()
-kf.update(measurement)
-
-# CORRECT: Gate measurements by Mahalanobis distance
-innovation = measurement - predicted_measurement
-chi2 = innovation.T @ S.inv() @ innovation
-
-if chi2 < chi2_threshold:  # Usually chi2_threshold = 9 for 3 dof
-    kf.update(measurement)
-else:
-    print(f"Outlier rejected: χ² = {chi2:.1f}")
-```
-
-### Pitfall 6: Unbounded Loop Closure Constraints
-
-```python
-# WRONG: Accept all loop closures
-if place_recognizer.find_candidate():
-    kf.add_loop_closure()
-
-# CORRECT: Verify with geometric consistency
-candidates = place_recognizer.find_candidates()
-for candidate in candidates:
-    # Check geometric consistency
-    essential_matrix, inliers = cv2.findEssentialMat(...)
-    if inliers.sum() > 100:  # Sufficient inliers
-        kf.add_loop_closure(candidate)
-```
-
----
-
-## Integration Checklist for Production Systems
-
-Before deploying a navigation system, verify all items:
-
-- [ ] **Sensors:** All sensors (IMU, camera, GNSS) calibrated and synchronized
-- [ ] **Thresholds:** All detection thresholds (outlier gates, loop closure scores) tuned on representative data
-- [ ] **Covariance:** Q and R matrices selected using Allan variance and sensor specs
-- [ ] **Consistency:** Normalized innovation test passes (χ² ≈ measurement dimension)
-- [ ] **Timing:** All computation latencies within real-time budgets
-- [ ] **Threads:** Multi-threaded lock contention minimized, no deadlocks
-- [ ] **Numerical:** Joseph form or Cholesky updates used for long-duration runs
-- [ ] **Failure modes:** All identified failure modes have recovery strategies
-- [ ] **Watchdog:** Timeout detection and emergency fallback implemented
-- [ ] **Logging:** All critical events logged with timestamps for post-hoc analysis
-- [ ] **Field test:** System tested on representative trajectories in deployment environment
-- [ ] **Validation:** Ground truth trajectory available to compute APE/RPE metrics
-- [ ] **Documentation:** Implementation notes and tuning guidelines documented for operators
-- [ ] **Version control:** All configuration, calibration, and tuning parameters in version control
-
----
-
-## Recommended Reading
-
-**Implementation best practices:**
-- Iterative Methods for Sparse Linear Systems (Saad, 2003) — for numerical solvers
-- Real-Time Systems (Buttazzo, 2011) — timing and scheduling
-- Embedded Systems and Software (Neubauer & Dzombak, 2018) — production deployment
-
-**Debugging and validation:**
-- Kalman Filter best practices papers in IEEE journals
-- Robot Operating System (ROS) best practices guides for multi-threaded integration
-- Visual SLAM benchmark papers (KITTI, EuRoC) — use public datasets for validation
-
+That wrapper is where many real systems succeed or fail.

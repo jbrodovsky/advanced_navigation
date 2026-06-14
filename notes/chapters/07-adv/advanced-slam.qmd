@@ -1,437 +1,359 @@
-# 12: Advanced SLAM Topics
-
-## Introduction
-
-The previous chapters covered the classical SLAM pipeline: sparse feature-based localization and mapping. This chapter explores modern extensions that address limitations of classical approaches:
-
--   **Dense SLAM**: Recover full 3D scene geometry, not just sparse keypoints
--   **Semantic SLAM**: Understand object categories and structure beyond geometry
--   **Visual-Inertial SLAM**: Robust, metric-scale monocular SLAM via IMU fusion
--   **Multi-Robot SLAM**: Collaborative mapping across multiple agents
-
-------------------------------------------------------------------------
-
-## 1. Dense SLAM: Beyond Sparse Features
-
-### 1.1 Limitations of Sparse SLAM
-
-Classical feature-based SLAM (ORB-SLAM) produces: - **Sparse maps**: Only distinctive keypoints tracked (typically 1000-10,000 points for large environments) - **Incomplete geometry**: Large regions unmapped - **Limited navigation**: Cannot detect obstacles between mapped features - **Poor robot navigation**: Path planning impossible in unmapped regions
-
-### 1.2 Semi-Dense and Dense Approaches
-
-**Semi-dense mapping**: - Track ALL pixels with sufficient gradient (not just corners) - Estimate depth for each pixel at each frame - High memory/computation cost but recovers more geometry
-
-**Dense mapping**: - Fully 3D reconstruction of scene - Can be stereo-based (fast) or monocular (requires more processing)
-
-### 1.3 LSD-SLAM (Large-Scale Direct SLAM)
-
-**Key innovation**: Direct photometric error instead of feature matching
-
-$$
-\text{error} = \sum_{\text{pixels}} \|I_1(\mathbf{x}) - I_2(\pi(T \mathbf{X}))\|^2
-$$
-
-where: - $I_1, I_2$: image intensity - $\mathbf{x}$: pixel coordinate - $T$: camera transformation - $\mathbf{X}$: 3D point - $\pi$: projection function
-
-**Advantages**: - Handles textureless regions (requires gradient, not feature distinctiveness) - Dense depth estimates - Natural for semi-dense mapping
-
-**Disadvantages**: - Photometric consistency assumption fails under lighting changes - Computationally expensive (minimize over all pixels) - Requires good initialization
-
-### 1.4 Semi-Direct Visual Odometry (SVO)
-
-**Hybrid approach**: Feature tracking + direct depth optimization
-
-1.  **Track features** (like ORB-SLAM)
-2.  **For each feature track, estimate depth** using photometric error
-3.  **Bundle adjustment** on features and depths jointly
-
-**Benefits**: - Robustness of feature tracking - Density of direct methods - Moderate computation cost
-
-### 1.5 Depth Estimation from Monocular Video
-
-**Monocular depth problem**: Ambiguous (cannot tell if far-away large object or close small object)
-
-**Solution**: Use **temporal consistency** and **geometric constraints**
-
-$$
-\text{consistency}: \|d_t - d_{t-1}\|^2 + \text{regularization}
-$$
-
-Over a sequence, depths that are temporally consistent and geometrically valid win out.
-
-**Modern approach**: **Learned depth estimation** using deep neural networks - Train on large datasets (KITTI, NYU Depth) - Input: Single image - Output: Depth map - Often more robust than geometric methods to textureless regions
-
-### 1.6 Trade-offs: Sparse vs. Dense
-
-| Aspect | Sparse | Semi-Dense | Dense |
-|-----------------|-----------------|----------------------|-----------------|
-| **Memory** | Low (\~10MB maps) | Medium (\~100MB) | High (\>1GB) |
-| **Speed** | Real-time | 10-30 fps | 1-5 fps |
-| **Completeness** | Sparse points | Textured regions | Full geometry |
-| **Robustness** | High (distinctive features) | Medium | Low (lighting-dependent) |
-| **Navigation Use** | Limited | Moderate | Excellent |
-| **Best for** | Indoor/outdoor mixed | Autonomous driving | 3D reconstruction |
-
-------------------------------------------------------------------------
-
-## 2. Semantic SLAM: Combining Vision and Understanding
-
-### 2.1 Motivation
-
-Classical SLAM treats all features equally. A pole, a tree, and a building are just collections of points.
-
-**Semantic SLAM**: Incorporate object categories (car, building, person, etc.)
-
-**Benefits**: 1. **Stronger loop closure**: Match objects, not just pixels 2. **Better data association**: "This is a building I've seen before" 3. **Scene understanding**: Know what the environment contains 4. **Path planning**: Avoid dynamic objects (people, vehicles)
-
-### 2.2 Object Detection Integration
-
-**Pipeline**:
-
-```         
-Frame → Feature extraction → Object detection (Faster R-CNN, YOLO)
-                            ↓
-                    Semantic labels + bounding boxes
-                            ↓
-                    Data association:
-                    Match objects across frames
-                            ↓
-                    SLAM with semantic constraints
-```
-
-**Object matching**: - **Appearance**: Descriptor similarity within detected region - **Semantic type**: Only match same object class - **Geometry**: Estimate 3D position of object
-
-### 2.3 Semantic Landmark Representation
-
-**Classical landmark**: $(x, y, z)$ position
-
-**Semantic landmark**:
-
-``` python
-class SemanticLandmark:
-    position: np.array  # 3D position
-    semantic_class: str  # "car", "building", etc.
-    descriptor: np.array  # Feature descriptor
-    detections: list  # [frame_id, bbox, confidence]
-    covariance: np.array  # 3x3 uncertainty
-```
-
-**Benefits**: - Can group landmarks by class - Detect moving objects (consistent position change = motion) - Augment SLAM with high-level queries ("Where are all the buildings?")
-
-### 2.4 Implementation Example: Semantic Data Association
-
-``` python
-def semantic_data_association(detections_current, landmarks, max_distance=50):
-    """
-    Associate detected objects with semantic landmarks
-
-    detections_current: list of (class, bbox, descriptor)
-    landmarks: list of SemanticLandmark
-    """
-    associations = {}
-    used_landmarks = set()
-
-    for det_idx, (det_class, bbox, des) in enumerate(detections_current):
-        best_landmark = None
-        best_score = 0
-
-        for lm_idx, landmark in enumerate(landmarks):
-            if lm_idx in used_landmarks:
-                continue
-
-            # Check semantic class match
-            if landmark.semantic_class != det_class:
-                continue
-
-            # Compute descriptor similarity
-            desc_distance = np.linalg.norm(des - landmark.descriptor)
-            desc_score = np.exp(-desc_distance / 50)
-
-            # Geometric consistency: Is detected bbox near expected 3D position?
-            # (Would project landmark to image, check bbox overlap)
-            geometric_score = 0.8  # placeholder
-
-            # Combined score
-            total_score = 0.6 * desc_score + 0.4 * geometric_score
-
-            if total_score > best_score:
-                best_score = total_score
-                best_landmark = lm_idx
-
-        if best_score > 0.5:  # threshold
-            associations[det_idx] = best_landmark
-            used_landmarks.add(best_landmark)
-
-    return associations
-```
-
-### 2.5 Semantic Loop Closure
-
-**Enhanced place recognition**: 1. Detect objects in current frame 2. Query database for frames with similar object configurations 3. Verify loop closure using both appearance and semantics
-
-**Example**: - Current frame: \["building", "tree", "car", "person"\] - Database frame: \["building", "tree", "car", "bike"\] - Similarity: 75% (4/5 objects match)
-
-More robust than appearance alone.
-
-------------------------------------------------------------------------
-
-## 3. Multi-Robot SLAM
-
-### 3.1 Problem Formulation
-
-**Classical SLAM**: Single robot builds map
-
-**Multi-robot SLAM**: $N$ robots collaboratively map environment
-
-**Challenges**: 1. **Communication**: Robots must share information (bandwidth-limited) 2. **Synchronization**: Clocks may drift, different speeds 3. **Loop closure across robots**: Robot A sees landmark, later Robot B sees same landmark → global constraint 4. **Computational load**: Can distribute optimization across robots
-
-### 3.2 Decentralized vs. Centralized
-
-**Centralized**: - One server collects all data - Server runs global SLAM - Robots get updated map - **Pros**: Optimal; global loop closure - **Cons**: Server bandwidth bottleneck; single point of failure
-
-**Decentralized**: - Each robot maintains own local map - Robots exchange loop closure constraints and local maps - Each robot updates local estimate - **Pros**: Scalable; robust to robot failures - **Cons**: Approximate; harder to ensure consistency
-
-### 3.3 Multi-Robot Loop Closure
-
-When two robots observe the same landmark or revisit same location:
-
-```         
-Robot A: Observes landmark L at pose A_t
-Robot B: Observes same landmark L at pose B_s
-
-→ Create constraint: T_A_t ≈ T_B_s (if same location)
-  or: Position_A_t ≈ Position_B_s + offset
-```
-
-**Detection**: - **Rendezvous-based**: Robots physically meet, exchange observations - **Communication-based**: Exchange feature descriptors, find matches over network - **Broadcast**: Each robot broadcasts observations, others match independently
-
-### 3.4 Multi-Robot Pose Graph
-
-Each robot maintains local pose graph; robots exchange edges:
-
-```         
-Robot A Graph:          Robot B Graph:
-A_1 -- A_2 -- A_3      B_1 -- B_2 -- B_3
- |      |               |      |
-A_1-A_2-A_3 (loop)     (local edges)
-
-When robots meet:
-A_3 ≈ B_1 (geometric verification)
-→ Add constraint: A_3 <---> B_1
-```
-
-Global optimization can then correct both trajectories.
-
-### 3.5 Challenges in Multi-Robot SLAM
-
-**Problem**: Different robots might experience different scales or coordinate frames
-
-**Solution**: Similarity transforms or relative pose consensus
-
-**Communication**: Bandwidth is limited - Send only essential information: loop closure constraints, not raw features - Compress pose graph representations
-
-**Synchronization**: Robots operate at different rates - Use relative time or event-based synchronization - Timestamp all observations with synchronized clock (GPS or NTP)
-
-------------------------------------------------------------------------
-
-## 4. Visual-Inertial SLAM: ORB-SLAM3
-
-### 4.1 Why Fusion?
-
-**Monocular SLAM alone**: - Scale ambiguity - Drift in pure rotation - Fails on low-texture scenes
-
-**IMU alone**: - Drift in position - But: rapid, contains scale information
-
-**Combination**: - IMU provides scale and short-term drift control - Vision provides absolute position correction
-
-### 4.2 ORB-SLAM3 Architecture
-
-**Key innovation**: Visual-inertial fusion at three levels
-
-**1. Tracking**:
-
-```         
-Visual features + IMU:
-    Predict pose using IMU
-    Refine with visual features
-    Estimate IMU biases
-```
-
-**2. Local Mapping**:
-
-```         
-Optimize local bundle with:
-    - Camera poses
-    - IMU biases (accelerometer, gyroscope)
-    - 3D points
-Constraints from:
-    - Visual reprojection error
-    - IMU pre-integration (measurement from t to t+1)
-```
-
-**3. Loop Closure**:
-
-```         
-Loop constraint + IMU scale estimate:
-    Resolves scale ambiguity
-    Correct accumulated drift
-    Update IMU bias estimates
-```
-
-### 4.3 IMU Pre-integration
-
-**Key**: Integrate IMU measurements into SLAM without running full IMU dynamics
-
-**Pre-integration**: For each frame pair, compute relative pose change due to IMU:
-
-$$\Delta R_{ij} = \prod_{k=i}^{j-1} \exp((\omega_k - b_g) \Delta t)$$
-
-$$\Delta v_{ij} = \sum_{k=i}^{j-1} (\Delta R_{ik}) (a_k - b_a) \Delta t$$
-
-$$\Delta p_{ij} = \sum_{k=i}^{j-1} (\Delta v_{ik}) \Delta t + \frac{1}{2} g \Delta t^2$$
-
-**Pre-integration factors**: Create constraints in SLAM optimization without storing every IMU measurement
-
-**Jacobian w.r.t. biases**: Linearized update when bias estimates change
-
-### 4.4 IMU Initialization in Monocular Mode
-
-**Problem**: Monocular SLAM cannot determine scale. ORB-SLAM3 must initialize this.
-
-**Strategy**: 1. Track several frames with visual features 2. Integrate IMU measurements 3. Estimate gravitational direction from IMU 4. Compute scale such that gravity matches measured acceleration 5. Switch to metric scale
-
-**Algorithm**:
-- Accelerometer measures: $a = a_{\text{true}} + g$
-- Estimated gravity: $\hat{g}$ = direction from averaged accelerometer with known magnitude (9.81 m/s²) 
-- Scale: Calibrate so triangulated points make sense with IMU distances
-
-### 4.5 Performance Improvement
-
-**ORB-SLAM3 vs. ORB-SLAM2 (visual only)**: - **Accuracy**: 3-5x better in scale estimation - **Robustness**: Succeeds in pure rotation, low-texture scenes - **Speed**: 20-30% faster (IMU aids tracking) - **Drift**: Reduced 10-fold over 1-hour flights
-
-------------------------------------------------------------------------
-
-## 5. Dense + Semantic + Visual-Inertial: The Future
-
-### 5.1 Integration Strategy
-
-Modern state-of-the-art combines all three:
-
-```         
-Visual-inertial front-end:
-    ├─ Visual tracking + IMU prediction
-    ├─ Object detection (semantic segmentation)
-    └─ Dense depth estimation (learned or photometric)
-                ↓
-         Local mapping:
-    ├─ Semantic bundles (group 3D points by object)
-    ├─ Dense depth fusion (occupancy grid?)
-    └─ Inertial batch optimization
-                ↓
-         Global optimization:
-    ├─ Loop closure (visual + semantic)
-    ├─ Pose graph + uncertainty
-    └─ Dynamic object filtering
-```
-
-### 5.2 Example: Autonomous Vehicle SLAM
-
-**Sensors**: Camera, IMU, Lidar, Radar
-
-**Pipeline**: 1. **Front-end**: Visual-inertial odometry (ORB-SLAM3 style) 2. **Semantic**: Detect cars, pedestrians, traffic signs 3. **Dense**: Lidar provides dense point clouds 4. **Loop closure**: - Visual: Recognize same street - Semantic: Same traffic signs and lanes - Lidar: Loop closure via ICP on dense clouds 5. **Fusion**: All constraints into single optimization 6. **Dynamic**: Remove cars and people (moving objects) before finalizing map
-
-**Result**: Consistent 1:100,000 scale maps for autonomous driving
-
-------------------------------------------------------------------------
-
-## 6. Performance Comparison
-
-### 6.1 Benchmark Results (Qualitative)
-
-| System               | Latency   | Accuracy   | Dense | Semantic | Multi-Robot |
-|----------------------|-----------|------------|-------|----------|-------------|
-| **ORB-SLAM**         | \<50ms    | 1-2% error | ✗     | ✗        | ✗           |
-| **LSD-SLAM**         | 30-100ms  | 1-5%       | ✓     | ✗        | ✗           |
-| **ORB-SLAM3**        | 50-100ms  | 0.2-0.5%   | ✗     | ✗        | ✗           |
-| **CCM-SLAM** (Multi) | 200ms+    | 1%         | ✗     | ✗        | ✓           |
-| **Full Stack**       | 200-500ms | 0.1-0.3%   | ✓     | ✓        | ✓           |
-
-### 6.2 Computational Cost Breakdown
-
-**Typical modern visual-inertial SLAM (100 Hz, 640x480)**: - Feature detection: 10-15ms - Tracking: 5-10ms - Depth estimation: 15-25ms - Semantic segmentation: 30-50ms (GPU-accelerated) - Bundle adjustment: 20-50ms - Loop closure: 10-20ms (when active) - **Total**: \~100-150ms per frame (on modern CPU/GPU)
-
-------------------------------------------------------------------------
-
-## 7. Implementation Considerations
-
-### 7.1 Computational Requirements
-
-**Real-time visual SLAM**: - CPU: Intel i7 or equivalent (4+ cores recommended) - GPU: Optional but helpful for semantics and dense estimation - Memory: 4-8 GB RAM - Storage: \~1 GB per hour of HD video
-
-**Mobile robot**: - Jetson Xavier NX: Can run ORB-SLAM3 real-time - Jetson Orin: Can add semantic segmentation and keep real-time - Snapdragon: Limited to lightweight algorithms
-
-### 7.2 Integration with Other Systems
-
-**Path planning**: Use dense map or occupancy grid
-
-```         
-SLAM → Dense map → Voxel occupancy grid → Path planner
-```
-
-**Control**: Use estimated pose directly
-
-```         
-SLAM → Pose estimate → Controller
-         ↓
-       High frequency (100 Hz) smooth estimates from IMU
-```
-
-**Object tracking**: Use semantic SLAM
-
-```         
-SLAM semantic output → Track moving objects
-                    → Predict trajectories
-                    → Collision avoidance
-```
-
-### 7.3 Debugging and Validation
-
-**Visual debugging**: - Plot trajectory (should be loop-closed, not spiraling) - Visualize 3D points (should form recognizable structures) - Show feature tracks (should be consistent across frames) - Overlay semantic segmentation (should match real objects)
-
-**Quantitative validation**: - Use ground truth from motion capture or GNSS - Compute APE (Absolute Pose Error) and RPE (Relative Pose Error) - Compare pre/post loop closure (global optimization should reduce error)
-
-------------------------------------------------------------------------
-
-## 8. Open Problems and Future Directions
-
-### 8.1 Remaining Challenges
-
-1.  **Dynamic environments**: Moving people, vehicles, weather changes
-2.  **Appearance change**: Same location in different seasons
-3.  **Extreme motion**: High-speed motion, blur
-4.  **Computational efficiency**: Real-time dense SLAM on mobile devices
-5.  **Scalability**: Consistent mapping over hours/days/months
-
-### 8.2 Emerging Directions
-
-**Learned features**: CNN-based descriptors replacing hand-crafted (ORB) - More robust to viewpoint and lighting changes - Trade: Slower but increasingly GPU-accelerated
-
-**Semantic understanding**: Full 3D scene graphs - Not just objects, but relationships (above, behind, etc.) - Enables higher-level scene reasoning
-
-**Multi-modal fusion**: Radar, thermal, event cameras alongside vision - Lidar already standard in autonomous vehicles - Radar robust in weather - Event cameras fast and low-latency
-
-**Lifelong SLAM**: Continuous operation over months/years - Parameter adaptation as environment changes - Efficient memory management - Loop closure scale: from individual buildings to city-scale
-
-------------------------------------------------------------------------
-
-## 9. Summary
-
-**Advanced SLAM extends classical feature-based systems**: - **Dense**: Full 3D geometry instead of sparse points - **Semantic**: Object understanding for stronger constraints - **Visual-inertial**: IMU fusion for metric scale and robustness - **Multi-robot**: Collaborative mapping
-
-**Modern systems combine all**: Visual-inertial + dense + semantic at real-time
-
-**Trade-offs**: - More information (density, semantics) → more computation - More robustness → more complexity - Real-time constrains what's possible on mobile devices
-
-**Key insight**: SLAM is evolving from "just tracking features" to "understanding the world"—integrating geometry, appearance, semantics, and dynamics into unified systems.
-
-The next chapter shows how to integrate all these concepts into a complete, practical autonomous navigation system.
+# Advanced Navigation Topics
+
+## Why This Chapter Exists
+
+This chapter is a brief tour of topics that sit beyond the required course
+projects. These are not new assignment requirements, and students will not be
+assessed on implementing them. The goal is professional awareness: if you keep
+working in autonomous navigation, these are the ideas, acronyms, and research
+directions you will keep seeing.
+
+The course projects emphasize implementable foundations: filtering, visual
+navigation, FastSLAM, and loose INS/GNSS integration. Modern navigation systems
+build on those foundations, but they often use more complex optimization,
+multi-sensor fusion, raw GNSS processing, learned perception, and resilience
+methods for environments where one sensor cannot be trusted.
+
+Think of this chapter as a map of the neighborhood, not a demand that you build
+the entire city by Friday.
+
+## Factor Graphs and Smoothing
+
+Many modern navigation systems are written as optimization problems rather than
+only as recursive filters. Instead of estimating only the current state, a
+smoothing system estimates a window or full history of states. Measurements become
+factors that constrain those states.
+
+Common factors include:
+
+- IMU preintegration between keyframes;
+- camera reprojection residuals;
+- lidar or radar scan-matching residuals;
+- GNSS pseudorange, Doppler, carrier phase, or position factors;
+- wheel odometry, barometer, magnetometer, or terrain constraints;
+- loop-closure constraints between revisited locations.
+
+The graph view is powerful because it treats heterogeneous measurements in one
+consistent framework. A visual-inertial-GNSS smoother, for example, can contain
+camera factors, IMU factors, GNSS factors, and prior factors in the same
+least-squares problem.
+
+This does not make filtering obsolete. Filters are still useful when memory,
+latency, or certification constraints are tight. Smoothing is attractive when
+past states should be revisited, as in loop closure, bundle adjustment, and
+post-processing. Many deployed systems use both: a real-time filter for immediate
+state output and a smoother for mapping, delayed corrections, or offline analysis.
+
+The practical concept to remember is **sparsity**. A useful factor graph is not
+just a giant dense matrix. Each measurement usually touches only a few states, so
+the solver can exploit sparse linear algebra. That is one reason graph methods
+scale better than a naive full covariance over every pose and landmark.
+
+## Visual-Inertial Odometry and SLAM
+
+Visual-inertial odometry (VIO) estimates motion by combining camera measurements
+with IMU measurements. Visual-inertial SLAM extends this with mapping and loop
+closure.
+
+The combination works because the sensors fail differently:
+
+| Sensor | Strength | Weakness |
+|---|---|---|
+| Camera | Rich geometric constraints from the environment | Sensitive to lighting, blur, texture, and scale ambiguity |
+| IMU | High-rate short-term motion and gravity information | Bias-driven drift when used alone |
+
+In a modern VIO system, the IMU usually propagates motion between camera frames.
+The camera then corrects drift by tracking features, direct photometric patches,
+or learned descriptors. Many systems maintain keyframes rather than every image.
+Keyframes limit computation while preserving enough history for optimization.
+
+A central idea is **IMU preintegration**. Instead of adding every IMU sample as a
+separate graph constraint, the system summarizes many high-rate IMU samples into
+a relative motion factor between two keyframes. That factor depends on current
+accelerometer and gyro bias estimates, so serious implementations also track the
+Jacobian of the preintegrated measurement with respect to those biases.
+
+VIO also exposes observability issues that are easy to miss in simple examples:
+
+- monocular vision alone does not know metric scale;
+- gravity direction and accelerometer bias are coupled during initialization;
+- pure rotation provides poor translation information;
+- weak excitation makes some calibration states hard to estimate;
+- camera-IMU time offset can look like bad estimator tuning.
+
+Systems such as MSCKF-style filters, sliding-window bundle adjustment, and
+ORB-SLAM-style visual-inertial SLAM all live in this design space. The details
+differ, but the recurring pattern is the same: use IMU for high-rate propagation,
+vision for environmental constraints, and careful timing/calibration to make the
+fusion meaningful.
+
+## Advanced GNSS Processing
+
+The INS/GNSS material in this course focuses mostly on loose integration: a GNSS
+receiver produces position and velocity, and the navigation filter uses those as
+measurements. Professional systems often go deeper.
+
+### Raw Measurements
+
+A GNSS receiver can expose raw observations rather than only a solved position.
+The main observation types are:
+
+- **pseudorange**, an apparent satellite-to-receiver range derived from signal
+  travel time;
+- **Doppler**, related to range rate and useful for velocity;
+- **carrier phase**, a very precise phase measurement with an unknown integer
+  ambiguity;
+- **signal quality indicators**, such as carrier-to-noise density, lock time,
+  and receiver tracking flags.
+
+Raw measurements let the navigation system reason about satellites directly. This
+enables tighter coupling with INS, better outage behavior, and more control over
+which measurements are trusted.
+
+### RTK
+
+Real-Time Kinematic (RTK) GNSS uses carrier-phase measurements and a nearby base
+station or correction service. The base station and rover observe many of the same
+satellites, so shared errors such as satellite clock, orbit, and atmospheric
+effects can be reduced. If the carrier-phase integer ambiguities are resolved
+correctly, RTK can produce centimeter-level relative positioning in favorable
+conditions.
+
+The catch is that RTK is not magic. It depends on:
+
+- a nearby base station or correction network;
+- clean carrier-phase tracking;
+- enough common satellites;
+- good ambiguity resolution;
+- limited multipath and cycle slips;
+- careful antenna placement and lever-arm modeling.
+
+RTK solutions are often reported as **float** or **fixed**. A float solution has
+not resolved the integer ambiguities confidently. A fixed solution has. A fixed
+solution is usually much more precise, but a false fix can be worse than an honest
+lower-accuracy solution.
+
+### PPP and PPP-RTK
+
+Precise Point Positioning (PPP) uses precise satellite clock and orbit products
+instead of a local base station. It can provide high accuracy globally, but it
+typically needs convergence time. PPP-RTK combines precise corrections with
+ambiguity resolution techniques to reduce convergence time and improve precision.
+
+For autonomous systems, the trade is operational: RTK can be excellent when local
+corrections are available, while PPP-style methods are attractive when global
+coverage matters more than local infrastructure.
+
+### Tight and Deep INS/GNSS Coupling
+
+In loose coupling, the receiver's position or velocity solution is the
+measurement. In tight coupling, raw GNSS measurements are fused directly with the
+INS state. In deep coupling, inertial aiding reaches even farther into receiver
+tracking loops.
+
+Tight coupling is useful when satellite visibility is weak. A receiver may not
+have enough satellites to produce a standalone fix, but the navigation filter can
+still use partial pseudorange, Doppler, or carrier-phase information. The INS
+helps bridge short outages and predicts receiver motion; GNSS bounds inertial
+drift when usable signals return.
+
+### Multipath, Jamming, and Spoofing
+
+Advanced GNSS processing is also about distrust. Urban canyons, ship structures,
+vehicle roofs, trees, and nearby buildings can reflect signals and create
+multipath. Intentional or accidental interference can jam GNSS. Spoofing can
+produce plausible-looking but false signals.
+
+Professional systems monitor:
+
+- innovation consistency;
+- satellite geometry and dilution of precision;
+- carrier-to-noise ratios;
+- cycle slips and lock time;
+- agreement between GNSS, INS, vision, radar, lidar, and maps;
+- spatial consistency across multiple antennas when available.
+
+The larger lesson is that a GNSS measurement is not simply "truth from space." It
+is a radio navigation measurement with geometry, clocks, atmosphere, hardware, and
+failure modes attached.
+
+## GNSS-Denied and Resilient Navigation
+
+GNSS-denied navigation means operating when satellite positioning is unavailable,
+unreliable, or intentionally attacked. This is common indoors, underwater,
+underground, near tall buildings, under foliage, inside warehouses, in combat
+environments, and around jamming or spoofing.
+
+No single replacement sensor solves the whole problem. Resilient navigation uses
+layers:
+
+| Aid | Useful when | Main weakness |
+|---|---|---|
+| Visual odometry | Textured scenes and reasonable lighting | Blur, darkness, textureless areas |
+| Lidar odometry | Geometric structure is visible | Dust, rain, glass, feature-poor corridors |
+| Radar odometry | Weather, dust, smoke, long range | Lower angular resolution and harder data association |
+| Terrain-relative navigation | Terrain maps are available | Needs distinctive terrain and good maps |
+| Magnetic anomaly navigation | Magnetic maps are available | Local disturbances and map dependence |
+| Barometric aiding | Altitude changes matter | Weather and pressure drift |
+| Wheel or water-speed aiding | Vehicle-environment contact is reliable | Slip, currents, and calibration |
+| Signals of opportunity | Radio infrastructure exists | Opportunistic and environment-dependent |
+| Cooperative localization | Other agents are nearby | Communication and shared-frame uncertainty |
+
+The professional habit is graceful degradation. A GNSS-denied system should not
+pretend nothing happened. It should change mode, report lower confidence, adjust
+controller limits when appropriate, and log enough information to explain the
+outage later.
+
+## Advanced SLAM and Mapping
+
+The SLAM module introduced EKF-SLAM, FastSLAM, GraphSLAM, visual navigation, and
+loop closure. Advanced SLAM systems push those ideas in several directions.
+
+### Dense, Semantic, and Dynamic Maps
+
+Classical feature maps are compact, but they do not describe all occupied space.
+Dense mapping attempts to reconstruct surfaces, occupancy, or signed distance
+fields. Semantic mapping attaches labels such as road, building, tree, person,
+vehicle, buoy, or runway. Dynamic mapping tries to separate persistent structure
+from moving objects.
+
+The price is computation and modeling complexity. A dense semantic map is more
+useful to a planner than a sparse point cloud, but it is harder to build,
+maintain, validate, and update over time.
+
+### Lidar, Radar, and Multi-Modal SLAM
+
+Lidar SLAM is common because range measurements give direct geometric structure.
+Radar SLAM is attractive in rain, dust, fog, smoke, and long-range outdoor
+operation. Camera systems are inexpensive and information-rich. IMUs provide
+high-rate motion. GNSS provides global anchoring when available.
+
+Modern systems often combine several of these:
+
+- visual-inertial odometry for local motion;
+- lidar or radar odometry for geometry and robustness;
+- GNSS or map priors for global alignment;
+- semantic perception for object-level reasoning;
+- loop closure for long-term consistency.
+
+The hard part is not drawing the block diagram. The hard part is time alignment,
+calibration, outlier rejection, uncertainty modeling, and knowing which sensor to
+distrust in a particular environment.
+
+### Lifelong and Multi-Robot SLAM
+
+Lifelong SLAM asks what happens when the same environment changes over days,
+months, or years. Multi-robot SLAM asks how multiple agents share maps and
+constraints without assuming perfect communication or a shared initial frame.
+
+These topics matter for fleets, warehouses, ports, cities, mines, farms, and
+large autonomous survey operations. They also expose practical problems:
+
+- map growth must be bounded;
+- old observations may become stale;
+- different robots may use different sensors and clocks;
+- loop closures can be false but highly influential;
+- communication bandwidth is limited;
+- privacy and security may constrain what data can be shared.
+
+## Rao-Blackwellized and Hybrid Filters
+
+FastSLAM is a Rao-Blackwellized particle filter (RBPF). That phrase is worth
+remembering beyond the project.
+
+The idea is to sample the hard part of the state and analytically estimate the
+conditional part. In FastSLAM, particles represent robot path hypotheses, while
+landmarks are estimated with small EKFs conditioned on each particle. This reduces
+the dimension that must be sampled directly.
+
+RBPFs appear in other navigation problems:
+
+- sampling discrete mode hypotheses while filtering continuous vehicle state;
+- tracking multiple data-association possibilities;
+- estimating maps conditioned on trajectory samples;
+- combining particle filters with Kalman filters for partially linear systems.
+
+Hybrid methods are attractive when the posterior is not well represented by one
+Gaussian but a full particle filter would be too expensive. They are also easy to
+misuse. Particle depletion, poor proposals, overconfident likelihoods, and weak
+resampling diagnostics can make a hybrid filter look sophisticated while quietly
+throwing away the correct hypothesis.
+
+The takeaway is not "use RBPFs everywhere." The takeaway is that marginalization
+and conditional structure can make hard estimation problems tractable.
+
+## Learning-Based and Emerging Methods
+
+Machine learning is now part of navigation, but it rarely replaces the entire
+navigation stack. More commonly, learned components provide perception,
+correspondence, depth, uncertainty estimates, or priors that are fused with
+geometric and probabilistic models.
+
+Important emerging directions include:
+
+- **learned visual features**, replacing or augmenting hand-crafted descriptors;
+- **learned depth and optical flow**, especially for difficult visual scenes;
+- **event cameras**, which report brightness changes at very high temporal
+  resolution and are useful for high-speed or high-dynamic-range motion;
+- **radar-inertial odometry**, especially for poor weather and degraded visual
+  environments;
+- **neural implicit maps**, which represent geometry or appearance with neural
+  fields rather than explicit landmarks or grids;
+- **3D Gaussian and NeRF-style mapping**, which can produce rich scene
+  reconstructions but currently raise hard questions about real-time use,
+  uncertainty, and safety-critical validation;
+- **foundation-model perception**, where large pretrained models provide object,
+  scene, or language-conditioned understanding;
+- **learned sensor fusion**, where networks estimate measurement confidence,
+  reject outliers, or provide learned motion priors.
+
+The caution is straightforward: learned systems can be powerful, but navigation
+needs calibrated uncertainty, failure detection, and operational constraints. A
+neural network that works beautifully on a benchmark can still fail in exactly the
+weather, lighting, vehicle vibration, or terrain that matters to your deployment.
+
+## How to Read the Research Literature
+
+Advanced navigation papers can be difficult to compare because they often differ
+in sensors, datasets, compute hardware, initialization assumptions, and failure
+conditions. When reading a paper, ask:
+
+- What sensors are actually used?
+- Is the method filter-based, smoother-based, learning-based, or a hybrid?
+- Does it run online, offline, or in post-processing?
+- What assumptions are made about calibration and synchronization?
+- Is global drift bounded by GNSS, loop closure, maps, or external truth?
+- How does it handle outliers and sensor dropouts?
+- What dataset was used, and does it match the target environment?
+- Does the method report failures, or only successful sequences?
+- Are uncertainty estimates calibrated, or just plotted?
+- What computational hardware was required?
+
+Be especially careful with phrases like "real time," "robust," and
+"state-of-the-art." They are meaningful only relative to a platform, dataset,
+sensor suite, and operating environment.
+
+## Summary
+
+The advanced topics in this chapter are extensions of the same foundations used
+throughout the course:
+
+- factor graphs generalize filtering ideas into sparse optimization over many
+  states and measurements;
+- VIO and visual-inertial SLAM combine high-rate inertial propagation with
+  environmental visual constraints;
+- advanced GNSS processing uses raw measurements, RTK, PPP, and tighter INS/GNSS
+  coupling instead of relying only on receiver position fixes;
+- GNSS-denied navigation is a resilience problem, not a single-sensor replacement
+  problem;
+- advanced SLAM expands from sparse landmarks to dense, semantic, dynamic,
+  lifelong, and multi-robot maps;
+- RBPFs and hybrid filters exploit conditional structure when one Gaussian or one
+  particle cloud is not enough;
+- learning-based methods are increasingly important, but they still need
+  calibration, uncertainty, and failure monitoring.
+
+You are not expected to implement these systems in this course. You are expected
+to recognize the shape of the field: modern navigation is not one algorithm, but a
+set of estimation, sensing, optimization, timing, calibration, and validation
+choices made under real constraints.
