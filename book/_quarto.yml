@@ -53,8 +53,8 @@ book:
     - part: "Sensing and Perception"
       chapters:
         - chapters/02-sensing/sensing.qmd
-        - chapters/02-sensing/sensor-models.qmd
-        - chapters/02-sensing/measurement-noise.qmd
+        - chapters/02-sensing/motion-models.qmd
+        - chapters/02-sensing/measurement-models.qmd
         - chapters/02-sensing/data-association.qmd
         - chapters/02-sensing/pnp-vision.qmd
     - part: "Filtering and State Estimation"
