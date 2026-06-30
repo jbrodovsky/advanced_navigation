@@ -1,4 +1,5 @@
 readings/
+data/
 /.quarto/
 **/*.quarto_ipynb
 attic/
