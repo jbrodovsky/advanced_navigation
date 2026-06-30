@@ -1,8 +1,8 @@
 # Syllabus
 
-This is a sample syllabus suggested for an approximately 16 week semester. For my WPI students, this should not be considered *your* official syllabus. The official syllabus for your course will be posted on Canvas and should be considered the authoritative source for all course policies, requirements, and deadlines. This sample syllabus is meant to give you an idea of what to expect in the course and to help you plan your schedule accordingly and other instructors practical guidance.
+This is a sample syllabus suggested for an approximately 16 week semester. For my WPI students, this should not be considered *your* official syllabus. The official syllabus for your course will be posted on Canvas and should be considered the authoritative source for all course policies, requirements, and deadlines. This sample syllabus is meant to give you (a non-WPI student) an idea of what to expect in the course and to help you plan your schedule accordingly and provide other instructors practical guidance. Alternatively, if you are another instructor looking to teach this course, you are welcome to use this syllabus as a template for your own course. Please contact me if you have any questions or would like to discuss the course in more detail.
 
-### Learning Outcomes
+## Learning Outcomes
 
 The overall learning objective of this course is to develop an understanding of the mathematical foundations of modern probabilistic navigation techniques and accompanying subjects and to implement these methods in a suitable modern programming language. By the end of this course a student should be able to:
 
@@ -11,7 +11,7 @@ The overall learning objective of this course is to develop an understanding of 
 3.  Analyze and evaluate the performance of various navigation algorithms and techniques by metrics such as accuracy, precision, certainty, and computational efficiency.
 4.  Apply probabilistic navigation techniques to a wide scope of situations ranging from indoor two-dimensional problems up to global three-dimensional strategic navigation.
 
-### Textbooks
+## Textbooks
 
 This course will cover several topics that span both planning and localization (or guidance and navigation). As such the material will be drawn from several sources.
 
@@ -30,16 +30,6 @@ Students are free to select the programming language that they are most comforta
 
 ## Grading Policy
 
-Final course grades are based on a student’s performance as follows:
-
-| Letter Grade | Percentage |
-|--------------|------------|
-| A            | 90 - 100   |
-| B            | 80 - 89    |
-| C            | 70 - 79    |
-| D            | 60 - 69    |
-| F            | \< 60      |
-
 Course grading will follow the standard A-F scale. Course incompletes and/or extensions will only be given in extreme circumstances and must be requested in writing prior to the end of the semester. As the online program is designed to be more flexible than a traditional on-campus program, I understand that many students are working full-time jobs, have families, and are juggling many other responsibilities. I too worked full time throughout graduate school. As such I understand that sometimes things come up and you may need more time to complete a project. I am willing to grant extensions to students experiencing such hardships, provided you have completed the majority of the projects. If you are facing such a situation, please reach out in writing to request an extension *prior to the end of the semester*. Requests received after the published class grading deadline for the semester will not be considered outside of extreme person or family emergencies.
 
 Project grading breakdown:
@@ -50,6 +40,16 @@ Project grading breakdown:
   - Project 1c: Navigation filters(50%)
 - Project 2: Victoria Park SLAM - 25%
 - Project 3: INS/GNSS Integration - 25%
+
+Final course grades are based on a student’s performance as follows:
+
+| Letter Grade | Percentage |
+|--------------|------------|
+| A            | 90 - 100   |
+| B            | 80 - 89    |
+| C            | 70 - 79    |
+| D            | 60 - 69    |
+| F            | \< 60      |
 
 ## Course Schedule
 
@@ -63,42 +63,42 @@ Textbook abbreviations:
 - Kalman and Bayesian Filters in Python: KBFP
 - Principles of GNSS: GNSS
 
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week \# | Topics                                                                         | External Readings                                                         | Assignment                            |
-+=========+================================================================================+===========================================================================+=======================================+
-| Week 1  | Chapter 1: Introduction                                                        | KBFP 0.6-0.9                                                              |                                       |
-|         |                                                                                |                                                                           |                                       |
-|         | Chatper 2: Foundations                                                         |                                                                           |                                       |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 2  | Chapter 3: Sensing                                                             | SHR 4, 20.1-20.4 RVC 6.0, 6.1, 6.8 PR 5 GNSS 4                            |                                       |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 3  | Chapter 3: Sension                                                             | PR 6 RVC 10-13 SHR 23                                                     | Drone Observation Models              |
-|         |                                                                                |                                                                           |                                       |
-|         | Perception: Sensing, Estimation, and Maps; Basics of Computer Vision           |                                                                           |                                       |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 4  | Filtering: A brief review of Bayesian and Kalman Filtering                     | PR 1.1-1.3, 2, 3.1-3.2, 5, 7.1-7.3 RVC 6.2-6.3, Appendix H1 KBFP 0.1; 2-8 |                                       |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 5  | Filtering: Nonlinearities                                                      | GNSS: 2, 4 KBFP 9                                                         |                                       |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 6  | Filtering: Extended Kalman Filter                                              | PR 3.3, 7.4-7.5 RVC 6.2 KBFP 11                                           |                                       |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 7  | Filtering: Unscented Kalman Filter                                             | PR 3.4, 7.7-7.8 KBFP 10                                                   |                                       |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 8  | Filtering: Nonparametric (particle) filters                                    | PR 4, 8.3-8.5                                                             | Particle Filter Break Week            |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 9  | Filtering: Inertial Navigation Introduction; Coordinate Frames; Dead Reckoning | GNSS 2, 5                                                                 |                                       |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 10 | Filtering: INS/GNSS Integration                                                | GNSS 3, 14                                                                | INS/GNSS Integration                  |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 11 | Integration: EKF SLAM                                                          | SHR 37 PR 10 RVC 6.3-6.4                                                  |                                       |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 12 | Integration: GraphSLAM                                                         | PR 11 RVC 6.5                                                             |                                       |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 13 | Integration: FastSLAM                                                          | PR 13                                                                     | Victoria Park SLAM                    |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 14 | Work week & supplemental topics                                                |                                                                           |                                       |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 15 | Work week & supplemental topics                                                |                                                                           |                                       |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
-| Week 16 | Work week & supplemental topics                                                |                                                                           | All project submissions due by Dec 13 |
-+---------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week \#    | Topics                                                                         | External Readings                                                         | Assignment                            |
++============+================================================================================+===========================================================================+=======================================+
+| Week 1     | Part I: Introduction, Chapters 1-6                                             | KBFP 0.6-0.9                                                              |                                       |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 2     | Chapter 7: Sensing and Perception                                              | SHR 4, 20.1-20.4 RVC 6.0, 6.1, 6.8 PR 5 GNSS 4                            |                                       |
+|            |                                                                                |                                                                           |                                       |
+|            | Chapter 8: Sensor Models                                                       |                                                                           |                                       |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 3     | Chapter 9: Measurement Noise and Range Sensor                                  | PR 6 RVC 10-13 SHR 23                                                     | Drone Observation Models              |
+|            |                                                                                |                                                                           |                                       |
+|            | Perception: Sensing, Estimation, and Maps; Basics of Computer Vision           |                                                                           |                                       |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 4     | Filtering: A brief review of Bayesian and Kalman Filtering                     | PR 1.1-1.3, 2, 3.1-3.2, 5, 7.1-7.3 RVC 6.2-6.3, Appendix H1 KBFP 0.1; 2-8 |                                       |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 5     | Filtering: Nonlinearities                                                      | GNSS: 2, 4 KBFP 9                                                         |                                       |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 6     | Filtering: Extended Kalman Filter                                              | PR 3.3, 7.4-7.5 RVC 6.2 KBFP 11                                           |                                       |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 7     | Filtering: Unscented Kalman Filter                                             | PR 3.4, 7.7-7.8 KBFP 10                                                   |                                       |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 8     | Filtering: Nonparametric (particle) filters                                    | PR 4, 8.3-8.5                                                             | Particle Filter Break Week            |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 9     | Filtering: Inertial Navigation Introduction; Coordinate Frames; Dead Reckoning | GNSS 2, 5                                                                 |                                       |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 10    | Filtering: INS/GNSS Integration                                                | GNSS 3, 14                                                                | INS/GNSS Integration                  |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 11    | Integration: EKF SLAM                                                          | SHR 37 PR 10 RVC 6.3-6.4                                                  |                                       |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 12    | Integration: GraphSLAM                                                         | PR 11 RVC 6.5                                                             |                                       |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 13    | Integration: FastSLAM                                                          | PR 13                                                                     | Victoria Park SLAM                    |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 14    | Work week & supplemental topics                                                |                                                                           |                                       |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 15    | Work week & supplemental topics                                                |                                                                           |                                       |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+
+| Week 16    | Work week & supplemental topics                                                |                                                                           | All project submissions due by Dec 13 |
++------------+--------------------------------------------------------------------------------+---------------------------------------------------------------------------+---------------------------------------+

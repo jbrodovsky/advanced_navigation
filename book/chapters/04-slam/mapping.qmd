@@ -150,6 +150,12 @@ def load_victoria_park_data(root="dataset_victoria_park/original_MATLAB_dataset"
     students can make their unit handling explicit.
     """
     root = Path(root)
+    if not root.exists():
+        for parent in [Path.cwd(), *Path.cwd().parents]:
+            repo_relative_root = parent / root
+            if repo_relative_root.exists():
+                root = repo_relative_root
+                break
 
     laser_data = loadmat(root / "aa3_lsr2.mat", squeeze_me=True)
     odom_data = loadmat(root / "aa3_dr.mat", squeeze_me=True)

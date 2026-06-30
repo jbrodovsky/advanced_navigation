@@ -4,4 +4,4 @@ readings/
 attic/
 lectures/
 .venv/
-book/output/
+book/output/*

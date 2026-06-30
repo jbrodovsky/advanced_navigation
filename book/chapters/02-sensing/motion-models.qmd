@@ -1,13 +1,4 @@
-# Sensor Models
-
-Sensor models connect the physical instrument to the estimator. They answer two questions:
-
-1. Given a state, what measurement should I expect?
-2. Given a measurement, how much should I trust it?
-
-The first question gives the measurement function $h(\mathbf{x})$. The second gives the noise model, outlier model, or likelihood function. In this chapter, we focus on the physical side of the story, especially inertial sensors, because they are the most common example of proprioceptive sensing in navigation.
-
-## Motion Models and Observation Models
+# Motion Models 
 
 A recursive estimator usually alternates between propagation and correction:
 

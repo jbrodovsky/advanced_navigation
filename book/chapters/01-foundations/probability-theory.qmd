@@ -1,4 +1,4 @@
-# Probability Theory Refresher
+# Probability Theory Refresher {#probability-theory}
 
 This chapter refreshes the probability concepts required to model uncertainty in state estimation. Students should already know these ideas; this chapter aligns notation and emphasizes navigation-specific usage. The other major underlying component of state estimation and modern navigation system is probability theory, which provides the mathematical framework for modeling uncertainty in state estimation. This chapter serves as a refresher on key probability concepts, with a focus on their application to navigation problems. It is assumed that students are already familiar with these ideas from prior coursework, but this chapter will align notation and emphasize the aspects most relevant to navigation.
 
@@ -8,7 +8,7 @@ A random variable is a function that maps outcomes of a random process to numeri
 
 For our purposes, we will give a brief refresher on both continuous and discrete random variables, but the focus and assumption in the course materials will be on discrete random variables, since that is the most common case in modern navigation systems. Let $X$ be a random variable with density $p(x)$.
 
-Some basic properties of a random variable are based around the concept of **expectation** or **expected value** which is a weighted average of the possible values of the random variable, where the weights are given by the probability density function. Plainly, the expectation of a random variavle is the value you would expect to see most often or on average.
+Some basic properties of a random variable are based around the concept of **expectation** or **expected value** which is a weighted average of the possible values of the random variable, where the weights are given by the probability density function. Plainly, the expectation of a random variable is the value you would expect to see most often or on average.
 
 For a continuous random variable the expectation is defined as:
 $$
@@ -40,23 +40,99 @@ $$
 
 ## Conditional Probability and Bayes' Rule
 
-All of the algorithms used in navigation are realization of Bayesian Filters. Bayesian Filter rely on Bayes rule which is a fundamental result in probability theory that relates the conditional and marginal probabilities of random variables. It allows us to update our beliefs about the state of a system based on new evidence or measurements. Bayes' rule can be expressed mathematically as:
+Conditional probability is the probability of an event occurring given that another event has already occurred. Put more generally, conditional probability allows us to update our *belief* about something based on new evidence or measurements. Mathematically, this is formulated as Bayes' rule:
 
 $$
 p(\mathbf{x}|\mathbf{z}) = \frac{p(\mathbf{z}|\mathbf{x})p(\mathbf{x})}{p(\mathbf{z})}
 $$
 
-Interpretation in filtering:
+Each of these terms represent a probability, or probability distribution, and they have specific interpretations in the context of state estimation. Again, we tend to use the term *belief* to describe the probability distribution over the state, but also has the quite literal meaning of *belief* in the sense of "what we believe to be true about the state of the system". In this context, Bayes' rule can be interpreted as follows:
 
-- Prior $p(\mathbf{x})$: model-based belief before seeing new measurement
-- Likelihood $p(\mathbf{z}|\mathbf{x})$: measurement consistency with candidate state
-- Posterior $p(\mathbf{x}|\mathbf{z})$: updated belief
+- Prior belief $p(\mathbf{x})$: model-based belief before seeing new measurement
+- Posterior belief $p(\mathbf{x}|\mathbf{z})$: updated belief
+- Likelihood $p(\mathbf{z}|\mathbf{x})$: measurement consistency with candidate state (the likelihood of observing the measurement given the state)
+- Evidence $p(\mathbf{z})$: normalization constant, the probability of observing the measurement under all possible states
 
-Recursive form used in Bayes filters:
+Pragmatically speaking, the belief is simply just a probability distribution over the range of possible states. You can look at this like a histogram (or curve for continuous distributions) that shows how likely each state is where the total distribution sums to one. Practically, when implementing a Bayesian filter, we often break out Bayes' rule into two steps: prediction and update. The prediction step uses the state transition model (motion model in navigation) to predict the next state based on the previous state and inputs, while the update step uses the measurement model to update the belief based on new measurements. When formulated this way we typically refer to the state-belief probability distribution as $\text{bel}(\mathbf{x})$. Frequently you'll see this denoted with a subscript $k$ to indicate the time step (for discrete systems) and $t$ for continuous systems. 
 
-1. Prediction: $p(\mathbf{x}_k|\mathbf{z}_{1:k-1})$
-2. Update: $p(\mathbf{x}_k|\mathbf{z}_{1:k})$
+For continuous systems, the prediction and update steps can be expressed as:
 
+1. Prediction: $\text{bel}(\mathbf{x}_k) = \int p(\mathbf{x}_k|\mathbf{x}_{k-1}, \mathbf{u}_k) \text{bel}(\mathbf{x}_{k-1}) d\mathbf{x}_{k-1}$
+2. Update: $\text{bel}(\mathbf{x}_k) = \eta p(\mathbf{z}_k|\mathbf{x}_k) \text{bel}(\mathbf{x}_k)$
+
+For discrete systems, the prediction and update steps can be expressed as:
+
+1. Prediction: $\text{bel}(\mathbf{x}_k) = \sum_{\mathbf{x}_{k-1}} p(\mathbf{x}_k|\mathbf{x}_{k-1}, \mathbf{u}_k) \text{bel}(\mathbf{x}_{k-1})$
+2. Update: $\text{bel}(\mathbf{x}_k) = \eta p(\mathbf{z}_k|\mathbf{x}_k) \text{bel}(\mathbf{x}_k)$
+
+Where $\eta$ is a normalization constant to ensure that the belief sums to one. The prediction step propagates the belief forward in time based on the motion model and control inputs, while the update step incorporates new measurements to refine the belief. This recursive process allows the filter to maintain an updated estimate of the state over time, accounting for both process and measurement uncertainties.
+
+### Bayesian Filters in Python {#bayesian-filters-python}
+
+The update step is the easiest place to see Bayes' rule directly in code. In one dimension, suppose we have a prior belief about position and then receive a noisy position measurement. The likelihood tells us which states are consistent with the measurement, and the posterior is the normalized product of the prior and likelihood.
+
+```{python}
+#| label: bayesian-filter-1d-update
+#| fig-cap: "One-dimensional Bayesian filter update. The posterior is the normalized product of the prior belief and the measurement likelihood."
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+def normal_pdf(x: np.ndarray, mean: float, std: float) -> np.ndarray:
+    """Evaluate a one-dimensional normal probability density."""
+    variance = std**2
+    scale = 1.0 / np.sqrt(2.0 * np.pi * variance)
+    return scale * np.exp(-0.5 * (x - mean)**2 / variance)
+
+# Candidate positions along a one-dimensional track, in meters.
+dx = 1 / 1000   # Discretization step size
+x = np.linspace(0.0, 1.0, int(1/dx)) # state space
+
+# Prior belief with two candidate positions.
+prior = normal_pdf(x, mean=0.6, std=0.02)
+prior += normal_pdf(x, mean=0.3, std=0.01)  # add a second mode
+prior /= np.sum(prior)
+
+# Prediction update, sensed motion of 0.05 meters to the right with uncertainty of 0.01 meters. 
+# This is a simple convolution of the prior with the motion model, which is a Gaussian centered 
+# at 0.05 meters with std of 0.01 meters.
+def predict(prior: np.ndarray, motion_mean: float, motion_std: float) -> np.ndarray:
+    x_ = np.linspace(-0.5, 0.5, int(1/dx))  # motion model kernel state space
+    
+    kernel = np.exp(-0.5 * (np.linspace(-0.5, 0.5, int(1/dx)) / motion_std)**2)
+    kernel /= np.sum(kernel)  # normalize kernel to sum to 1
+
+    prediction = np.roll(prior, int(motion_mean/dx))  # shift prior by motion mean
+    prediction = np.convolve(prediction, kernel, mode='same')  # convolve with motion model
+
+    return prediction
+
+prediction = predict(prior, motion_mean=0.05, motion_std=0.01)
+prediction /= np.sum(prediction)  # normalize to sum to 1
+
+# Measurement update, sensed position of 0.45 meters with uncertainty of 0.01 meters. This is the likelihood of the measurement given the candidate positions.
+likelihood = normal_pdf(x, mean=0.45, std=0.01)
+likelihood /= np.sum(likelihood)
+
+# Bayes update: posterior is proportional to likelihood * prediction.
+unnormalized_posterior = likelihood * prediction
+dx = x[1] - x[0]
+posterior = unnormalized_posterior / np.sum(unnormalized_posterior * dx)
+posterior = posterior / np.sum(posterior)  # normalize to sum to 1  
+
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.plot(x, prior, label="Prior belief", linewidth=2)
+ax.plot(x, prediction, label="Prediction belief", linewidth=2)
+ax.plot(x, likelihood, label="Measurement likelihood", linewidth=2)
+ax.plot(x, posterior, label="Posterior belief", linewidth=2)
+
+ax.set_xlabel("Position along track (m)")
+ax.set_ylabel("Probability density")
+ax.set_title("One-Dimensional Bayesian Filter Update")
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.show()
+```
 
 ## Cross-Covariance, Independence, and Correlation
 

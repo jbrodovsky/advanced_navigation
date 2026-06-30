@@ -86,8 +86,6 @@ for k, z_k in enumerate(measurements):
 		x, P = update(x_pred, P_pred, z_k)
 ```
 
-## Numerical Computing Patterns (NumPy)
-
 ### Shape Discipline
 
 Be explicit about vector/matrix shapes to avoid silent bugs.
@@ -104,18 +102,9 @@ x = np.array([x0, v0], dtype=float)
 P = np.eye(2) * 10.0
 ```
 
-### Stable Linear Solves
-
-Prefer `np.linalg.solve` to explicit inverse.
-
-```python
-S = H @ P_pred @ H.T + R
-K = np.linalg.solve(S.T, (H @ P_pred.T)).T
-```
-
 ## Project Structure for Assignments
 
-Keep code modular and testable.
+I highly recommend using `uv` as a package manager for Python to keep code modular and testable. `uv init --lib` sets up a project with a `src/` directory for your code. I would recommend that you set up your projects as such a Python package, even if you are not planning to distribute it. This will help you keep your code organized and make it easier to test and reuse. 
 
 Suggested minimal structure:
 
@@ -125,26 +114,12 @@ project/
 		models.py
 		filters.py
 		simulation.py
-	tests/
+	tests/ # Unit tests for your code, if needed
 		test_filters.py
 	notebooks/
 		experiments.ipynb
-```
-
-## Testing and Validation
-
-For estimation code, tests should check both correctness and behavior.
-
-What to test:
-
-- Dimensions and shape invariants
-- Symmetry/PSD properties of covariance updates
-- Performance on synthetic trajectories with known truth
-- Regression tests for previously fixed bugs
-
-```python
-def test_covariance_is_symmetric(P):
-		assert np.allclose(P, P.T, atol=1e-10)
+		projects.ipynb
+pyproject.toml # Project metadata and dependencies	
 ```
 
 ## Visualization Habits
@@ -163,10 +138,3 @@ Readable diagnostic plotting often catches model and tuning issues before deep d
 - Silent shape broadcasting errors.
 - Hard-coding constants instead of configuration values.
 - Writing all logic in notebooks without reusable modules.
-
-## Quick Exercise Set
-
-1. Implement predict/update functions for a 1D constant-velocity Kalman filter.
-2. Add assertions for matrix dimension checks and covariance symmetry.
-3. Generate synthetic data and compare RMSE for two different process-noise settings.
-

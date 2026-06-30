@@ -1,36 +1,45 @@
 # Guidance, Navigation, and Control {#navigation-overview}
 
-Guidance, Navigation, and Control (GNC) engineering is a multidisciplinary field, however depending on the industry, application, and even technology stack the terminology can vary widely. The primary focus and emphasis of GNC engineering is in the aerospace, marine, and robotics industries.
+Guidance, Navigation, and Control (GNC) engineering is a multidisciplinary field. However, depending on the industry, application, and even the technology stack, the terminology can vary widely. This is largely an artifact of two different fields inventing and re-inventing very similar topics. Adding to this is the very fuzzy definition of what constitutes a robot, and where a simple machine ends and a robot begins.
 
-The field of engineering surrounding GNC is concerned with where you want to go (guidance), where you are (navigation), and how best to get there (control). Despite the common problem, the marine and aerospace industries typically use different terminology than the robotics industry.
+The field of GNC engineering is concerned with the design, analysis, and implementation of systems that can guide, navigate, and control vehicles in a variety of environments semi- or fully-autonomously. This includes both manned and unmanned vehicles, as well as fully autonomous systems. Historically, the aerospace and marine industries have been the primary drivers of GNC engineering, with robotics being a more recent application that has gained significant attention in recent years but simultaneously seems to have slightly reinvented the field with new terminology. As such, while this is a robotics course, it is important to understand that the subject we're studying is in the field of autonomous GNC which sits at the intersection of traditional manned aerospace and maritime engineering (which uses semi-autonomous GNC systems) and in the unmanned robotics space. The primary difference between the two is in the terminology used to describe the problem, the specific applications and technologies used to solve it, and whether or not a human is in the decision making loop.
 
-For example, in the aerospace industry, guidance is often referred to as path planning, navigation is referred to as localization, and control specifically refers to as stabilization. In the marine industry, guidance is often referred to as route planning, navigation is referred to as positioning, and control is referred to as maneuvering. In the robotics industry, guidance is often referred to as path planning, navigation is referred to as localization, and control is referred to as control.
-
-Generally, the aerospace and marine industries refer to the problem as guidance, navigation, and control. However, in the robotics industry, the problem is referred to as path planning, localization, and control. One of the goals of this course is to expand your horizons as to what constitutes a robotic or autonomous system and in the case of navigation, recognize that we’re drawing from a rich history of engineering and technology that has been developed in other industries.
-
-As such, I will frequently and often inadvertently interchange the terms guidance, and navigation with path planning and localization. I will try to be consistent in my usage of the terms, but please be aware that the terms are often used interchangeably in the literature and in practice.
+Generally, the aerospace and marine industries refer to the problem as guidance, navigation, and control. However, in the robotics industry, the problem is referred to as path planning, localization, and control. One of the goals of this course is to expand your horizons as to what constitutes a robotic or autonomous system and in the case of navigation, recognize that we’re drawing from a rich history of engineering and technology that has been developed in other industries. As such, I will frequently and often inadvertently interchange the terms guidance and navigation with path planning and localization. I will try to be consistent in my usage of the terms, but please be aware that the terms are often used interchangeably in the literature and in practice.
 
 That said, control is pretty much always the same. If I start referring to control as something different, please inform my wife as I will have likely suffered a stroke.
 
-## Some terminology
+So what do we mean by guidance, navigation, and control? At its most basic and general, *Guidance* or *Path Planning* involves the process of determining the path or trajectory that a vehicle or system should follow to achieve a specific goal from a set of initial conditions. This can involve determining the optimal path to minimize time, energy, or other resources, while avoiding obstacles and constraints. Guidance algorithms can be simple or complex, depending on the application and the level of autonomy required.
 
-Guidance or Path Planning involves the process of determining the path or trajectory that a vehicle or system should follow to achieve a specific goal.
-Navigation or Localization deals with determining the position, orientation, and velocity of a vehicle or system as it moves through space or operates in a given environment.
-Control involves the application of feedback and control algorithms to ensure that a system’s behavior conforms to a desired trajectory or set of performance criteria.
-What is navigation (localization)?
-Navigation (or localization) is the process by which we determine the position and orientation of a system as it moves through space as measured from the perspective of that system
-All navigation is with respect to another reference frame
-Typically done from the perspective of the system we want to localize
-When done externally, (localizing a system that does not share our reference frame) this is target tracking
-Navigation provides an estimate of the current state
-Similar to, but not necessarily the same as, a control system observer
-Simple guidance algorithms provide a set of navigation states to achieve
+*Navigation* or *Localization* involves the process of determining the position, orientation, and velocity of a vehicle or system as it moves through space or operates in a given environment. This can involve using a variety of sensors and algorithms to estimate the state of the system, and can be done in real-time or offline. Navigation is critical for ensuring that the vehicle or system is able to follow the desired path or trajectory accurately and safely. Navigation is a specific realization of what is more broadly referred to as *state estimation* which is a form of probability that is used to estimate the values of a system using a combination of sensor measurements and mathematical models. State estimation is a fundamental concept in control theory and is used in a wide range of applications, including robotics, aerospace, and automotive systems.
 
-## A simple example
+*Control* involves the application of feedback and control algorithms to ensure that a system’s behavior conforms to a desired trajectory or set of performance criteria. Control theory is a branch of engineering and mathematics that deals with the behavior of dynamical systems and the design of systems to achieve desired performance or outputs. Control is critical for ensuring that the vehicle or system is able to follow the desired path or trajectory accurately and safely.
 
-Guidance is a complete path from A to B.
-Navigation is estimating the state along the path.
-Control are the arrows that specifies the transition between navigation states.
+A very simple example based on the chart in @fig-gnc-path-states-control is as follows:
+
+- Guidance is a complete path from A to B.
+- Navigation is estimating the state along the path.
+- Control is the set of arrows that specify the transition between navigation states.
+
+```{mermaid}
+%%| label: fig-gnc-path-states-control
+%%| fig-cap: "Guidance, navigation, and control."
+
+flowchart LR
+    A((A)) --> x1(($$x_1$$))
+    x1 --> x2(($$x_2$$))
+    x1 --> x5(($$x_5$$))
+    A((A)) --> x2(($$x_2$$))
+    x2 --> x3(($$x_3$$))
+    x2 --> x4(($$x_4$$))
+    x2 --> x5(($$x_5$$))
+    x5 --> x6(($$x_6$$))
+    x3 --> x6(($$x_6$$))
+    x3 --> x7(($$x_7$$))
+    x4 --> x7(($$x_7$$))
+    x4 ---> x5(($$x_5$$))
+    x6 --> B((B))
+    x7 --> B((B))
+```
 
 ## A Brief History of Navigation
 

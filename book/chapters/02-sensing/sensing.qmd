@@ -1,22 +1,8 @@
-# Sensing and Perception
+# Sensing and Perception {#sensing}
 
-Navigation is the problem of estimating where a system is, how it is moving, and how it is oriented relative to some reference. Perception is how the system gets evidence about those quantities from the physical world. In practice, the two are tightly coupled: our navigation state determines what a sensor should see, and sensor measurements tell us whether our navigation state is plausible.
+Navigation is the problem of estimating where a system is, how it is moving, and how it is oriented relative to some reference. Perception is how the system gets evidence about those quantities from the physical world. In practice, the two are tightly coupled: our navigation state determines what a sensor should see, and sensor measurements tell us whether our navigation state is plausible. This part of the course focuses on that second direction: based on what we see, how plausible is our navigation state? We start here for several practical and pragmatic reasons.
 
-This part of the course focuses on that second direction:
-
-$$
-\text{state} \rightarrow \text{expected measurement}
-$$
-
-and the inverse question that every estimator has to answer:
-
-$$
-\text{measurement} \rightarrow \text{evidence about state}.
-$$
-
-We already introduced probability, Bayes' rule, and covariance in the foundations section. We will use that notation here without re-deriving it. The focus in this chapter is physical interpretation: what a sensor is actually measuring, how those measurements are represented in a filter, and what can go wrong when the model is too optimistic.
-
-## Perception as the Measurement Side of Navigation
+## Perception as the Inverse of Navigation
 
 A useful way to think about perception is as the inverse side of navigation. Navigation asks:
 
@@ -26,80 +12,38 @@ Perception asks:
 
 > Given what I observe now, what does that tell me about where I am?
 
-Neither side is perfect. A motion model accumulates error because the real world is not exactly described by our equations and because the inputs are noisy. A measurement model corrects that drift, but only when the measurement is correctly interpreted. A camera image, a lidar scan, a GPS fix, and an accelerometer sample are not "truth." They are data produced by physical instruments with bias, noise, limits, and failure modes.
+If one or the other side is perfect, we have no need for the other. If I have a perfect measurement that directly relates to where I think I am then I have no further need of any additional math. For example, consider a one-dimensional hallway that goes from left to right. I am precisely two meters to the left of the green door. The green door is located five meters from the start of the hallway, therefore I am three meters from the start of the hallway. I don't care how uncertain my movement is: I can move about this hallway with my eyes closed. All I need to do is periodically open my eyes and look at how far away I am from the green door.
 
-The humble fever check is a surprisingly good model. If you touch someone's forehead and they feel hot, you have perceived a relative temperature. You have not measured their body temperature in degrees. Your hand has its own temperature. Your perception is relative, biased, and coarse. A thermometer gives a more direct reading, but it too has calibration error, finite resolution, and a response time. The same pattern shows up in navigation: a sensor gives evidence about a state, not the state itself.
+The inverse problem is also true: if I have perfect knowledge of my motion (I walk around with my eyes open) I have no need of making measurements provided I know my precise starting location.
 
-## Inputs, Measurements, and the Line Between Them
+In practice however, neither side is perfect. A motion model accumulates error because the real world is not exactly described by our equations and because the inputs are noisy. A measurement model corrects that drift, but only when the measurement is correctly interpreted. A camera image, a lidar scan, a GPS fix, and an accelerometer sample are not "truth." They are data produced by physical instruments with bias, noise, limits, and failure modes.
 
-Most recursive navigation estimators use two broad model types:
-
-$$
-p(\mathbf{x}_t | \mathbf{u}_t, \mathbf{x}_{t-1})
-$$
-
-for propagation, and
-
-$$
-p(\mathbf{z}_t | \mathbf{x}_t)
-$$
-
-for measurement updates.
-
-Here $\mathbf{x}_t$ is the navigation state, $\mathbf{u}_t$ is the input or control, and $\mathbf{z}_t$ is the measurement. The clean notation hides an annoying practical question: what counts as an input and what counts as a measurement?
-
-The distinction is partly physical and partly modeling choice.
-
-- Inputs are quantities used to evolve the state forward in time.
-- Measurements are quantities used to check or correct the state.
-- A real sensor can provide either, depending on how the estimator is built.
-
-For example, a wheel encoder can be used as an input to a ground robot motion model. A GPS receiver can report velocity, and that velocity can be used as a measurement. An IMU reports angular rate and specific force, which are usually used as propagation inputs in inertial navigation. Those same IMU measurements can also be used for calibration, fault detection, or attitude correction if the model is structured differently.
-
-A good rule of thumb is:
-
-> The highest-order derivative that you use to evolve the state is usually treated as an input. Other sensor-derived quantities are usually treated as measurements.
-
-This is not a law of nature. It is a modeling convention. What matters is that the estimator's assumptions match the way the data is used.
+A practical demonstration of this is to walk around your home with your eyes closed. You may not touch the wall and may only open your eyes if you stop moving. Most people have a decent mental map of their home as well as having a reasonable sense of their own relative motion (proprioception) but you'll quickly notice that you will get a bit lost the longer you walk about with your eyes closed!
 
 ## Proprioception and Exteroception
 
-Robotics often borrows two useful words from biology:
+It is useful to borrow two terms from biology to describe the two broad classes of sensing and perception:
 
 - **Proprioception**: sensing internal motion, force, and body state.
 - **Exteroception**: sensing the external world.
 
-For navigation, proprioceptive sensors usually support propagation. Examples include IMUs, wheel encoders, joint encoders, airspeed sensors, and Doppler velocity logs. They tell the system how it is moving, but they usually do not directly tell it where it is relative to an external map.
+For navigation, proprioceptive sensors usually support propagation. Examples include IMUs, wheel encoders, joint encoders, airspeed sensors, and Doppler velocity logs. They tell the system how it is moving, but they usually do not directly tell it where it is relative to an external map. We group these sensor readings as the "inputs" or "controls" to the motion model. Exteroceptive sensors usually support measurement updates. Examples include cameras, lidar, radar, sonar, GPS, magnetometers, star trackers, and landmark detectors. They observe something outside the vehicle.
 
-Exteroceptive sensors usually support measurement updates. Examples include cameras, lidar, radar, sonar, GPS, magnetometers, star trackers, and landmark detectors. They observe something outside the vehicle, which gives the estimator a way to limit the drift from propagation.
-
-This distinction is useful because proprioceptive and exteroceptive errors have different behavior:
-
-- Proprioceptive errors often integrate over time and create drift.
-- Exteroceptive errors often depend on visibility, geometry, correspondence, and the map.
-- A strong navigation system uses each to cover the other's weakness.
-
-An IMU can run at hundreds or thousands of hertz, but position error grows quickly if it is unaided. A camera can provide rich absolute or relative constraints, but only when the scene is visible, features are detected, and the correspondences are correct. Together, they can be much better than either alone.
+This distinction is useful because proprioceptive and exteroceptive errors have different behavior. Neither of these sensors is perfect and both categories have some degree of noise in them. Proprioceptive errors often integrate over time and create drift. Exteroceptive errors often depend on visibility, geometry, correspondence, and the map. Because of this, a navigation system that relies on only one of these two categories will eventually drift away from the truth. A good navigation system uses both to cover the other's weakness.
 
 ## Measurements as Probabilistic Evidence
 
 In a deterministic homework problem, a measurement might be written as:
 
-$$
-\mathbf{z}_t = h(\mathbf{x}_t).
-$$
+$$\mathbf{z}_t = h(\mathbf{x}_t).$$
 
 In a navigation system, that is almost never honest enough. A better starting point is:
 
-$$
-\mathbf{z}_t = h(\mathbf{x}_t) + \boldsymbol{\nu}_t,
-$$
+$$\mathbf{z}_t = h(\mathbf{x}_t) + \boldsymbol{\nu}_t,$$
 
 where $h(\cdot)$ is the measurement function and $\boldsymbol{\nu}_t$ is measurement noise. If the noise is modeled as Gaussian, we usually write:
 
-$$
-\boldsymbol{\nu}_t \sim \mathcal{N}(\mathbf{0}, \mathbf{R}).
-$$
+$$\boldsymbol{\nu}_t \sim \mathcal{N}(\mathbf{0}, \mathbf{R}).$$
 
 That assumption is common because it makes Kalman-style filters convenient and often works well enough. But it is not automatically true. A lidar return can be a correct hit, a hit on an unexpected object, a maximum-range failure, or a random unexplained value. A camera feature can be matched correctly, matched to the wrong landmark, blurred, occluded, or detected at a subpixel location with anisotropic uncertainty. Real sensors are perfectly happy to be inconvenient.
 
@@ -109,21 +53,15 @@ The job of a measurement model is to encode the part of this behavior that matte
 
 For a simple range sensor measuring distance to a known landmark at $\mathbf{m}$ from robot position $\mathbf{p}$, the ideal measurement might be:
 
-$$
-h(\mathbf{x}) = \|\mathbf{m} - \mathbf{p}\|.
-$$
+$$h(\mathbf{x}) = \|\mathbf{m} - \mathbf{p}\|.$$
 
 The actual measurement is:
 
-$$
-z = \|\mathbf{m} - \mathbf{p}\| + \nu.
-$$
+$$z = \|\mathbf{m} - \mathbf{p}\| + \nu.$$
 
 The residual is:
 
-$$
-r = z - h(\hat{\mathbf{x}}).
-$$
+$$r = z - h(\hat{\mathbf{x}}).$$
 
 If $r$ is small compared with the expected sensor noise, the measurement supports the current estimate. If $r$ is large, one of several things may be true:
 
