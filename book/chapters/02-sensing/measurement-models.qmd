@@ -1,5 +1,82 @@
 # Measurement Noise and Range Sensor Models
 
+
+## Measurements as Probabilistic Evidence
+
+In a deterministic homework problem, a measurement might be written as:
+
+$$\mathbf{z}_t = h(\mathbf{x}_t).$$
+
+In a navigation system, that is almost never honest enough. A better starting point is:
+
+$$\mathbf{z}_t = h(\mathbf{x}_t) + \boldsymbol{\nu}_t,$$
+
+where $h(\cdot)$ is the measurement function and $\boldsymbol{\nu}_t$ is measurement noise. If the noise is modeled as Gaussian, we usually write:
+
+$$\boldsymbol{\nu}_t \sim \mathcal{N}(\mathbf{0}, \mathbf{R}).$$
+
+That assumption is common because it makes Kalman-style filters convenient and often works well enough. But it is not automatically true. A lidar return can be a correct hit, a hit on an unexpected object, a maximum-range failure, or a random unexplained value. A camera feature can be matched correctly, matched to the wrong landmark, blurred, occluded, or detected at a subpixel location with anisotropic uncertainty. Real sensors are perfectly happy to be inconvenient.
+
+The job of a measurement model is to encode the part of this behavior that matters for estimation.
+
+## A Minimal Measurement Model
+
+For a simple range sensor measuring distance to a known landmark at $\mathbf{m}$ from robot position $\mathbf{p}$, the ideal measurement might be:
+
+$$h(\mathbf{x}) = \|\mathbf{m} - \mathbf{p}\|.$$
+
+The actual measurement is:
+
+$$z = \|\mathbf{m} - \mathbf{p}\| + \nu.$$
+
+The residual is:
+
+$$r = z - h(\hat{\mathbf{x}}).$$
+
+If $r$ is small compared with the expected sensor noise, the measurement supports the current estimate. If $r$ is large, one of several things may be true:
+
+- the state estimate is wrong;
+- the measurement is noisy but valid;
+- the sensor has failed;
+- the measurement was associated with the wrong map feature;
+- the map is wrong;
+- the model is missing important physics.
+
+This is why sensing and perception cannot be reduced to "call the sensor API and feed the result into the filter." The filter only knows what the model tells it.
+
+```{python}
+#| label: sensing-range-residual-example
+#| eval: false
+
+import numpy as np
+
+
+def expected_range(robot_xy: np.ndarray, landmark_xy: np.ndarray) -> float:
+    """Ideal range measurement from robot position to landmark."""
+    return float(np.linalg.norm(landmark_xy - robot_xy))
+
+
+robot_hat = np.array([2.0, 1.0])
+landmark = np.array([5.0, 5.0])
+
+z = 5.05                       # measured range, meters
+sigma = 0.20                   # expected one-sigma range noise, meters
+h = expected_range(robot_hat, landmark)
+residual = z - h
+normalized_residual = residual / sigma
+
+print(f"expected range: {h:.3f} m")
+print(f"residual: {residual:.3f} m")
+print(f"normalized residual: {normalized_residual:.2f} sigma")
+```
+
+The normalized residual is often more useful than the raw residual because it accounts for expected sensor quality. A 10 cm residual is excellent for cheap GPS, concerning for a motion-capture camera, and absurdly large for a well-calibrated laboratory scale.
+
+
+
+
+
+
 Measurement noise is not just "Gaussian dust" sprinkled onto a clean signal. Sometimes that approximation is good enough. Sometimes it is a polite fiction. Range sensors make this clear because their errors have several distinct causes: correct returns with small error, unexpected objects, maximum-range failures, and random unexplained readings.
 
 This chapter uses lidar as the main example, but the modeling pattern is broader. A sensor model should describe not only what the ideal measurement is, but also how real measurements deviate from that ideal.

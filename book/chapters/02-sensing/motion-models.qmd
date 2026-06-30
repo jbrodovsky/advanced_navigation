@@ -1,5 +1,12 @@
 # Motion Models 
 
+asfas asdf asdf alskdfj
+
+Motion models, or more generally state transition models, describe how a system moves from one state to the next. They are often expressed as a conditional probability distribution:
+$$
+p(\mathbf{x}_t | \mathbf{x}_{t-1}, \mathbf{u}_t)
+$$
+
 A recursive estimator usually alternates between propagation and correction:
 
 $$

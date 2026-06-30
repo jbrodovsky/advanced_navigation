@@ -2,8 +2,6 @@
 
 Navigation is the problem of estimating where a system is, how it is moving, and how it is oriented relative to some reference. Perception is how the system gets evidence about those quantities from the physical world. In practice, the two are tightly coupled: our navigation state determines what a sensor should see, and sensor measurements tell us whether our navigation state is plausible. This part of the course focuses on that second direction: based on what we see, how plausible is our navigation state? We start here for several practical and pragmatic reasons.
 
-## Perception as the Inverse of Navigation
-
 A useful way to think about perception is as the inverse side of navigation. Navigation asks:
 
 > Given my previous state and my motion inputs, where do I think I am now?
@@ -20,8 +18,6 @@ In practice however, neither side is perfect. A motion model accumulates error b
 
 A practical demonstration of this is to walk around your home with your eyes closed. You may not touch the wall and may only open your eyes if you stop moving. Most people have a decent mental map of their home as well as having a reasonable sense of their own relative motion (proprioception) but you'll quickly notice that you will get a bit lost the longer you walk about with your eyes closed!
 
-## Proprioception and Exteroception
-
 It is useful to borrow two terms from biology to describe the two broad classes of sensing and perception:
 
 - **Proprioception**: sensing internal motion, force, and body state.
@@ -30,85 +26,3 @@ It is useful to borrow two terms from biology to describe the two broad classes 
 For navigation, proprioceptive sensors usually support propagation. Examples include IMUs, wheel encoders, joint encoders, airspeed sensors, and Doppler velocity logs. They tell the system how it is moving, but they usually do not directly tell it where it is relative to an external map. We group these sensor readings as the "inputs" or "controls" to the motion model. Exteroceptive sensors usually support measurement updates. Examples include cameras, lidar, radar, sonar, GPS, magnetometers, star trackers, and landmark detectors. They observe something outside the vehicle.
 
 This distinction is useful because proprioceptive and exteroceptive errors have different behavior. Neither of these sensors is perfect and both categories have some degree of noise in them. Proprioceptive errors often integrate over time and create drift. Exteroceptive errors often depend on visibility, geometry, correspondence, and the map. Because of this, a navigation system that relies on only one of these two categories will eventually drift away from the truth. A good navigation system uses both to cover the other's weakness.
-
-## Measurements as Probabilistic Evidence
-
-In a deterministic homework problem, a measurement might be written as:
-
-$$\mathbf{z}_t = h(\mathbf{x}_t).$$
-
-In a navigation system, that is almost never honest enough. A better starting point is:
-
-$$\mathbf{z}_t = h(\mathbf{x}_t) + \boldsymbol{\nu}_t,$$
-
-where $h(\cdot)$ is the measurement function and $\boldsymbol{\nu}_t$ is measurement noise. If the noise is modeled as Gaussian, we usually write:
-
-$$\boldsymbol{\nu}_t \sim \mathcal{N}(\mathbf{0}, \mathbf{R}).$$
-
-That assumption is common because it makes Kalman-style filters convenient and often works well enough. But it is not automatically true. A lidar return can be a correct hit, a hit on an unexpected object, a maximum-range failure, or a random unexplained value. A camera feature can be matched correctly, matched to the wrong landmark, blurred, occluded, or detected at a subpixel location with anisotropic uncertainty. Real sensors are perfectly happy to be inconvenient.
-
-The job of a measurement model is to encode the part of this behavior that matters for estimation.
-
-## A Minimal Measurement Model
-
-For a simple range sensor measuring distance to a known landmark at $\mathbf{m}$ from robot position $\mathbf{p}$, the ideal measurement might be:
-
-$$h(\mathbf{x}) = \|\mathbf{m} - \mathbf{p}\|.$$
-
-The actual measurement is:
-
-$$z = \|\mathbf{m} - \mathbf{p}\| + \nu.$$
-
-The residual is:
-
-$$r = z - h(\hat{\mathbf{x}}).$$
-
-If $r$ is small compared with the expected sensor noise, the measurement supports the current estimate. If $r$ is large, one of several things may be true:
-
-- the state estimate is wrong;
-- the measurement is noisy but valid;
-- the sensor has failed;
-- the measurement was associated with the wrong map feature;
-- the map is wrong;
-- the model is missing important physics.
-
-This is why sensing and perception cannot be reduced to "call the sensor API and feed the result into the filter." The filter only knows what the model tells it.
-
-```{python}
-#| label: sensing-range-residual-example
-#| eval: false
-
-import numpy as np
-
-
-def expected_range(robot_xy: np.ndarray, landmark_xy: np.ndarray) -> float:
-    """Ideal range measurement from robot position to landmark."""
-    return float(np.linalg.norm(landmark_xy - robot_xy))
-
-
-robot_hat = np.array([2.0, 1.0])
-landmark = np.array([5.0, 5.0])
-
-z = 5.05                       # measured range, meters
-sigma = 0.20                   # expected one-sigma range noise, meters
-h = expected_range(robot_hat, landmark)
-residual = z - h
-normalized_residual = residual / sigma
-
-print(f"expected range: {h:.3f} m")
-print(f"residual: {residual:.3f} m")
-print(f"normalized residual: {normalized_residual:.2f} sigma")
-```
-
-The normalized residual is often more useful than the raw residual because it accounts for expected sensor quality. A 10 cm residual is excellent for cheap GPS, concerning for a motion-capture camera, and absurdly large for a well-calibrated laboratory scale.
-
-## What This Part Covers
-
-The rest of this sensing part builds toward observation models that are useful in filters:
-
-- `sensor-models.qmd` connects physical sensors to motion and observation models, with special attention to IMUs.
-- `measurement-noise.qmd` develops range-sensor likelihood models and the idea of likelihood fields.
-- `data-association.qmd` explains why features and maps only help if measurements are matched to the right objects.
-- `pnp-vision.qmd` turns camera geometry into a Perspective-n-Point observation model for the drone project.
-
-The common thread is simple: sensors do not give state. Sensors give measurements. We have to decide what those measurements mean.
