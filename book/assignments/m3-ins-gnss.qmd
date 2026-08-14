@@ -6,7 +6,17 @@ In this project, you will implement a complete Inertial Navigation System (INS) 
 
 You will implement the strapdown mechanization equations in a WGS84 geodetic frame, build an Error-State Kalman Filter (ESKF) to fuse IMU and GNSS measurements, and analyze real-world performance metrics.
 
-**Estimated time:** 22 hours **Learning outcomes:** - Implement strapdown mechanization on curved Earth (Chapter 7) - Understand IMU error models and characterization (Chapter 8) - Design and implement ESKF with proper error-state dynamics (Chapter 2) - Analyze INS drift and GNSS aiding effectiveness (Chapter 15) - Work with real-world high-rate sensor data
+**Learning outcomes:**
+
+- Implement strapdown mechanization on curved Earth (Chapter 7)
+
+- Understand IMU error models and characterization (Chapter 8)
+
+- Design and implement ESKF with proper error-state dynamics (Chapter 2)
+
+- Analyze INS drift and GNSS aiding effectiveness (Chapter 15)
+
+- Work with real-world high-rate sensor data
 
 ------------------------------------------------------------------------
 
@@ -30,10 +40,10 @@ GNSS Position/Velocity (1-10 Hz) → ESKF Update (measurement fusion)
 
 ### Learning Objectives
 
--   Implement the complete strapdown mechanization equations
--   Account for Earth rotation rate and transport rate
--   Handle gravity variation with altitude and latitude
--   Transform between reference frames correctly
+- Implement the complete strapdown mechanization equations
+- Account for Earth rotation rate and transport rate
+- Handle gravity variation with altitude and latitude
+- Transform between reference frames correctly
 
 ### Background
 
@@ -258,18 +268,18 @@ class StrapdownNavigator:
 ### Deliverables for Part A
 
 1.  **Mechanization Implementation:**
-    -   Complete `StrapdownNavigator` class above
-    -   Verify quaternion integration (check norm stays 1.0)
-    -   Test gravity model at various latitudes/altitudes
+    - Complete `StrapdownNavigator` class above
+    - Verify quaternion integration (check norm stays 1.0)
+    - Test gravity model at various latitudes/altitudes
 2.  **Dead Reckoning Results:**
-    -   Integrate IMU from start to end of trajectory
-    -   Plot trajectory in geodetic coordinates (lat/lon map)
-    -   Compare against the baseline reference solution
-    -   Quantify drift rate (position error vs. time)
+    - Integrate IMU from start to end of trajectory
+    - Plot trajectory in geodetic coordinates (lat/lon map)
+    - Compare against the baseline reference solution
+    - Quantify drift rate (position error vs. time)
 3.  **Analysis:**
-    -   Show effect of not removing Coriolis (vs. with removal)
-    -   Show effect of gravity variation
-    -   Estimate how long INS can run without GNSS before drift exceeds threshold (e.g., 1 km)
+    - Show effect of not removing Coriolis (vs. with removal)
+    - Show effect of gravity variation
+    - Estimate how long INS can run without GNSS before drift exceeds threshold (e.g., 1 km)
 
 ------------------------------------------------------------------------
 
@@ -277,9 +287,9 @@ class StrapdownNavigator:
 
 ### Learning Objectives
 
--   Understand error-state dynamics vs. nominal-state dynamics
--   Implement ESKF prediction with linearized error models
--   Design measurement updates for GNSS aiding
+- Understand error-state dynamics vs. nominal-state dynamics
+- Implement ESKF prediction with linearized error models
+- Design measurement updates for GNSS aiding
 
 ### Background
 
@@ -475,18 +485,18 @@ class INSGNSSFilter:
 ### Deliverables for Part B
 
 1.  **ESKF Implementation:**
-    -   Implement `INSGNSSFilter` class with prediction and update steps
-    -   Test state propagation accuracy
-    -   Verify Jacobian computation (numerical vs. analytical)
+    - Implement `INSGNSSFilter` class with prediction and update steps
+    - Test state propagation accuracy
+    - Verify Jacobian computation (numerical vs. analytical)
 2.  **Covariance Evolution:**
-    -   Plot diagonal elements of P vs. time
-    -   Show growth during prediction, decrease during updates
-    -   Discuss physical meaning of each covariance component
+    - Plot diagonal elements of P vs. time
+    - Show growth during prediction, decrease during updates
+    - Discuss physical meaning of each covariance component
 3.  **Consistency Testing:**
-    -   Compute χ² sequence from innovations
-    -   Plot histogram of χ² values
-    -   Verify mean ≈ 3 (3-dimensional measurement)
-    -   If inconsistent, adjust Q and R
+    - Compute χ² sequence from innovations
+    - Plot histogram of χ² values
+    - Verify mean ≈ 3 (3-dimensional measurement)
+    - If inconsistent, adjust Q and R
 
 ------------------------------------------------------------------------
 
@@ -494,9 +504,9 @@ class INSGNSSFilter:
 
 ### Learning Objectives
 
--   Evaluate filter performance against a reference trajectory
--   Characterize IMU drift and GNSS aiding effectiveness
--   Compute standard navigation error metrics
+- Evaluate filter performance against a reference trajectory
+- Characterize IMU drift and GNSS aiding effectiveness
+- Compute standard navigation error metrics
 
 ### Specification
 
@@ -559,23 +569,23 @@ class NavigationEvaluator:
 ### Deliverables for Part C
 
 1.  **Metric Computation:**
-    -   Compute APE (Absolute Pose Error)
-    -   Compute RPE (Relative Pose Error) over 1-minute windows
-    -   Compute drift rate
+    - Compute APE (Absolute Pose Error)
+    - Compute RPE (Relative Pose Error) over 1-minute windows
+    - Compute drift rate
 2.  **Comparison Results:**
-    -   Create table comparing:
-        -   Dead Reckoning (Part A) only
-        -   GNSS only
-        -   Fused INS/GNSS (full filter)
-    -   Show APE, RPE, drift rate for each
+    - Create table comparing:
+      - Dead Reckoning (Part A) only
+      - GNSS only
+      - Fused INS/GNSS (full filter)
+    - Show APE, RPE, drift rate for each
 3.  **Visualization:**
-    -   Plot trajectory map (lat/lon): estimated vs. reference
-    -   Plot position error vs. time
-    -   Plot GNSS outage behavior (how long filter can coast)
+    - Plot trajectory map (lat/lon): estimated vs. reference
+    - Plot position error vs. time
+    - Plot GNSS outage behavior (how long filter can coast)
 4.  **Report:**
-    -   Discuss when INS is most valuable (e.g., GNSS denial, high dynamics)
-    -   Identify failure modes (if any)
-    -   Recommend improvements
+    - Discuss when INS is most valuable (e.g., GNSS denial, high dynamics)
+    - Identify failure modes (if any)
+    - Recommend improvements
 
 ------------------------------------------------------------------------
 
@@ -638,10 +648,10 @@ The starter loader converts latitude and longitude to radians, normalizes timest
 
 ## References
 
--   Chapter 2: Extended Kalman Filter and Error-State Kalman Filter
--   Chapter 7: INS/GNSS Integration (mechanization equations, earth models)
--   Chapter 8: INS Error Models (sensor specifications, biases)
--   Chapter 14: Mathematical Reference (Jacobian computation, quaternions)
--   Chapter 15: Practical Implementation Guide (debugging, validation)
--   Farrell, J. A. (2008). Aided Navigation: GPS with High-Rate Sensors
--   Grewal, M. S., Weill, L. R., & Andrews, A. P. (2007). Global Positioning Systems, Inertial Navigation, and Integration
+- Chapter 2: Extended Kalman Filter and Error-State Kalman Filter
+- Chapter 7: INS/GNSS Integration (mechanization equations, earth models)
+- Chapter 8: INS Error Models (sensor specifications, biases)
+- Chapter 14: Mathematical Reference (Jacobian computation, quaternions)
+- Chapter 15: Practical Implementation Guide (debugging, validation)
+- Farrell, J. A. (2008). Aided Navigation: GPS with High-Rate Sensors
+- Grewal, M. S., Weill, L. R., & Andrews, A. P. (2007). Global Positioning Systems, Inertial Navigation, and Integration

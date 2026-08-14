@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "ins-gnss"
 version = "0.1.0"
 description = "Starter package for the INS/GNSS integration assignment."
-readme = "../../README.md"
+readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "matplotlib>=3.10.9",
@@ -15,4 +15,3 @@ dependencies = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ins_gnss"]
-

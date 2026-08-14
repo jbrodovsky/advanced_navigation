@@ -2,8 +2,16 @@ version = 1
 revision = 3
 requires-python = ">=3.14"
 
+[manifest]
+members = [
+    "advanced-navigation-workspace",
+    "drone-pipeline",
+    "ins-gnss",
+    "victoria-park-slam",
+]
+
 [[package]]
-name = "advanced-navigation"
+name = "advanced-navigation-workspace"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
@@ -347,6 +355,25 @@ wheels = [
 ]
 
 [[package]]
+name = "drone-pipeline"
+version = "0.1.0"
+source = { editable = "projects/drone_pipeline" }
+dependencies = [
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "opencv-python" },
+    { name = "scipy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "matplotlib", specifier = ">=3.10.9" },
+    { name = "numpy", specifier = ">=2.4.6" },
+    { name = "opencv-python", specifier = ">=4.13.0.92" },
+    { name = "scipy", specifier = ">=1.17.1" },
+]
+
+[[package]]
 name = "executing"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -442,6 +469,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/cd/63/9496c57188a2ee585e0f1db071d75089a11e98aa86eb99d9d7618fc1edce/idna-3.18.tar.gz", hash = "sha256:ffb385a7e039654cef1ab9ef32c6fafe283c0c0467bba1d9029738ce4a14a848", size = 196711, upload-time = "2026-06-02T14:34:07.794Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/5e/d4e9f1a599fb8e573b7b87160658329fbf28d19eac2718f51fc3def3aa5a/idna-3.18-py3-none-any.whl", hash = "sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2", size = 65455, upload-time = "2026-06-02T14:34:06.319Z" },
+]
+
+[[package]]
+name = "ins-gnss"
+version = "0.1.0"
+source = { editable = "projects/ins_gnss" }
+dependencies = [
+    { name = "matplotlib" },
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "matplotlib", specifier = ">=3.10.9" },
+    { name = "numpy", specifier = ">=2.4.6" },
 ]
 
 [[package]]
@@ -1655,6 +1697,23 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/53/0c/06f8b233b8fd13b9e5ee11424ef85419ba0d8ba0b3138bf360be2ff56953/urllib3-2.7.0.tar.gz", hash = "sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c", size = 433602, upload-time = "2026-05-07T16:13:18.596Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897", size = 131087, upload-time = "2026-05-07T16:13:17.151Z" },
+]
+
+[[package]]
+name = "victoria-park-slam"
+version = "0.1.0"
+source = { editable = "projects/victoria_park_slam" }
+dependencies = [
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "scipy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "matplotlib", specifier = ">=3.10.9" },
+    { name = "numpy", specifier = ">=2.4.6" },
+    { name = "scipy", specifier = ">=1.17.1" },
 ]
 
 [[package]]

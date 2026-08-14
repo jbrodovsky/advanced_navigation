@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "drone-pipeline"
 version = "0.1.0"
 description = "Starter package for the visual-inertial drone pipeline project."
-readme = "../../README.md"
+readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "matplotlib>=3.10.9",
@@ -17,4 +17,3 @@ dependencies = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/drone_pipeline"]
-
