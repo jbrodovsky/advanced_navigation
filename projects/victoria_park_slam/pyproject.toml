@@ -14,6 +14,8 @@ dependencies = [
     "scipy>=1.17.1",
 ]
 
+[project.scripts]
+victoria-park-slam = "victoria_park_slam.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/victoria_park_slam"]
-

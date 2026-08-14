@@ -123,7 +123,7 @@ That one equation is the bridge from laser features to a map.
 
 ## Victoria Park Dataset Primer
 
-The local repository includes the original Victoria Park MATLAB data under `dataset_victoria_park/original_MATLAB_dataset` [@VictoriaParkDataset]. The important files are:
+The local repository includes the original Victoria Park MATLAB data under `data/victoria-park` [@VictoriaParkDataset]. The important files are:
 
 | File | Variables | Meaning |
 |---|---|---|
@@ -142,7 +142,7 @@ import numpy as np
 from scipy.io import loadmat
 
 
-def load_victoria_park_data(root="dataset_victoria_park/original_MATLAB_dataset"):
+def load_victoria_park_data(root="data/victoria-park"):
     """Load the local Victoria Park MATLAB files.
 
     The original files use centimeters for laser ranges and milliseconds for
