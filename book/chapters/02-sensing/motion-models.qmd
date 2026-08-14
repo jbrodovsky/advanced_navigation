@@ -1,56 +1,46 @@
-# Motion Models 
+# Motion Models
 
-asfas asdf asdf alskdfj
+Motion models, or more generally state transition models, describe how a system moves from one state to the next. We define this in terms of a generic function of the previous state and some control input:
+$$\mathbf{x}_t = f(\mathbf{x}_{t-1}, \mathbf{u}_t) + \mathbf{w}_t,$$
 
-Motion models, or more generally state transition models, describe how a system moves from one state to the next. They are often expressed as a conditional probability distribution:
-$$
-p(\mathbf{x}_t | \mathbf{x}_{t-1}, \mathbf{u}_t)
-$$
+where $\mathbf{x}_t$ is the state at time $t$, $\mathbf{u}_t$ is the control input at time $t$, and $\mathbf{w}_t$ is a random variable representing process noise. The function $f$ is often nonlinear, and the process noise $\mathbf{w}_t$ is often assumed to be Gaussian. The process noise captures the uncertainty in the motion model, which can arise from unmodeled dynamics, disturbances, or inaccuracies in the control inputs.
+
+We express this as a conditional probability distribution:
+$$p(\mathbf{x}_t | \mathbf{x}_{t-1}, \mathbf{u}_t)$$
 
 A recursive estimator usually alternates between propagation and correction:
 
-$$
-\text{prediction: } p(\mathbf{x}_t | \mathbf{u}_t, \mathbf{x}_{t-1})
-$$
+$$\text{prediction: } p(\mathbf{x}_t | \mathbf{u}_t, \mathbf{x}_{t-1})$$
 
-$$
-\text{update: } p(\mathbf{z}_t | \mathbf{x}_t).
-$$
+$$\text{update: } p(\mathbf{z}_t | \mathbf{x}_t).$$
 
 The prediction model is often called the motion, process, propagation, or transition model. The update model is often called the measurement or observation model. The naming varies by field. The distinction is what matters.
 
 For a planar ground robot with state:
 
-$$
-\mathbf{x} =
+$$\mathbf{x} =
 \begin{bmatrix}
 x & y & \theta
-\end{bmatrix}^T
-$$
+\end{bmatrix}^T$$
 
 a common motion input is:
 
-$$
-\mathbf{u} =
+$$\mathbf{u} =
 \begin{bmatrix}
 v & \omega
-\end{bmatrix}^T,
-$$
+\end{bmatrix}^T,$$
 
 where $v$ is forward speed and $\omega$ is yaw rate. With a small time step $\Delta t$, a simple approximation is:
 
-$$
-\begin{aligned}
+$$\begin{aligned}
 x_t &= x_{t-1} + v_t \cos \theta_{t-1} \Delta t \\
 y_t &= y_{t-1} + v_t \sin \theta_{t-1} \Delta t \\
 \theta_t &= \theta_{t-1} + \omega_t \Delta t.
-\end{aligned}
-$$
+\end{aligned}$$
 
 For nonzero $\omega$, the exact constant-turn-rate model moves the robot along an arc:
 
-$$
-\begin{aligned}
+$$\begin{aligned}
 x_t &= x_{t-1}
       - \frac{v}{\omega}\sin \theta_{t-1}
       + \frac{v}{\omega}\sin(\theta_{t-1} + \omega \Delta t) \\
@@ -58,8 +48,7 @@ y_t &= y_{t-1}
       + \frac{v}{\omega}\cos \theta_{t-1}
       - \frac{v}{\omega}\cos(\theta_{t-1} + \omega \Delta t) \\
 \theta_t &= \theta_{t-1} + \omega \Delta t.
-\end{aligned}
-$$
+\end{aligned}$$
 
 Both models are useful. The exact arc model better respects the geometry of a constant-turn trajectory. The small-angle model is easier to read and often acceptable at high update rates. The estimator does not care which one we prefer philosophically. It cares whether the chosen model predicts the actual platform well enough.
 
@@ -95,9 +84,7 @@ def unicycle_step(x: np.ndarray, u: np.ndarray, dt: float) -> np.ndarray:
 
 The motion model is only as good as its inputs. Suppose the measured input is:
 
-$$
-\hat{\mathbf{u}}_t = \mathbf{u}_t + \mathbf{b}_u + \boldsymbol{\eta}_t,
-$$
+$$\hat{\mathbf{u}}_t = \mathbf{u}_t + \mathbf{b}_u + \mathbf{\eta}_t,$$
 
 where $\mathbf{b}_u$ is a bias and $\boldsymbol{\eta}_t$ is random noise. The random part jitters the trajectory. The bias is worse: it pushes every propagation step in the same wrong direction. Over time, that systematic error accumulates.
 
@@ -147,12 +134,10 @@ The IMU does not directly measure position. It does not even directly measure ve
 
 A gyroscope measures angular rate. A simple model is:
 
-$$
-\hat{\boldsymbol{\omega}}
+$$\hat{\boldsymbol{\omega}}
 = \boldsymbol{\omega}
 + \mathbf{b}_g
-+ \boldsymbol{\eta}_g,
-$$
++ \boldsymbol{\eta}_g,$$
 
 where:
 
@@ -163,9 +148,7 @@ where:
 
 If attitude is represented by a rotation matrix $R$, then angular rate drives attitude integration. In a simplified single-axis case:
 
-$$
-\theta_t = \theta_{t-1} + \hat{\omega}_t \Delta t.
-$$
+$$\theta_t = \theta_{t-1} + \hat{\omega}_t \Delta t.$$
 
 If $\hat{\omega}_t$ contains a constant bias, attitude error grows roughly linearly with time. Once attitude is wrong, every body-frame vector rotated into the navigation frame is wrong too. For inertial navigation, attitude error quickly contaminates velocity and position.
 
@@ -175,12 +158,10 @@ Accelerometers measure **specific force**, not ordinary acceleration. Specific f
 
 A common accelerometer measurement model is:
 
-$$
-\hat{\mathbf{f}}
+$$\hat{\mathbf{f}}
 = \mathbf{b}_a
 + (I_3 + M_a)\mathbf{f}
-+ \boldsymbol{\eta}_a,
-$$
++ \boldsymbol{\eta}_a,$$
 
 where:
 
@@ -192,9 +173,7 @@ where:
 
 The ideal relationship between navigation-frame acceleration and body-frame specific force is:
 
-$$
-\mathbf{a}_n = R_{nb}\mathbf{f}_b + \mathbf{g}_n,
-$$
+$$\mathbf{a}_n = R_{nb}\mathbf{f}_b + \mathbf{g}_n,$$
 
 where $R_{nb}$ rotates vectors from body coordinates to navigation coordinates and $\mathbf{g}_n$ is gravity in the navigation frame. Sign conventions vary by frame definition, especially ENU vs NED, so this equation must be implemented consistently with the rest of the project.
 
@@ -211,15 +190,11 @@ The lecture slides group common IMU errors into four categories:
 
 A compact vector model is:
 
-$$
-\hat{\mathbf{y}} = \mathbf{b} + (I + M)\mathbf{y} + \boldsymbol{\eta}.
-$$
+$$\hat{\mathbf{y}} = \mathbf{b} + (I + M)\mathbf{y} + \boldsymbol{\eta}.$$
 
 Solving for the corrected measurement gives:
 
-$$
-\mathbf{y} \approx (I + M)^{-1}(\hat{\mathbf{y}} - \mathbf{b}).
-$$
+$$\mathbf{y} \approx (I + M)^{-1}(\hat{\mathbf{y}} - \mathbf{b}).$$
 
 This form applies to both accelerometers and gyroscopes. In a high-quality system, $M$ and $\mathbf{b}$ are estimated through calibration. In a student project, some parameters may be supplied and others may be absorbed into process noise or estimated as part of the filter state.
 

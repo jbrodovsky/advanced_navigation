@@ -1,10 +1,3 @@
----
-title: "Assignment 3: INS/GNSS Integration"
-subtitle: "Curved-Earth Navigation with Loosely Coupled Error-State Kalman Filtering"
-author: "Advanced Navigation Course"
-date: "2026-05-19"
----
-
 # Assignment 3: INS/GNSS Integration
 
 ## Overview

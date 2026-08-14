@@ -1,0 +1,135 @@
+# Visual-Inertial Navigation Part C: EKF, UKF, and Particle Filters
+
+## Overview
+
+Part C combines the IMU propagation from Part A and the visual pose measurements from Part B into three nonlinear estimators:
+
+- Extended Kalman Filter
+- Unscented Kalman Filter
+- Particle Filter
+
+All three filters must use the same dataset, the same 15-state convention, the same propagation model, and the same PnP-based observation source. If one filter gets different semantics, the comparison stops being interesting and turns into a bookkeeping accident.
+
+## Starter Interfaces
+
+Use the starter package:
+
+```python
+from drone_pipeline.datasets import load_drone_dataset
+from drone_pipeline.filters import (
+    EKFNavigator,
+    ParticleFilterNavigator,
+    UKFNavigator,
+)
+from drone_pipeline.mechanization import propagate_state
+from drone_pipeline.observation import estimate_pose
+```
+
+The starter classes define the public interfaces, but the core estimation logic is for you to implement.
+
+## Common Requirements
+
+All three filters must:
+
+- use the shared 15-state vector
+- propagate with `propagate_state(...)`
+- use PnP observations from Part B as the measurement source
+- skip updates when no valid visual pose is available
+- keep Vicon out of the update path
+- wrap propagated attitudes and attitude residuals
+- report position RMSE against Vicon truth
+
+## EKF Requirements
+
+Implement `EKFNavigator` with:
+
+- nonlinear prediction using `propagate_state(...)`
+- state-transition Jacobian, analytical or finite-difference
+- measurement Jacobian for `h(x) = x[:6]`
+- angle-aware innovation handling
+- Joseph-form covariance update
+- innovation and NIS logging
+
+Report:
+
+- `Q`, `R`, and `P0`
+- NIS history or histogram
+- mean NIS compared to the expected measurement dimension of `6`
+- any covariance inflation or tuning choices
+
+## UKF Requirements
+
+Implement `UKFNavigator` with:
+
+- sigma-point generation
+- unscented prediction through `propagate_state(...)`
+- unscented update through `h(x) = x[:6]`
+- angle-aware mean and residual handling
+- additive process and measurement covariance
+
+Report:
+
+- `alpha`, `beta`, and `kappa`
+- a short sensitivity study over at least three `alpha` values
+- innovation or NIS diagnostics comparable to the EKF
+- whether the UKF earned its extra bookkeeping
+
+## Particle Filter Requirements
+
+Implement `ParticleFilterNavigator` with:
+
+- vectorized particle propagation
+- process-noise sampling for attitude, velocity, and bias terms
+- log-weight likelihood updates
+- effective sample size:
+
+```python
+N_eff = 1.0 / np.sum(weights**2)
+```
+
+- low-variance or systematic resampling
+- optional roughening if needed, documented clearly
+
+Investigate these particle counts:
+
+```python
+[250, 500, 750, 1000, 2000, 3000, 4000, 5000]
+```
+
+For each particle count, compute navigation solutions using:
+
+1. highest-weight particle
+2. unweighted particle mean
+3. weighted particle mean
+
+Report position RMSE and runtime for each choice. For weighted means, use a weighted RMSE.
+
+## Comparison Requirements
+
+Compare EKF, UKF, and PF on:
+
+- accuracy
+- implementation difficulty
+- tuning difficulty
+- runtime
+- robustness to missing visual measurements
+- dominant failure modes
+
+Use one development trial and one validation trial for detailed figures, then summarize all eight datasets in tables.
+
+## Deliverables
+
+Submit:
+
+- `EKFNavigator`
+- `UKFNavigator`
+- `ParticleFilterNavigator`
+- trajectory plots showing truth, PnP observations, mechanization, and filtered outputs
+- RMSE tables across all eight datasets
+- EKF and UKF innovation diagnostics
+- PF particle-count and runtime study
+- a short technical comparison of the three methods
+
+## Notes
+
+The old nonlinear-KF and particle-filter projects are merged here on purpose. You are not building three unrelated assignments. You are building one pipeline with three different estimators attached to the same underlying navigation problem.

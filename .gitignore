@@ -6,3 +6,11 @@ attic/
 lectures/
 .venv/
 book/output/*
+book/images/src/*.aux
+book/images/src/*.fdb_latexmk
+book/images/src/*.fls
+book/images/src/*.log
+book/images/src/*.pdf
+book/images/src/*.synctex.gz
+
+*.pyc
