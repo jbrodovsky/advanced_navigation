@@ -16,11 +16,11 @@ website:
           - href: assignments/m1-drone-pipeline.qmd
             text: Project Overview
           - href: assignments/m1-drone-pipeline-a.qmd
-            text: Part A: Dead Reckoning
+            text: "Part A: Dead Reckoning"
           - href: assignments/m1-drone-pipeline-b.qmd
-            text: Part B: PnP Observation
+            text: "Part B: PnP Observation"
           - href: assignments/m1-drone-pipeline-c.qmd
-            text: Part C: Nonlinear Filters
+            text: "Part C: Nonlinear Filters"
       - text: "Module 2: SLAM"
         menu:
           - href: assignments/m2-victoria-park.qmd
@@ -56,7 +56,6 @@ book:
         - chapters/02-sensing/data-association.qmd
         - chapters/02-sensing/pnp-vision.qmd
         - assignments/m1-drone-pipeline-b.qmd
-        - chapters/02-sensing/summary.qmd
     - part: "Filtering and State Estimation"
       chapters:
         - chapters/03-filtering/filtering.qmd
@@ -66,7 +65,7 @@ book:
         - chapters/03-filtering/information-filter.qmd
         - chapters/03-filtering/pf.qmd
         - assignments/m1-drone-pipeline-c.qmd
-        - chapters/03-filtering/summary.qmd
+    - assignments/m1-drone-pipeline.qmd
     - part: "Simultaneous Localization and Mapping"
       chapters:
         - chapters/04-slam/mapping.qmd
@@ -88,6 +87,7 @@ book:
       chapters:
         - chapters/07-adv/advanced-slam.qmd
         - chapters/07-adv/system-integration.qmd
+        - chapters/07-adv/adv-gnss.qmd
 
 bibliography: references.bib
 

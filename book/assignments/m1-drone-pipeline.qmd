@@ -1,6 +1,14 @@
 # Project 1: Drone Visual-Inertial Navigation Pipeline
 
-## Overview
+Project 1 is the main implementation project for the first part of the course. You will build a complete visual-inertial navigation pipeline around a real quadrotor dataset, starting from raw packets and ending with fused navigation estimates and an engineering report you can defend. This project is divided into three staged checkpoints, each building on the previous one. These three parts are not three unrelated mini-projects. They are staged build steps within one end-to-end system. Part A establishes the inertial propagation backbone, Part B builds the visual observation model that corrects it, and Part C fuses both into three nonlinear estimators that you will compare honestly. 
+
+You can find the individual checkpoints here:
+
+- [Project 1a: IMU Dead Reckoning](m1-drone-pipeline-a.qmd)
+- [Project 1b: PnP Observation Model](m1-drone-pipeline-b.qmd)
+- [Project 1c: EKF, UKF, and Particle Filters](m1-drone-pipeline-c.qmd)
+
+## Project summary
 
 This is the main implementation project for the first part of the course. You will build a complete visual-inertial navigation pipeline around a real quadrotor dataset, starting from raw packets and ending with fused navigation estimates and an engineering report you can defend.
 
@@ -241,9 +249,3 @@ Project 1 is graded out of `100` project points.
 |                                                     |          |                                                                                                                                                                                  |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
 |                                                     |          | ***20 points***                                                                                                                                                                  | ***16 points***                                                                                                                                 | ***14 points***                                                                                                         |                                                                                                 |
 +-----------------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
-
-## Part Links
-
-- [Project 1a: IMU Dead Reckoning](m1-drone-pipeline-a.qmd)
-- [Project 1b: PnP Observation Model](m1-drone-pipeline-b.qmd)
-- [Project 1c: EKF, UKF, and Particle Filters](m1-drone-pipeline-c.qmd)
