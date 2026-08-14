@@ -264,7 +264,7 @@ class StrapdownNavigator:
 2.  **Dead Reckoning Results:**
     -   Integrate IMU from start to end of trajectory
     -   Plot trajectory in geodetic coordinates (lat/lon map)
-    -   Compare against ground truth
+    -   Compare against the baseline reference solution
     -   Quantify drift rate (position error vs. time)
 3.  **Analysis:**
     -   Show effect of not removing Coriolis (vs. with removal)
@@ -494,7 +494,7 @@ class INSGNSSFilter:
 
 ### Learning Objectives
 
--   Evaluate filter performance against ground truth
+-   Evaluate filter performance against a reference trajectory
 -   Characterize IMU drift and GNSS aiding effectiveness
 -   Compute standard navigation error metrics
 
@@ -504,13 +504,13 @@ Implement performance evaluation:
 
 ``` python
 class NavigationEvaluator:
-    def __init__(self, estimated_trajectory, ground_truth_trajectory):
+    def __init__(self, estimated_trajectory, reference_trajectory):
         """
         estimated_trajectory: list of (lat, lon, alt) estimates
-        ground_truth_trajectory: list of (lat, lon, alt) ground truth
+        reference_trajectory: list of (lat, lon, alt) reference states
         """
         self.est = np.array(estimated_trajectory)
-        self.gt = np.array(ground_truth_trajectory)
+        self.gt = np.array(reference_trajectory)
 
     def compute_absolute_pose_error(self):
         """APE: RMS position error."""
@@ -569,7 +569,7 @@ class NavigationEvaluator:
         -   Fused INS/GNSS (full filter)
     -   Show APE, RPE, drift rate for each
 3.  **Visualization:**
-    -   Plot trajectory map (lat/lon): estimated vs. ground truth
+    -   Plot trajectory map (lat/lon): estimated vs. reference
     -   Plot position error vs. time
     -   Plot GNSS outage behavior (how long filter can coast)
 4.  **Report:**
@@ -583,20 +583,44 @@ class NavigationEvaluator:
 
 ### INS/GNSS Dataset
 
-Available at: https://github.com/jbrodovsky/mems-nav-dataset/tree/main/data/input
+This project uses the MEMS Navigation Dataset:
 
--   High-rate IMU measurements (200-400 Hz): accelerometer, gyroscope
--   GNSS position/velocity (1-10 Hz depending on scenario)
--   Ground truth reference trajectory
--   Sensor specifications and calibration parameters
+https://github.com/jbrodovsky/mems-nav-dataset
 
-### Dataset Format
+The data files are not checked into this course repository. Fetch the synchronized measurement data and baseline reference solution with:
 
-Typically provided as CSV or binary with fields:
+``` bash
+python scripts/fetch_ins_gnss_data.py
+```
+
+By default this writes:
 
 ```         
-timestamp, accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, [lat, lon, alt, v_n, v_e, v_d]
+data/mems-nav-dataset/
+├── input/
+├── baseline/
+└── manifest.json
 ```
+
+The `input` directory contains the time-synchronized measurements students use as estimator inputs: accelerometer, gyroscope, GNSS position fields when available, barometer, gravity, magnetometer, and orientation fields from the device. The `baseline` directory contains the no-degradation strapdown/GNSS reference solution generated from the same trials. Use it for comparison and reporting; do not treat it as an estimator input.
+
+Load one paired trial with the starter package:
+
+``` python
+from pathlib import Path
+
+from ins_gnss.datasets import list_mems_nav_trials, load_mems_nav_trial
+
+dataset_root = Path("data/mems-nav-dataset")
+trial_name = list_mems_nav_trials(dataset_root)[0]
+trial = load_mems_nav_trial(dataset_root, trial_name)
+
+imu_samples = trial.imu_samples
+gnss_samples = trial.gnss_samples
+reference_states = trial.reference_states
+```
+
+The starter loader converts latitude and longitude to radians, normalizes timestamps to seconds from the beginning of each file, and keeps the baseline reference states separate from the input measurements.
 
 ------------------------------------------------------------------------
 

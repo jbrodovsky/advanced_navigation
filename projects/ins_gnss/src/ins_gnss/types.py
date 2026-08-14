@@ -32,3 +32,27 @@ class INSGNSSDataset:
     ground_truth: np.ndarray | None = None
     metadata: dict[str, object] | None = None
 
+
+@dataclass(slots=True)
+class MEMSReferenceState:
+    time_s: float
+    latitude_rad: float
+    longitude_rad: float
+    altitude_m: float
+    velocity_ned_mps: np.ndarray
+    attitude_rpy_rad: np.ndarray
+    accel_bias_mps2: np.ndarray | None = None
+    gyro_bias_rps: np.ndarray | None = None
+    covariance: dict[str, float] | None = None
+
+
+@dataclass(slots=True)
+class MEMSNavTrial:
+    name: str
+    root: Path
+    input_path: Path
+    baseline_path: Path
+    imu_samples: list[IMUSample]
+    gnss_samples: list[GNSSSample]
+    reference_states: list[MEMSReferenceState]
+    metadata: dict[str, object] | None = None
