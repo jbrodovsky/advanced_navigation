@@ -89,93 +89,11 @@ fusion meaningful.
 
 ## Advanced GNSS Processing
 
-The INS/GNSS material in this course focuses mostly on loose integration: a GNSS
-receiver produces position and velocity, and the navigation filter uses those as
-measurements. Professional systems often go deeper.
-
-### Raw Measurements
-
-A GNSS receiver can expose raw observations rather than only a solved position.
-The main observation types are:
-
-- **pseudorange**, an apparent satellite-to-receiver range derived from signal
-  travel time;
-- **Doppler**, related to range rate and useful for velocity;
-- **carrier phase**, a very precise phase measurement with an unknown integer
-  ambiguity;
-- **signal quality indicators**, such as carrier-to-noise density, lock time,
-  and receiver tracking flags.
-
-Raw measurements let the navigation system reason about satellites directly. This
-enables tighter coupling with INS, better outage behavior, and more control over
-which measurements are trusted.
-
-### RTK
-
-Real-Time Kinematic (RTK) GNSS uses carrier-phase measurements and a nearby base
-station or correction service. The base station and rover observe many of the same
-satellites, so shared errors such as satellite clock, orbit, and atmospheric
-effects can be reduced. If the carrier-phase integer ambiguities are resolved
-correctly, RTK can produce centimeter-level relative positioning in favorable
-conditions.
-
-The catch is that RTK is not magic. It depends on:
-
-- a nearby base station or correction network;
-- clean carrier-phase tracking;
-- enough common satellites;
-- good ambiguity resolution;
-- limited multipath and cycle slips;
-- careful antenna placement and lever-arm modeling.
-
-RTK solutions are often reported as **float** or **fixed**. A float solution has
-not resolved the integer ambiguities confidently. A fixed solution has. A fixed
-solution is usually much more precise, but a false fix can be worse than an honest
-lower-accuracy solution.
-
-### PPP and PPP-RTK
-
-Precise Point Positioning (PPP) uses precise satellite clock and orbit products
-instead of a local base station. It can provide high accuracy globally, but it
-typically needs convergence time. PPP-RTK combines precise corrections with
-ambiguity resolution techniques to reduce convergence time and improve precision.
-
-For autonomous systems, the trade is operational: RTK can be excellent when local
-corrections are available, while PPP-style methods are attractive when global
-coverage matters more than local infrastructure.
-
-### Tight and Deep INS/GNSS Coupling
-
-In loose coupling, the receiver's position or velocity solution is the
-measurement. In tight coupling, raw GNSS measurements are fused directly with the
-INS state. In deep coupling, inertial aiding reaches even farther into receiver
-tracking loops.
-
-Tight coupling is useful when satellite visibility is weak. A receiver may not
-have enough satellites to produce a standalone fix, but the navigation filter can
-still use partial pseudorange, Doppler, or carrier-phase information. The INS
-helps bridge short outages and predicts receiver motion; GNSS bounds inertial
-drift when usable signals return.
-
-### Multipath, Jamming, and Spoofing
-
-Advanced GNSS processing is also about distrust. Urban canyons, ship structures,
-vehicle roofs, trees, and nearby buildings can reflect signals and create
-multipath. Intentional or accidental interference can jam GNSS. Spoofing can
-produce plausible-looking but false signals.
-
-Professional systems monitor:
-
-- innovation consistency;
-- satellite geometry and dilution of precision;
-- carrier-to-noise ratios;
-- cycle slips and lock time;
-- agreement between GNSS, INS, vision, radar, lidar, and maps;
-- spatial consistency across multiple antennas when available.
-
-The larger lesson is that a GNSS measurement is not simply "truth from space." It
-is a radio navigation measurement with geometry, clocks, atmosphere, hardware, and
-failure modes attached.
+GNSS receiver signals, observables, RTK/PPP context, and the boundary between
+loose, tight, and deep integration now have a dedicated optional chapter:
+[GNSS Signals, Receivers, and Deep Integration](adv-gnss.qmd). The required
+course material remains the loose INS/GNSS workflow in the global-navigation
+part of the book.
 
 ## GNSS-Denied and Resilient Navigation
 

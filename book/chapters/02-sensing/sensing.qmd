@@ -1,212 +1,72 @@
 # Sensing and Perception {#sensing}
 
-Navigation is the problem of estimating where a system is, how it is moving, and how it is oriented relative to some reference. Perception is how the system gets evidence about those quantities from the physical world. In practice, the two are tightly coupled: our navigation state determines what a sensor should see, and sensor measurements tell us whether our navigation state is plausible. This part of the course focuses on that second direction: based on what we see, how plausible is our navigation state? We start here for several practical and pragmatic reasons.
+Navigation estimates where a system is, how it moves, and how it is oriented.
+Perception supplies the physical evidence for that estimate. The two directions
+belong together: a state estimate predicts what a sensor should observe, and an
+observation tests whether the state estimate is plausible.
 
-A useful way to think about perception is as the inverse side of navigation. Navigation asks:
+## A Sensor Is Not a State Estimate
 
-> Given my previous state and my motion inputs, where do I think I am now?
-
-Perception asks:
-
-> Given what I observe now, what does that tell me about where I am?
-
-If one or the other side is perfect, we have no need for the other. If I have a perfect measurement that directly relates to where I think I am then I have no further need of any additional math.
-
-For example, consider a one-dimensional hallway that goes from left to right. I am precisely two meters to the left of the green door. The green door is located five meters from the start of the hallway, therefore I am three meters from the start of the hallway. I don't care how uncertain my movement is: I can move about this hallway with my eyes closed. All I need to do is periodically open my eyes and look at how far away I am from the green door. The inverse problem is also true: if I have perfect knowledge of my motion (I walk around with my eyes open) I have no need of making measurements provided I know my precise starting location.
-
-In practice however, neither side is perfect and both sensing methods have some degree of error in them. A practical demonstration of this is to walk around your home with your eyes closed. You may not touch the wall and may only open your eyes if you stop moving. Most people have a decent mental map of their home as well as having a reasonable sense of their own relative motion (proprioception). Walk about for long enough and you'll quickly notice that you will get a bit lost the longer you walk about with your eyes closed!
-
-It is useful to borrow two terms from biology to describe the two broad classes of sensing and perception:
-
-- **Proprioception**: sensing internal motion, force, and body state.
-- **Exteroception**: sensing the external world.
-
-For navigation, proprioceptive sensors usually support propagation, movement, or state transitions. Examples include IMUs, wheel encoders, joint encoders, airspeed sensors, and Doppler velocity logs. They tell the system how it is changing over time, but they usually do not directly tell it where it is relative to an external map. We group these sensor readings as the "inputs" or "controls" to the motion model. Exteroceptive sensors usually support measurement updates by providing a measurement that can be related to where the object is in the world. Examples include cameras, lidar, radar, sonar, GPS, magnetometers, star trackers, and landmark detectors. They observe something outside the vehicle.
-
-This distinction is useful because proprioceptive and exteroceptive errors have different behavior. Neither of these sensors is perfect and both categories have some degree of noise in them. Proprioceptive errors often integrate over time and cause the navigation or state estimate to drift. Exteroceptive errors often depend on visibility, geometry, correspondence, and the map. Because of this, a navigation system that relies on only one of these two categories will eventually drift away from the truth. A good navigation system uses both to cover the other's weakness.
-
-Because of this inherent noise or error in the measurements, it is useful to treat these sensors ans systems probabilistically. When doing so, we can make use of Bayes' rule and Bayesian filters in order to make more accurate estimates of our state even when we have noisy or imperfect measurements.
-
-## Motion Models
-
-Motion models, or more generally state transition models, describe how a system moves from one state to the next. We define this in terms of a generic function of the previous state and some control input: $$\mathbf{x}_t = f(\mathbf{x}_{t-1}, \mathbf{u}_t)$$
-
-where $\mathbf{x}_t$ is the state at time $t$, $\mathbf{u}_t$ is the control input at time $t$. The function $f$ is often nonlinear. The process noise captures the uncertainty in the motion model, which can arise from unmodeled dynamics, disturbances, or inaccuracies in the control inputs. For a planar ground robot with state:
-
-$$\mathbf{x} =
-\begin{bmatrix}
-x & y & \theta
-\end{bmatrix}^T$$
-
-a common motion input is:
-
-$$\mathbf{u} =
-\begin{bmatrix}
-v & \omega
-\end{bmatrix}^T,$$
-
-where $v$ is forward speed and $\omega$ is yaw rate. With a small time step $\Delta t$, a simple approximation is:
-
-$$\begin{aligned}
-x_t &= x_{t-1} + v_t \cos \theta_{t-1} \Delta t \\
-y_t &= y_{t-1} + v_t \sin \theta_{t-1} \Delta t \\
-\theta_t &= \theta_{t-1} + \omega_t \Delta t.
-\end{aligned}$$
-
-For nonzero $\omega$, the exact constant-turn-rate model moves the robot along an arc:
-
-$$\begin{aligned}
-x_t &= x_{t-1}
-      - \frac{v}{\omega}\sin \theta_{t-1}
-      + \frac{v}{\omega}\sin(\theta_{t-1} + \omega \Delta t) \\
-y_t &= y_{t-1}
-      + \frac{v}{\omega}\cos \theta_{t-1}
-      - \frac{v}{\omega}\cos(\theta_{t-1} + \omega \Delta t) \\
-\theta_t &= \theta_{t-1} + \omega \Delta t.
-\end{aligned}$$
-
-### Why Proprioception Builds Error
-
-The motion model is only as good as its inputs, and—as we've noted—practically speaking most sensors have some degree of error. Suppose the measured input $\mathbf{u}_t$ is the true controls $\hat{\mathbf{u}}_t$ plus some noise function $\eta_t$.
-
-$$\mathbf{u}_t = \hat{\mathbf{u}}_t  + \eta_t,$$
-
-The constant-turn-rate motion model then becomes:
-
-$$\begin{aligned}
-x_t &= x_{t-1}
-      - \frac{\hat{v}_t + \eta_{v,t}}{\hat{\omega}_t + \eta_{\omega,t}}\sin \theta_{t-1}
-      + \frac{\hat{v}_t + \eta_{v,t}}{\hat{\omega}_t + \eta_{\omega,t}}\sin(\theta_{t-1} + (\hat{\omega}_t + \eta_{\omega,t}) \Delta t) \\
-y_t &= y_{t-1}
-      + \frac{\hat{v}_t + \eta_{v,t}}{\hat{\omega}_t + \eta_{\omega,t}}\cos \theta_{t-1}
-      - \frac{\hat{v}_t + \eta_{v,t}}{\hat{\omega}_t + \eta_{\omega,t}}\cos(\theta_{t-1} + (\hat{\omega}_t + \eta_{\omega,t}) \Delta t) \\
-\theta_t &= \theta_{t-1} + (\hat{\omega}_t + \eta_{\omega,t}) \Delta t.
-\end{aligned}$$
-
-The random noise values integrate over time causing the state estimate to drift away from the true state. This is why dead reckoning is useful but dangerous. It is useful because it gives high-rate local motion. It is dangerous because small persistent errors become large state errors. This is true for walking with your eyes closed, ship navigation by log line and compass, wheel odometry, and strapdown inertial navigation. Different centuries, same headache.
-
-### From Kinematics to Inertial Measurements
-
-Kinematics describes motion: position, velocity, acceleration, attitude, and angular rate. A sensor does not magically report "the kinematics." It measures some physical quantity related to them. As we discussed in @#modern-navigation, the invention of the IMU was a major paradigm shift in navigation. It allowed a system to measure its own motion without relying on external references. The IMU is a proprioceptive sensor that measures specific force and angular rate and is the foundation of modern inertial navigation.
-
-An inertial measurement unit, or IMU, typically contains a suite of sensors. Primarily, it contains: three accelerometers, which measure specific force along the body frame axes, and three gyroscopes, which measure angular rate about the body frame axes. Some IMU boards also contain some additional sensors. You'll frequently see magnetometers and barometers, which measure magnetic field direction and strength and air pressure, respectively. These additional sensors are often used to provide additional information about the system's orientation and altitude, but they are not strictly necessary for inertial navigation.
-
-![IMU specific force and angular rates](../../images/imu.png){#fig:imu}
-
-These measurements are typically reported in the body frame of the IMU, and sometimes 'normalized' to regulated with respect to time to provide a discrete change in velocity and orientation (commonly referred to as delta-velocity and delta-angle). 
-
-Historically, IMUs consisted of mechanical sensors: spinning gyroscopes and pendulum accelerometers. Because of these mechanical components, they were large, heavy, and expensive, and required a gimballing system to keep the sensors aligned with the navigation frame (referred to as a set of 'mechanization' equations). Modern IMUs are typically digital devices that use microelectromechanical systems (MEMS), ring-laser gyroscopes (RLGs), or fiber-optic gyroscopes (FOGs). These modern IMUs are smaller, lighter, and more affordable than their mechanical predecessors. Because of their lack of mechanical components, they can be rigidly mounted or 'strapped down' to the vehicle, which simplifies the design and reduces the size and weight of the system. The sensed motion from the IMU can be transformed to the navigation frame using a simple digital computer. We use two primary sensor models to describe the IMU: one for the gyroscopes and one for the accelerometers.
-
-### Gyroscope Model
-
-A gyroscope measures angular rate. A simple model is:
+It is tempting to say that a GNSS receiver “gives position” or an IMU “gives
+attitude.” What each device actually provides is a measurement with a frame,
+timestamp, uncertainty, and failure modes. The estimator supplies the model that
+relates that measurement to the state:
 
 $$
-\hat{\boldsymbol{\omega}}
-= \boldsymbol{\omega}
-+ \mathbf{b}_g
-+ \boldsymbol{\eta}_g,$$
+\mathbf{z}_k = h(\mathbf{x}_k) + \mathbf{v}_k.
+$$
 
-where:
+The function $h$ predicts the measurement; $\mathbf{v}_k$ describes the part the
+model does not explain. A good measurement interface records at least:
 
-- $\hat{\boldsymbol{\omega}}$ is the measured angular rate;
-- $\boldsymbol{\omega}$ is the true angular rate;
-- $\mathbf{b}_g$ is gyroscope bias;
-- $\boldsymbol{\eta}_g$ is random noise.
+- the time at which the quantity was valid, not only arrival time;
+- units and the frame in which its components are expressed;
+- a covariance, accuracy estimate, or quality indicator;
+- calibration and extrinsic information needed by $h$; and
+- validity, saturation, tracking, or fault flags.
 
-If attitude is represented by a rotation matrix $R$, then angular rate drives attitude integration. In a simplified single-axis case:
+This contract is what makes a camera observation, lidar range, GNSS solution, and
+magnetometer reading usable by the same estimation machinery.
 
-$$\theta_t = \theta_{t-1} + \hat{\omega}_t \Delta t.$$
+## Proprioception and Exteroception
 
-If $\hat{\omega}_t$ contains a constant bias, attitude error grows roughly linearly with time. Once attitude is wrong, every body-frame vector rotated into the navigation frame is wrong too. For inertial navigation, attitude error quickly contaminates velocity and position.
+Two broad sensor classes make the division of work clear:
 
-### Accelerometer Model
+| Class | Typical sensors | Navigation role | Common failure pattern |
+|---|---|---|---|
+| Proprioceptive | IMU, wheel encoder, airspeed, DVL | High-rate propagation | Bias and noise accumulate into drift |
+| Exteroceptive | Camera, lidar, radar, sonar, GNSS, landmark detector | Measurement update or map constraint | Visibility, geometry, association, and outliers |
 
-Accelerometers measure **specific force**, not ordinary acceleration. Specific force is the non-gravitational acceleration experienced by the sensor. A stationary accelerometer sitting on a desk reads approximately one gravity upward in its body frame, even though its position is not accelerating. This is initially annoying, then important, then very annoying again.
+Neither class is sufficient everywhere. A vehicle can dead reckon smoothly for a
+short time but drift over a long one. An external sensor can correct that drift but
+may be obstructed, delayed, or fooled by a repeated-looking environment. Robust
+navigation uses the different failure modes rather than pretending one sensor is
+truth.
 
-A common accelerometer measurement model is:
+## From Hardware to an Estimator
 
-$$\hat{\mathbf{f}}
-= \mathbf{b}_a
-+ (I_3 + M_a)\mathbf{f}
-+ \boldsymbol{\eta}_a,$$
+```{mermaid}
+%%| label: fig-sensor-measurement-contract
+%%| fig-cap: "A measurement becomes useful only after its physical, timing, calibration, and uncertainty context is preserved."
 
-where:
-
-- $\hat{\mathbf{f}}$ is measured specific force;
-- $\mathbf{f}$ is true specific force;
-- $\mathbf{b}_a$ is accelerometer bias;
-- $M_a$ contains scale-factor and cross-coupling errors;
-- $\boldsymbol{\eta}_a$ is random noise.
-
-The ideal relationship between navigation-frame acceleration and body-frame specific force is:
-
-$$\mathbf{a}_n = R_{nb}\mathbf{f}_b + \mathbf{g}_n,$$
-
-where $R_{nb}$ rotates vectors from body coordinates to navigation coordinates and $\mathbf{g}_n$ is gravity in the navigation frame. Sign conventions vary by frame definition, especially ENU vs NED, so this equation must be implemented consistently with the rest of the project.
-
-The important idea is that accelerometer interpretation requires attitude. If attitude is wrong, gravity leaks into horizontal acceleration. A small tilt error can look like a persistent horizontal acceleration, which then integrates into a large position error.
-
-## Bias, Scale Factor, Cross-Coupling, and Noise
-
-The lecture slides group common IMU errors into four categories:
-
-- **Bias**: a fixed or slowly varying offset.
-- **Scale factor**: the measurement gain is slightly wrong.
-- **Cross-coupling**: motion on one axis leaks into another axis.
-- **Random noise**: unpredictable sample-to-sample variation.
-
-A compact vector model is:
-
-$$\hat{\mathbf{y}} = \mathbf{b} + (I + M)\mathbf{y} + \boldsymbol{\eta}.$$
-
-Solving for the corrected measurement gives:
-
-$$\mathbf{y} \approx (I + M)^{-1}(\hat{\mathbf{y}} - \mathbf{b}).$$
-
-This form applies to both accelerometers and gyroscopes. In a high-quality system, $M$ and $\mathbf{b}$ are estimated through calibration. In a student project, some parameters may be supplied and others may be absorbed into process noise or estimated as part of the filter state.
-
-```{python}
-#| label: sensor-models-imu-calibration
-#| eval: false
-
-import numpy as np
-
-
-def remove_affine_sensor_error(y_meas: np.ndarray,
-                               bias: np.ndarray,
-                               coupling: np.ndarray) -> np.ndarray:
-    """
-    Correct a simple sensor model:
-        y_meas = bias + (I + coupling) y_true + noise
-    """
-    A = np.eye(len(bias)) + coupling
-    return np.linalg.solve(A, y_meas - bias)
-
-
-gyro_meas = np.array([0.010, -0.003, 0.102])
-gyro_bias = np.array([0.002, -0.001, 0.004])
-gyro_coupling = np.array([
-    [0.001, 0.000, 0.000],
-    [0.000, 0.002, 0.001],
-    [0.000, 0.000, -0.001],
-])
-
-gyro_corrected = remove_affine_sensor_error(
-    gyro_meas,
-    gyro_bias,
-    gyro_coupling,
-)
+flowchart LR
+    A["Physical quantity"] --> B["Sensor and front end"]
+    B --> C["Timestamped measurement"]
+    C --> D["Calibration and frame adapter"]
+    D --> E["Measurement model h(x), R, quality gates"]
+    E --> F["Estimator update or rejection"]
 ```
 
-## What the Filter Actually Sees
+The hardware front end may include filtering, synchronization, feature
+extraction, or a receiver solution. Those operations can change latency and
+correlation, so they belong in the measurement model rather than being treated as
+invisible plumbing.
 
-A filter does not see "an IMU." It sees numbers and a model. If the model says the accelerometer noise covariance is tiny, the filter will treat the propagated motion as very trustworthy. If the model says camera pose measurements are precise, the filter will aggressively snap toward each visual update. Bad covariance values can make a mathematically correct filter behave badly.
+## What This Part Covers
 
-This is the practical reason to care about sensor models:
-
-- The physical model determines the expected measurement.
-- The noise model determines how strongly the estimator uses it.
-- The failure model determines when the estimator should reject it.
-
-The next chapter develops this idea using range measurements, where failure modes are easier to visualize than with an IMU.
+The next chapter develops motion models and IMU measurements. The measurement
+model chapter turns physical observations into likelihoods; data association
+addresses which feature generated an observation; and the PnP chapter builds a
+camera observation model used in Module 1. The global-navigation chapters return
+to this contract for GNSS, where signal quality and time validity matter just as
+much as position.

@@ -14,6 +14,17 @@ To a certain extent, this prompts a discussion of what is a machine versus a rob
 
 This course delves into the sophisticated techniques and algorithms used by autonomous systems to navigate complex, real-world environments with precision and efficiency. Building upon fundamental concepts in robotics and navigation, this course equips students with advanced knowledge and practical skills necessary to develop cutting-edge navigation systems for autonomous robots operating in diverse scenarios. The curriculum begins with a review of foundational principles in robot perception and localization before examining modern techniques in nonlinear estimation, Simultaneous Localization and Mapping (SLAM), multi-sensor fusion, and inertial navigation. Students will deepen their understanding of these concepts through hands-on exercises and simulations. By the end of the course, students will have the ability to design, implement, and evaluate modern navigation systems for autonomous robots.
 
+## How to Use the Foundations
+
+The foundations part is a compact reference, not a second undergraduate degree in
+mathematics. It establishes the shared language used by the rest of the book:
+coordinate frames and attitude conventions, linear algebra, probability, and
+reliable scientific Python. Read it before the first project if any of those
+topics feel rusty, then return to the relevant chapter when an implementation
+needs it. The examples use Python because it makes numerical ideas easy to test
+and visualize; the conventions and algorithms carry directly to C++, Rust, and
+other production languages.
+
 ## Recommended Prerequisites {#prerequisites}
 
 To get the most out of this course, it is recommended that students have a solid understanding of the following topics. While there is some review of these topics in the foundations chapters, it is assumed that students have prior experience with these topics:
@@ -52,6 +63,26 @@ I would suggest approaching this course in one of the following ways, depending 
 3.  Scan the readings first to get a general idea of the material, view the lectures, and then re-read the readings in detail to reinforce your understanding of the material
 
 Again, these are merely suggestions. In general, it is a good practice to not necessarily memorize or take excessively detailed notes, but rather - especially given the project-based nature of this course - to understand where the information is in the readings and lectures so that you can refer to it while working through the projects. As we will get into in [About Me](#about-me), I have bounced back and forth between academia and industry several times, and one of the most important skills I have learned is how to quickly find the information I need in a textbook or reference manual, and I have rarely ever found myself in a situation where I did not have access to physical or digital reference materials and time to look up the answer.
+
+## Module Roadmaps
+
+| Part | Role in the course | Assessment status |
+|---|---|---|
+| Foundations | Shared conventions, numerical tools, and Python habits | Required background and reference |
+| Sensing through Filtering | Module 1: construct and evaluate a visual-inertial estimator | Assessed |
+| SLAM | Module 2: FastSLAM and data association | Assessed |
+| Global Navigation | Module 3: loose INS/GNSS integration | Assessed |
+| Practical and Advanced Topics | Production concerns, smoothing, receiver-level GNSS, and research directions | Enrichment only unless an assignment says otherwise |
+
+## Code Conventions
+
+Python blocks that execute during book rendering are **runnable examples** and
+use deterministic inputs whenever they include randomness. Blocks marked
+`eval: false` are **interface sketches**: they show the intended shape without
+claiming a complete implementation. Blocks labelled as text or pseudocode specify
+control flow and ownership, not executable code. This distinction is deliberate;
+a concise model contract is often more useful than a deceptively incomplete
+"complete system" listing.
 
 ## Course Philosophy {#course-philosophy}
 

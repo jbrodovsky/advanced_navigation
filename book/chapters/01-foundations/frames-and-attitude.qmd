@@ -1,0 +1,105 @@
+# Coordinate Frames and Attitude {#frames-and-attitude}
+
+Every navigation result is meaningful only with a frame attached. A position in
+meters, a velocity vector, and a quaternion can all look perfectly reasonable
+while describing different worlds. This chapter establishes the convention used
+throughout the book before the IMU, camera, GNSS, and filter chapters make the
+same choices less visibly.
+
+## The Convention Contract
+
+We write a vector expressed in frame $a$ as $\mathbf{v}^a$ and a rotation that
+maps coordinates from frame $b$ into frame $a$ as $\mathbf{C}_b^a$:
+
+$$
+\mathbf{v}^a = \mathbf{C}_b^a\mathbf{v}^b.
+$$
+
+The superscript says where the coordinates are written; the subscript says where
+they came from. The inverse is the transpose for a proper rotation matrix:
+
+$$
+\mathbf{C}_a^b = (\mathbf{C}_b^a)^T.
+$$
+
+This book uses body-to-navigation rotations unless a different direction is
+written explicitly. Do not silently switch between active and passive rotation
+language: write the source and destination frames, then test the transform with a
+known vector.
+[@groves]
+
+## Common Navigation Frames
+
+| Frame | Purpose | Typical axes |
+|---|---|---|
+| Body ($b$) | Attached to the vehicle and IMU | Forward-right-down (FRD) for aerospace; forward-left-up (FLU) is common in robotics |
+| Local navigation ($n$) | Local estimation and control | North-east-down (NED) in this book |
+| ENU | Common robotics/map convention | East-north-up |
+| ECEF ($e$) | Earth-fixed global geometry | Origin at Earth's center, rotating with Earth |
+| ECI ($i$) | Inertial dynamics | Origin at Earth's center, not Earth-fixed |
+
+NED and ENU are not interchangeable relabelings: their vertical axes have
+opposite signs and their horizontal axes are permuted. GNSS chapters use NED for
+local velocity and positive-down vertical position errors. A camera or middleware
+interface may use a different convention; its adapter must make the conversion
+explicit. [@groves]
+
+## Rotation Matrices and Euler Angles
+
+A direction-cosine matrix (DCM) is simply a $3\times3$ rotation matrix. It must
+remain orthonormal with determinant one. Euler angles are useful for displaying
+roll, pitch, and yaw, but their meaning depends on the stated rotation sequence.
+They have a singularity near pitch $\pm90^\circ$, so they are poor internal states
+for a vehicle that can point in arbitrary directions.
+
+Heading is also not automatically yaw. Heading is a direction relative to a
+chosen north reference; yaw is an attitude component under a specified frame and
+rotation sequence. On a tilted vehicle the distinction matters.
+
+## Quaternions in Software
+
+Unit quaternions avoid the Euler-angle singularity and compose rotations
+efficiently. Their double cover means $q$ and $-q$ represent the same physical
+rotation. Normalizing after propagation controls numerical drift but does not
+repair an incorrect frame convention.
+
+SciPy stores quaternions as `[x, y, z, w]`, while many aerospace APIs use
+`[w, x, y, z]`. Convert deliberately at every boundary. [@scipyRotation]
+
+```{python}
+#| label: frames-scipy-quaternion-order
+#| echo: true
+
+import numpy as np
+from scipy.spatial.transform import Rotation
+
+
+def scipy_to_scalar_first(q_xyzw: np.ndarray) -> np.ndarray:
+    """Convert SciPy's [x, y, z, w] order to [w, x, y, z]."""
+    x, y, z, w = q_xyzw
+    return np.array([w, x, y, z])
+
+
+rotation_b_to_n = Rotation.from_euler("z", 90.0, degrees=True)
+q_wxyz = scipy_to_scalar_first(rotation_b_to_n.as_quat())
+np.testing.assert_allclose(np.linalg.norm(q_wxyz), 1.0)
+
+# A body-forward vector points east after a positive 90-degree NED yaw.
+np.testing.assert_allclose(
+    rotation_b_to_n.apply(np.array([1.0, 0.0, 0.0])),
+    np.array([0.0, 1.0, 0.0]),
+    atol=1e-12,
+)
+```
+
+## Checks Before Trusting a Transform
+
+- State both source and destination frames in variable names and documentation.
+- Verify that $\mathbf{C}^T\mathbf{C}=I$ within floating-point tolerance.
+- Test an identity, a known quarter turn, and a round trip through the inverse.
+- Record angle units, quaternion ordering, and gravity/vertical sign at every
+  sensor boundary.
+
+The rest of the book assumes these checks are routine. They are cheaper than
+debugging a navigation failure whose plot is only wrong by one very persuasive
+sign.

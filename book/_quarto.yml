@@ -42,8 +42,11 @@ book:
     - part: "Introduction"
       chapters:
         - chapters/00-intro/intro.qmd
-        - chapters/00-intro/syllabus.qmd
         - chapters/00-intro/navigation-overview.qmd
+        - chapters/00-intro/syllabus.qmd
+    - part: "Foundations"
+      chapters:
+        - chapters/01-foundations/frames-and-attitude.qmd
         - chapters/01-foundations/linear-algebra.qmd
         - chapters/01-foundations/probability-theory.qmd
         - chapters/01-foundations/modern-python.qmd
@@ -86,8 +89,12 @@ book:
     - part: "Advanced Topics"
       chapters:
         - chapters/07-adv/advanced-slam.qmd
-        - chapters/07-adv/system-integration.qmd
         - chapters/07-adv/adv-gnss.qmd
+        - chapters/07-adv/system-integration.qmd
+    - part: "Technical Reference (Optional)"
+      chapters:
+        - chapters/01-foundations/mathematical-reference.qmd
+    - references.qmd
 
 bibliography: references.bib
 

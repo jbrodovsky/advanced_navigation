@@ -1,0 +1,305 @@
+# GNSS Signals, Receivers, and Deep Integration {#advanced-gnss}
+
+::: {.callout-note title="Enrichment chapter: not assessed"}
+This chapter explains how a GNSS radio measurement becomes an input to a
+navigation estimator. It does not add a project requirement, require an SDR or
+GNSS receiver, or teach a production receiver implementation. The synthetic
+examples are deliberately small enough to expose the estimation interfaces without
+pretending that a notebook is a flight-qualified signal-processing chain.
+:::
+
+The core GNSS chapters treat a receiver as a useful black box: it provides a
+timestamped position, velocity, and uncertainty for loose INS/GNSS integration.
+That is the correct project boundary. Professional systems sometimes move the
+boundary deeper, using observations produced inside the receiver or even aiding
+its tracking loops. This chapter follows the measurement backward from that
+receiver output to the radio signal, then forward again into loose, tight, and
+deeply integrated navigation.
+
+## From Signal in Space to a Navigation Observable
+
+A satellite broadcasts a structured radio signal. At a useful conceptual level,
+it combines a spreading code, a navigation-data sequence, and a carrier. The
+receiver sees a weak, delayed, Doppler-shifted, noisy superposition of signals.
+For satellite $s$, a simplified complex-baseband model is
+
+$$
+r(t) = A_s D_s(t-\tau_s) C_s(t-\tau_s)
+       e^{j(2\pi(f_{D,s}t + \phi_s))} + n(t),
+$$
+
+where $C_s$ is the satellite-specific spreading code, $D_s$ is navigation data,
+$\tau_s$ is propagation delay, $f_{D,s}$ is Doppler, and $n(t)$ collects noise
+and interference. A real receiver also confronts front-end filtering, quantization,
+oscillator error, multipath, navigation-data boundaries, and other satellites.
+The simplified model is enough to explain why receiver work estimates delay,
+frequency, phase, and signal quality before it estimates position.
+[@kaplanHegarty2017; @misraEnge2006]
+
+```{mermaid}
+%%| label: fig-gnss-receiver-chain
+%%| fig-cap: "Receiver-to-estimator path. Each stage changes both the information available and the error model needed by the next stage."
+
+flowchart LR
+    A["Signal in space"] --> B["Antenna, RF front end, ADC"]
+    B --> C["Acquisition: code delay and Doppler search"]
+    C --> D["Tracking: DLL, PLL/FLL"]
+    D --> E["Navigation data and satellite state"]
+    D --> F["Pseudorange, Doppler, carrier phase, quality"]
+    E --> G["Receiver PVT or external estimator"]
+    F --> G
+    G --> H["Loose, tight, or deep INS/GNSS integration"]
+```
+
+### Acquisition and Tracking
+
+**Acquisition** searches candidate code delays and Doppler shifts until a
+correlation peak identifies a plausible satellite signal. The receiver then uses
+tracking loops to keep that alignment while the vehicle, satellite, and receiver
+oscillator move.
+[@kaplanHegarty2017; @misraEnge2006]
+
+- A delay-lock loop (DLL) maintains code timing, which supports pseudorange.
+- A phase-lock loop (PLL) maintains carrier phase when the signal supports it.
+- A frequency-lock loop (FLL) is often useful during pull-in or high dynamics.
+
+These names describe feedback estimators, not magic boxes. A loss of lock, a
+cycle slip, or a falling carrier-to-noise-density ratio means that a downstream
+filter should reconsider the observation quality rather than trusting a stale
+number more enthusiastically.
+
+The following deterministic demonstration is an acquisition *shape*, not a GNSS
+decoder. It uses a short synthetic code and complex samples to recover a known
+integer code delay and Doppler hypothesis.
+
+```{python}
+#| label: gnss-synthetic-acquisition
+#| echo: true
+
+import numpy as np
+
+
+def synthetic_acquisition() -> tuple[int, float, np.ndarray]:
+    """Recover delay and Doppler from one synthetic spread-spectrum code period."""
+    rng = np.random.default_rng(17)
+    chips = np.array([1, -1, 1, 1, -1, 1, -1, -1, 1, -1, 1, -1, 1])
+    samples_per_chip = 8
+    local_code = np.repeat(chips, samples_per_chip).astype(complex)
+    sample_rate_hz = 8_000.0
+    time_s = np.arange(local_code.size) / sample_rate_hz
+
+    true_delay = 19
+    true_doppler_hz = 250.0
+    noise = 0.20 * (
+        rng.normal(size=local_code.size) + 1j * rng.normal(size=local_code.size)
+    )
+    received = (
+        np.roll(local_code, true_delay)
+        * np.exp(1j * 2.0 * np.pi * true_doppler_hz * time_s)
+        + noise
+    )
+
+    doppler_hypotheses_hz = np.arange(-500.0, 501.0, 125.0)
+    metric = np.empty((doppler_hypotheses_hz.size, local_code.size))
+    for i, doppler_hz in enumerate(doppler_hypotheses_hz):
+        wiped = received * np.exp(-1j * 2.0 * np.pi * doppler_hz * time_s)
+        for delay in range(local_code.size):
+            metric[i, delay] = abs(np.vdot(np.roll(local_code, delay), wiped))
+
+    doppler_index, delay = np.unravel_index(np.argmax(metric), metric.shape)
+    return delay, doppler_hypotheses_hz[doppler_index], metric
+
+
+estimated_delay, estimated_doppler_hz, acquisition_metric = synthetic_acquisition()
+assert estimated_delay == 19
+assert estimated_doppler_hz == 250.0
+```
+
+The real search operates over longer codes, more hypotheses, changing data bits,
+and receiver-specific front-end behavior. Its output is still conceptually the
+same: a delay/frequency hypothesis strong enough to hand to a tracking loop.
+
+## The Observations Used by Navigation
+
+After tracking and navigation-data decoding, the receiver can produce several
+observation types. Their precision and failure modes differ.
+
+| Observable | Primary information | Important limitation |
+|---|---|---|
+| Pseudorange | Signal travel time and receiver position | Meter-scale noise, atmosphere, multipath, receiver/satellite clocks |
+| Doppler or pseudorange rate | Relative range rate and velocity | Frequency/clock modeling and multipath still matter |
+| Carrier phase | Fractional carrier cycles | Unknown integer ambiguity and cycle slips |
+| Quality indicators | C/N0, lock time, tracking flags, elevation | Indicators are evidence, not a guarantee of truth |
+
+A practical pseudorange model is
+
+$$
+\tilde\rho_s = \|\mathbf r_u - \mathbf r_s\|
++ c(\delta t_u - \delta t_s)
++ T_s + I_s + b_s + m_s + \epsilon_s,
+$$
+
+where receiver and satellite clock terms, tropospheric and ionospheric delay,
+hardware biases, multipath, and residual noise are visible rather than silently
+hidden in “GPS error.” Carrier phase has a related model, but the ionospheric
+term has the opposite sign and the unknown integer ambiguity enters as
+$\lambda N_s$. That ambiguity is why carrier phase can be remarkably precise
+without instantly producing an absolute range.
+
+The navigation message supplies ephemeris, clock information, health/status data,
+and other broadcast parameters used to predict satellite state and correct the
+observations. Receiver PVT is therefore an estimation result, not a direct sensor
+reading. [@kaplanHegarty2017; @misraEnge2006]
+
+## Receiver PVT and Coupling Boundaries
+
+In a standalone receiver, a least-squares or filter solution estimates position,
+velocity, receiver clock offset, and clock drift from the observations. The
+integrated-navigation architecture is named for the point at which it accepts GNSS
+information. [@kaplanHegarty2017; @misraEnge2006]
+
+```{mermaid}
+%%| label: fig-gnss-coupling-boundaries
+%%| fig-cap: "Coupling differs by the boundary crossed by INS aiding and GNSS measurements, not by a marketing label on the receiver."
+
+flowchart LR
+    subgraph L["Loose coupling"]
+        LPVT["Receiver PVT"] --> LF["Navigation filter"]
+        LINS["INS propagation"] --> LF
+    end
+    subgraph T["Tight coupling"]
+        TOBS["Pseudorange, Doppler, carrier phase"] --> TF["Navigation filter"]
+        TINS["INS propagation"] --> TF
+    end
+    subgraph D["Deep / very-tight coupling"]
+        DINS["INS state"] --> DF["Navigation estimator"]
+        DF --> DAID["Code/carrier aiding"]
+        DAID --> DTRACK["DLL / PLL / FLL"]
+        DTRACK --> DOBS["GNSS observables"]
+        DOBS --> DF
+    end
+```
+
+### Loose Coupling
+
+Loose integration consumes the receiver's position and velocity solution. It is
+modular, straightforward to validate, and remains the assessed-course
+implementation. It needs a usable receiver PVT solution, so it cannot exploit a
+set of partial observations when too few satellites are available for standalone
+PVT.
+
+### Tight Coupling
+
+Tight integration predicts each satellite observation from the navigation state
+and fuses its residual directly. The state normally gains receiver clock offset
+and clock-drift terms. A minimal pseudorange residual has the form
+
+$$
+y_s = \tilde\rho_s -
+\left(\|\hat{\mathbf r}_u - \mathbf r_s\| + c\hat{\delta t}_u
+- c\delta t_s + \hat T_s + \hat I_s\right).
+$$
+
+The following interface sketch makes that boundary concrete. It is a measurement
+prediction, not a complete correction or a substitute for transmit-time and Earth
+rotation handling in production software.
+
+```{python}
+#| label: gnss-tight-pseudorange-residual
+#| eval: false
+
+import numpy as np
+
+SPEED_OF_LIGHT_MPS = 299_792_458.0
+
+
+def predicted_pseudorange_m(
+    receiver_ecef_m: np.ndarray,
+    satellite_ecef_m: np.ndarray,
+    receiver_clock_bias_s: float,
+    satellite_clock_bias_s: float,
+    modeled_delay_m: float,
+) -> float:
+    """Return the simplified tight-coupling pseudorange prediction."""
+    geometric_range_m = np.linalg.norm(receiver_ecef_m - satellite_ecef_m)
+    clock_range_m = SPEED_OF_LIGHT_MPS * (
+        receiver_clock_bias_s - satellite_clock_bias_s
+    )
+    return geometric_range_m + clock_range_m + modeled_delay_m
+
+
+def tight_pseudorange_residual_m(
+    measured_pseudorange_m: float, **prediction_inputs
+) -> float:
+    """Return measured-minus-predicted residual for one satellite."""
+    return measured_pseudorange_m - predicted_pseudorange_m(**prediction_inputs)
+```
+
+Tight coupling may continue to obtain useful information from fewer than four
+satellites because the INS and its covariance provide a prior. It also demands
+satellite-state, clock, atmosphere, quality-control, timing, and antenna models
+that are absent from the loose-coupling project.
+
+### Deep and Very-Tight Coupling
+
+Terminology varies: some authors use *deep*, *ultra-tight*, and *very tight*
+interchangeably; others draw distinctions based on exactly which loop receives
+navigation aiding. In this book, **deep/very-tight integration** means that the
+INS-estimated dynamics aid code or carrier tracking loops, while the resulting
+receiver observables remain part of the navigation estimator. It is a receiver
+and estimator co-design problem, not simply a tighter Kalman update.
+
+## Carrier Phase, Corrections, and High-Accuracy GNSS
+
+Carrier phase enables high relative precision after the integer ambiguities are
+handled correctly. RTK uses common observations from a rover and a nearby base
+station or correction network to reduce shared errors; a *float* solution leaves
+ambiguities unresolved, while a *fixed* solution has accepted an integer
+hypothesis. A false fix is worse than an honest float solution.
+
+PPP uses precise satellite orbit and clock products rather than a local base.
+PPP-RTK combines precise corrections with ambiguity-resolution methods to reduce
+the convergence penalty. These approaches change the correction and state model;
+they do not remove the need to detect multipath, data gaps, cycle slips, timing
+errors, and incorrect antenna modeling. [@kaplanHegarty2017; @misraEnge2006]
+
+## Public Signals and Protected Services
+
+The table is a map of publicly documented interfaces, not a receiver procurement
+guide. Signal availability and service documentation change, so receiver design
+must use the current ICD rather than this summary.
+
+| System or service | Public course-level treatment | Boundary in this book |
+|---|---|---|
+| GPS civil signals | Civil ranging, navigation data, and multi-frequency observations | Refer to the current public IS-GPS interface specification [@isGps200] |
+| Galileo Open Service | Open signal, data, and service interfaces | Refer to the current OS SIS ICD [@galileoOsSisIcd] |
+| BeiDou open services | Open-service signal interfaces and corrections | Refer to the current public BDS ICDs [@beidouOpenIcd] |
+| GPS M-Code | Modernized military GPS signal/service | Public role and access boundary only; no receiver, key, or protected-interface implementation [@gpsMcodeAep] |
+
+M-Code is not a fourth coupling architecture and it does not turn an otherwise
+ordinary estimator into a resilient navigation system by itself. It is discussed
+here because signal/service access affects what observations a receiver can
+provide. This course confines the discussion to public material and treats
+security-sensitive receiver behavior as outside scope.
+
+## Integrity and Resilience
+
+Accuracy asks how close an estimate is to truth. Integrity asks whether the system
+can recognize and report when it should not be trusted. Quality indicators,
+innovation tests, satellite geometry, consistency with other aiding sources, and
+explicit degraded modes all contribute evidence. None is a universal proof against
+multipath, interference, spoofing, bad corrections, or a poor receiver model.
+
+When GNSS quality degrades, a responsible navigation system should timestamp and
+log the event, gate or downweight observations according to its model, grow
+uncertainty appropriately, and publish the resulting health state. “The point
+estimate did not jump” is not an integrity argument.
+
+## Further Reading
+
+For receiver and observable detail, see [@kaplanHegarty2017] and
+[@misraEnge2006]. For the global-scale estimator and the assessed loose-coupling
+workflow, return to the GNSS and INS chapters. The important connection is now
+visible: a GNSS position solution, raw pseudorange, and code-tracking error are
+different products of the same radio-navigation chain, so they belong at different
+places in an integrated navigation architecture.

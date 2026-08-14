@@ -9,6 +9,12 @@ date: "2026-05-19"
 
 This chapter serves as a comprehensive mathematical reference for the navigation algorithms and theory presented throughout the course. It provides detailed proofs, complete derivations, and reference equations that students and practitioners can consult when implementing algorithms or understanding the theoretical foundations.
 
+::: {.callout-note title="Optional technical reference"}
+This appendix is not a separate assessed unit. Use it when a derivation in the
+main text needs more detail, while treating the primary chapter and its runnable
+example as the source of the course workflow.
+:::
+
 ## Kalman Filter Optimality
 
 ### Wiener Filter Foundation

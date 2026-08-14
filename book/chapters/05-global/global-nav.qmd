@@ -48,16 +48,26 @@ measurements into the navigation frame, integrate the state, and keep track of t
 fact that the navigation frame itself moves and rotates as the vehicle moves over
 the ellipsoid.
 
-::: {.callout-note title="Figure placeholder: flat tangent plane vs WGS84 ellipsoid"}
-Add a diagram showing a local flat tangent plane touching the WGS84 ellipsoid at
-one point. Show that the flat approximation remains close near the tangent point
-but separates from the ellipsoid over longer distances.
-:::
+```{mermaid}
+%%| label: fig-flat-tangent-wgs84
+%%| fig-cap: "A local tangent plane is a useful short-range approximation, not a second Earth."
 
-::: {.callout-note title="Figure placeholder: ECI, ECEF, NED, and body frames"}
-Add a frame diagram with ECI fixed in inertial space, ECEF rotating with Earth,
-local NED attached to the vehicle position, and body axes fixed to the vehicle.
-:::
+flowchart TB
+    E["WGS84 ellipsoid"] --- R["Reference point"]
+    R --- T["Local tangent NED plane"]
+    T --- V["Vehicle remains close to reference"]
+    E --- G["Long-range motion follows curved geometry"]
+```
+
+```{mermaid}
+%%| label: fig-global-navigation-frames
+%%| fig-cap: "Frame hierarchy for global navigation. ECI is inertial, ECEF rotates with Earth, NED is local, and body axes move with the vehicle."
+
+flowchart LR
+    I["ECI: inertial frame"] --> E["ECEF: Earth-fixed frame"]
+    E --> N["Local NED frame"]
+    N --> B["Body / IMU frame"]
+```
 
 The WGS84 ellipsoid gives the standard geometric model used by GPS and most
 modern navigation systems. A geodetic position is normally written as latitude
@@ -116,10 +126,27 @@ GNSS solution needs at least four satellites. More satellites make the solution
 overdetermined, which lets the receiver estimate a better solution and reject bad
 measurements when the geometry and integrity checks support it.
 
-::: {.callout-note title="Figure placeholder: GNSS pseudorange geometry"}
-Add a diagram showing several satellites, the receiver antenna, true geometric
-ranges, pseudorange spheres, and the receiver clock-bias term that shifts all ranges.
-:::
+### Geometry and Reported Quality
+
+Satellite geometry determines how measurement error projects into a position
+solution. A receiver commonly summarizes that geometry with dilution of precision
+(DOP): lower values are generally better, but DOP is not an accuracy guarantee.
+It says nothing by itself about multipath, clock faults, bad atmospheric models,
+or a measurement that arrived at the wrong time. Treat satellite count, DOP,
+reported covariance, and receiver status as evidence to be checked together
+[@groves; @kaplanHegarty2017].
+
+```{mermaid}
+%%| label: fig-gnss-pseudorange-geometry
+%%| fig-cap: "A pseudorange combines geometric range with clock, atmosphere, and measurement errors."
+
+flowchart TB
+    S1["Satellite 1"] -->|"geometric range + clock terms"| R["Receiver antenna"]
+    S2["Satellite 2"] -->|"geometric range + clock terms"| R
+    S3["Satellite 3"] -->|"geometric range + clock terms"| R
+    S4["Satellite 4"] -->|"geometric range + clock terms"| R
+    R --> X["Estimate position and receiver clock offset"]
+```
 
 GNSS can also estimate velocity. A receiver often uses carrier Doppler or
 pseudorange-rate measurements to estimate range rate to each satellite. These range
@@ -177,6 +204,15 @@ correct INS drift quickly enough. A practical implementation should adapt or gat
 GNSS measurements using receiver quality flags, innovation size, reported accuracy,
 satellite count, geometry, and knowledge of the operating environment.
 
+### Accuracy, Availability, and Integrity
+
+**Accuracy** is closeness to the true state. **Availability** is whether a service
+or measurement is usable under its declared conditions. **Integrity** is the
+ability to warn when the system should not be used as intended. A small reported
+standard deviation is an accuracy statement; it is not an integrity guarantee.
+For the project, record quality flags, use innovation gating, and make stale or
+rejected measurements visible in diagnostics.
+
 ## Why INS and GNSS Fit Together
 
 An inertial navigation system and a GNSS receiver fail in different ways. That is
@@ -193,10 +229,19 @@ returns, it can pull the inertial solution back toward the global reference fram
 The system is not magic; it is a trade between short-term continuity and long-term
 bounded error.
 
-::: {.callout-note title="Figure placeholder: GNSS outage and INS drift"}
-Add a timeline plot showing GNSS updates bounding INS drift, followed by an
-outage interval where uncertainty grows, then recovery when GNSS returns.
-:::
+```{mermaid}
+%%| label: fig-gnss-outage-ins-drift
+%%| fig-cap: "GNSS bounds long-term inertial drift; uncertainty must grow during an aiding outage."
+
+sequenceDiagram
+    participant INS as INS propagation
+    participant GNSS as GNSS update
+    GNSS->>INS: position and velocity correction
+    Note over INS,GNSS: bounded uncertainty
+    Note over INS: GNSS outage: propagate only
+    Note over INS: covariance grows
+    GNSS->>INS: timestamped recovery update
+```
 
 ## Loosely Coupled INS/GNSS Integration
 
@@ -212,11 +257,17 @@ This is the architecture we will use:
 4. The Kalman update estimates the INS error state.
 5. The estimated error is injected back into the nominal navigation state.
 
-::: {.callout-note title="Figure placeholder: loosely coupled INS/GNSS architecture"}
-Add a block diagram showing raw IMU measurements feeding strapdown propagation,
-GNSS position/velocity feeding the measurement update, and estimated error-state
-corrections being injected into the nominal INS state.
-:::
+```{mermaid}
+%%| label: fig-loose-ins-gnss-architecture
+%%| fig-cap: "Loose INS/GNSS integration uses receiver position and velocity as measurements of a propagated nominal state."
+
+flowchart LR
+    IMU["IMU samples"] --> PROP["Strapdown nominal propagation"]
+    GNSS["GNSS PVT: position, velocity, quality"] --> UPDATE["Error-state measurement update"]
+    PROP --> UPDATE
+    UPDATE --> INJECT["Inject state and bias correction"]
+    INJECT --> PROP
+```
 
 The nominal inertial state may be represented as
 

@@ -8,8 +8,6 @@ The required backend is **FastSLAM 1.0**: vehicle pose is represented by particl
 
 This project is worth **25% of the course grade**.
 
-**Estimated time:** 25-35 hours
-
 **Learning outcomes:**
 
 - Load and inspect the original Victoria Park laser, odometry, and GPS files.
@@ -25,7 +23,7 @@ The attached FastSLAM paper is technical context, not an instruction sheet. Use 
 
 Use the local Victoria Park data:
 
-```text
+``` text
 data/victoria-park/
   aa3_lsr2.mat   # LASER, TLsr
   aa3_dr.mat     # speed, steering, time
@@ -46,7 +44,7 @@ Important conventions:
 
 Work from the Module 2 package:
 
-```text
+``` text
 projects/victoria_park_slam/
   pyproject.toml
   src/victoria_park_slam/
@@ -55,7 +53,7 @@ projects/victoria_park_slam/
 
 Useful starter interfaces include:
 
-```python
+``` python
 from victoria_park_slam.datasets import (
     load_victoria_park_data,
     resolve_victoria_park_root,
@@ -85,48 +83,40 @@ You may add helper modules, notebooks, scripts, and tests. Keep the package orga
 
 Use a planar vehicle pose:
 
-$$
-x_t =
+$$x_t =
 \begin{bmatrix}
 p_x \\
 p_y \\
 \theta
-\end{bmatrix},
-$$
+\end{bmatrix},$$
 
 where $p_x$ and $p_y$ are position in a local map frame and $\theta$ is heading.
 
 The landmark map is a set of 2D tree positions:
 
-$$
-m = \{\ell_1, \ell_2, \ldots, \ell_N\},
+$$m = \{\ell_1, \ell_2, \ldots, \ell_N\},
 \qquad
 \ell_j =
 \begin{bmatrix}
 m_{x,j} \\
 m_{y,j}
-\end{bmatrix}.
-$$
+\end{bmatrix}.$$
 
 The control input comes from wheel speed and steering:
 
-$$
-u_t =
+$$u_t =
 \begin{bmatrix}
 v_t \\
 \delta_t
-\end{bmatrix}.
-$$
+\end{bmatrix}.$$
 
 The observation for one extracted tree candidate is:
 
-$$
-z_t =
+$$z_t =
 \begin{bmatrix}
 r_t \\
 \beta_t
-\end{bmatrix},
-$$
+\end{bmatrix},$$
 
 where $r_t$ is range and $\beta_t$ is bearing in the scanner/vehicle frame. You may include estimated trunk diameter and scan-segment metadata in your front end, but the FastSLAM measurement update should use range and bearing.
 
@@ -136,68 +126,49 @@ FastSLAM factorizes the SLAM posterior by conditioning landmark estimates on eac
 
 Use a bicycle-style planar motion model. With wheelbase $L$, speed $v$, steering angle $\delta$, and heading $\theta$:
 
-$$
-\dot p_x = v \cos\theta,
+$$\dot p_x = v \cos\theta,
 \qquad
 \dot p_y = v \sin\theta,
 \qquad
-\dot\theta = \frac{v}{L}\tan\delta.
-$$
+\dot\theta = \frac{v}{L}\tan\delta.$$
 
 For one time step $\Delta t$, define:
 
-$$
-\omega = \frac{v}{L}\tan\delta.
-$$
+$$\omega = \frac{v}{L}\tan\delta.$$
 
 If $|\omega|$ is small, the straight-line approximation is:
 
-$$
-p_{x,t+1} = p_{x,t} + v\cos\theta_t\Delta t,
-$$
+$$p_{x,t+1} = p_{x,t} + v\cos\theta_t\Delta t,$$
 
-$$
-p_{y,t+1} = p_{y,t} + v\sin\theta_t\Delta t,
-$$
+$$p_{y,t+1} = p_{y,t} + v\sin\theta_t\Delta t,$$
 
-$$
-\theta_{t+1} = \operatorname{wrap}(\theta_t + \omega\Delta t).
-$$
+$$\theta_{t+1} = \operatorname{wrap}(\theta_t + \omega\Delta t).$$
 
 For nonzero turn rate, use the constant-turn arc:
 
-$$
-p_{x,t+1}
+$$p_{x,t+1}
 = p_{x,t}
 + \frac{v}{\omega}
 \left[
 \sin(\theta_t + \omega\Delta t) - \sin\theta_t
-\right],
-$$
+\right],$$
 
-$$
-p_{y,t+1}
+$$p_{y,t+1}
 = p_{y,t}
 - \frac{v}{\omega}
 \left[
 \cos(\theta_t + \omega\Delta t) - \cos\theta_t
-\right],
-$$
+\right],$$
 
-$$
-\theta_{t+1} = \operatorname{wrap}(\theta_t + \omega\Delta t).
-$$
+$$\theta_{t+1} = \operatorname{wrap}(\theta_t + \omega\Delta t).$$
 
 For FastSLAM 1.0, each particle samples pose from the noisy motion model:
 
-$$
-x_t^{[i]} \sim p(x_t \mid x_{t-1}^{[i]}, u_t).
-$$
+$$x_t^{[i]} \sim p(x_t \mid x_{t-1}^{[i]}, u_t).$$
 
 A practical implementation can sample additive noise on the control input:
 
-$$
-\tilde u_t^{[i]} =
+$$\tilde u_t^{[i]} =
 \begin{bmatrix}
 v_t \\
 \delta_t
@@ -205,8 +176,7 @@ v_t \\
 +
 \eta_t^{[i]},
 \qquad
-\eta_t^{[i]} \sim \mathcal{N}(0, Q_u),
-$$
+\eta_t^{[i]} \sim \mathcal{N}(0, Q_u),$$
 
 then propagate each particle with $\tilde u_t^{[i]}$. You must report the wheelbase value, process-noise covariance, and any steering or speed preprocessing you use.
 
@@ -214,87 +184,67 @@ then propagate each particle with $\tilde u_t^{[i]}$. You must report the wheelb
 
 For pose $x = [p_x, p_y, \theta]^T$ and landmark $\ell_j = [m_x, m_y]^T$, define:
 
-$$
-\Delta x = m_x - p_x,
+$$\Delta x = m_x - p_x,
 \qquad
 \Delta y = m_y - p_y,
 \qquad
-q = \Delta x^2 + \Delta y^2.
-$$
+q = \Delta x^2 + \Delta y^2.$$
 
 The ideal range-bearing measurement is:
 
-$$
-h(x, \ell_j) =
+$$h(x, \ell_j) =
 \begin{bmatrix}
 \sqrt{q} \\
 \operatorname{wrap}\left(\operatorname{atan2}(\Delta y, \Delta x) - \theta\right)
-\end{bmatrix}.
-$$
+\end{bmatrix}.$$
 
 The actual measurement model is:
 
-$$
-z = h(x, \ell_j) + v_z,
+$$z = h(x, \ell_j) + v_z,
 \qquad
-v_z \sim \mathcal{N}(0, R).
-$$
+v_z \sim \mathcal{N}(0, R).$$
 
 For one particle, the landmark EKF treats the particle pose as known. The Jacobian with respect to the landmark position is:
 
-$$
-H_\ell =
+$$H_\ell =
 \begin{bmatrix}
 \frac{\Delta x}{\sqrt{q}} & \frac{\Delta y}{\sqrt{q}} \\
 -\frac{\Delta y}{q} & \frac{\Delta x}{q}
-\end{bmatrix}.
-$$
+\end{bmatrix}.$$
 
 The innovation is:
 
-$$
-\nu = z - h(x, \ell_j),
-$$
+$$\nu = z - h(x, \ell_j),$$
 
 with the bearing element wrapped into $[-\pi,\pi)$. The innovation covariance is:
 
-$$
-S = H_\ell P_\ell H_\ell^T + R.
-$$
+$$S = H_\ell P_\ell H_\ell^T + R.$$
 
 Use Mahalanobis distance for gating:
 
-$$
-d^2 = \nu^T S^{-1}\nu.
-$$
+$$d^2 = \nu^T S^{-1}\nu.$$
 
 Do not explicitly compute $S^{-1}$. Use a linear solve. For a 2D range-bearing measurement, a starting gate of $5.99$ corresponds to the 95% chi-square threshold. You should include a small gate-sensitivity study around values such as 4.61, 5.99, and 9.21.
 
 When no existing landmark passes the gate, initialize a new landmark with the inverse observation model:
 
-$$
-\ell =
+$$\ell =
 \begin{bmatrix}
 p_x + r\cos(\theta + \beta) \\
 p_y + r\sin(\theta + \beta)
-\end{bmatrix}.
-$$
+\end{bmatrix}.$$
 
 The measurement Jacobian for this inverse model is:
 
-$$
-G =
+$$G =
 \begin{bmatrix}
 \cos(\theta+\beta) & -r\sin(\theta+\beta) \\
 \sin(\theta+\beta) & r\cos(\theta+\beta)
-\end{bmatrix}.
-$$
+\end{bmatrix}.$$
 
 Initialize landmark covariance as:
 
-$$
-P_\ell = G R G^T.
-$$
+$$P_\ell = G R G^T.$$
 
 This covariance is conditional on the particle pose. If your implementation also accounts for pose uncertainty during landmark birth, document that extension clearly.
 
@@ -306,17 +256,17 @@ Turn raw laser scans into candidate tree observations.
 
 ### Requirements
 
-1. Load `LASER`, `TLsr`, `speed`, `steering`, `time`, and GPS arrays.
-2. Convert ranges to meters and timestamps to seconds.
-3. Reject invalid returns and ranges above the reliable sensor limit.
-4. Convert selected scans to scanner-frame XY points for inspection.
-5. Segment each scan using range discontinuities.
-6. Estimate compact tree candidates as range-bearing observations.
-7. Record diagnostics:
-   - features per scan;
-   - rejected scan segments;
-   - estimated tree diameters;
-   - sensitivity to segmentation thresholds.
+1.  Load `LASER`, `TLsr`, `speed`, `steering`, `time`, and GPS arrays.
+2.  Convert ranges to meters and timestamps to seconds.
+3.  Reject invalid returns and ranges above the reliable sensor limit.
+4.  Convert selected scans to scanner-frame XY points for inspection.
+5.  Segment each scan using range discontinuities.
+6.  Estimate compact tree candidates as range-bearing observations.
+7.  Record diagnostics:
+    - features per scan;
+    - rejected scan segments;
+    - estimated tree diameters;
+    - sensitivity to segmentation thresholds.
 
 ### Expected Plots
 
@@ -335,14 +285,14 @@ Decide whether each tree observation is an existing landmark, a new landmark, or
 
 ### Requirements
 
-1. Implement range-bearing prediction from pose and landmark position.
-2. Compute innovation and wrap bearing residuals.
-3. Compute Mahalanobis distance using the innovation covariance.
-4. Apply a chi-square gate, starting with 5.99 for a 2D measurement.
-5. Use nearest-neighbor or maximum-likelihood association inside each particle.
-6. Implement conservative landmark birth.
-7. Track landmark observation counts and age.
-8. Reject or deactivate weak landmarks when appropriate.
+1.  Implement range-bearing prediction from pose and landmark position.
+2.  Compute innovation and wrap bearing residuals.
+3.  Compute Mahalanobis distance using the innovation covariance.
+4.  Apply a chi-square gate, starting with 5.99 for a 2D measurement.
+5.  Use nearest-neighbor or maximum-likelihood association inside each particle.
+6.  Implement conservative landmark birth.
+7.  Track landmark observation counts and age.
+8.  Reject or deactivate weak landmarks when appropriate.
 
 ### Expected Diagnostics
 
@@ -379,19 +329,17 @@ Each landmark EKF should maintain:
 
 At each update:
 
-1. Predict each particle pose using speed, steering, elapsed time, and sampled motion noise.
-2. Extract or receive tree observations for the current laser scan.
-3. Associate each observation independently inside each particle.
-4. Initialize new landmark EKFs when appropriate.
-5. Update associated landmark EKFs.
-6. Update particle weights using measurement likelihood.
-7. Compute effective sample size:
+1.  Predict each particle pose using speed, steering, elapsed time, and sampled motion noise.
+2.  Extract or receive tree observations for the current laser scan.
+3.  Associate each observation independently inside each particle.
+4.  Initialize new landmark EKFs when appropriate.
+5.  Update associated landmark EKFs.
+6.  Update particle weights using measurement likelihood.
+7.  Compute effective sample size:
 
-$$
-N_\text{eff} = \frac{1}{\sum_i (w^{[i]})^2}.
-$$
+$$N_\text{eff} = \frac{1}{\sum_i (w^{[i]})^2}.$$
 
-8. Resample using systematic or low-variance resampling when $N_\text{eff}$ falls below your threshold.
+8.  Resample using systematic or low-variance resampling when $N_\text{eff}$ falls below your threshold.
 
 ### Required Diagnostics
 
@@ -451,21 +399,21 @@ You are not required to implement loop closure or pose graph optimization. You s
 
 Submit:
 
-1. Source code for your implementation.
-2. A short README explaining how to run it.
-3. Unit tests or small validation scripts for your geometry, landmark EKF, association, and resampling logic.
-4. A report with:
-   - dataset loading notes;
-   - system model and parameter values;
-   - forward mechanization/state transition description;
-   - observation model and Jacobians;
-   - feature extraction method;
-   - data association method;
-   - FastSLAM implementation details;
-   - required plots and diagnostics;
-   - comparison of EKF-SLAM, FastSLAM, and GraphSLAM;
-   - failure-mode discussion.
-5. Final map and trajectory plots.
+1.  Source code for your implementation.
+2.  A short README explaining how to run it.
+3.  Unit tests or small validation scripts for your geometry, landmark EKF, association, and resampling logic.
+4.  A report with:
+    - dataset loading notes;
+    - system model and parameter values;
+    - forward mechanization/state transition description;
+    - observation model and Jacobians;
+    - feature extraction method;
+    - data association method;
+    - FastSLAM implementation details;
+    - required plots and diagnostics;
+    - comparison of EKF-SLAM, FastSLAM, and GraphSLAM;
+    - failure-mode discussion.
+5.  Final map and trajectory plots.
 
 Your report should be concise and technical. Show evidence. Do not write a travel essay about the park unless it somehow explains a covariance matrix.
 
@@ -473,41 +421,26 @@ Your report should be concise and technical. Show evidence. Do not write a trave
 
 Project 2 is graded out of `100` project points.
 
-+-------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
-| Component                                 | Points   | Excellent (100%)                                                                                                                                               | Acceptable (~85%)                                                                                                                            | Marginal (~70%)                                                                                                                | Unacceptable (0%)                                                                                           |
-+===========================================+=========:+================================================================================================================================================================+================================================================================================================================================+================================================================================================================================+=============================================================================================================+
-| Dataset understanding and loading         | 10       | Loads the correct laser, odometry, timestamp, and GPS fields; handles units correctly; documents GPS limitations and keeps GPS out of the filter update path.  | Loads the main arrays correctly with only minor weaknesses in validation, organization, or explanation.                                      | Partially loads the dataset but has important mistakes in timing, units, field interpretation, or GPS usage.                  | Dataset handling is missing, nonfunctional, or fundamentally incorrect.                                      |
-|                                           |          | ***10 points***                                                                                                                                                | ***8 points***                                                                                                                               | ***7 points***                                                                                                                 |                                                                                                             |
-+-------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
-| Feature extraction front end              | 15       | Produces repeatable tree candidates with clear range filtering, segmentation, diameter reasoning, and diagnostic plots across multiple scans.                  | Produces mostly useful tree candidates with minor tuning, robustness, or diagnostic weaknesses.                                             | Feature extraction is fragile, overfit, or creates many false or missed landmarks with limited evidence.                       | No usable feature extraction.                                                                               |
-|                                           |          | ***15 points***                                                                                                                                                | ***12 points***                                                                                                                              | ***10 points***                                                                                                                |                                                                                                             |
-+-------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
-| System and measurement model mathematics  | 15       | Clearly derives and implements the bicycle transition, inverse landmark initialization, range-bearing prediction, Jacobian, covariance, innovation, and gate.  | Model math is mostly correct with minor weaknesses in notation, covariance explanation, or parameter justification.                         | Important pieces of the model are missing, inconsistent, or only weakly connected to the implementation.                       | Model description is missing or technically unusable.                                                        |
-|                                           |          | ***15 points***                                                                                                                                                | ***12 points***                                                                                                                              | ***10 points***                                                                                                                |                                                                                                             |
-+-------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
-| Data association and landmark management  | 15       | Implements per-particle association with Mahalanobis gating, conservative landmark birth, outlier handling, and landmark lifecycle diagnostics.                | Association works in the main cases with minor weaknesses in birth logic, rejection policy, or diagnostics.                                 | Association is only partially working or often merges distinct trees, duplicates landmarks, or accepts obvious outliers.       | No meaningful association or landmark management.                                                           |
-|                                           |          | ***15 points***                                                                                                                                                | ***12 points***                                                                                                                              | ***10 points***                                                                                                                |                                                                                                             |
-+-------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
-| FastSLAM backend                          | 20       | Implements a complete FastSLAM 1.0 backend with stable log weights, per-particle landmark EKFs, effective-sample-size monitoring, and low-variance resampling. | FastSLAM is fundamentally working with only minor weaknesses in tuning, numerical stability, or code organization.                          | Backend is oversimplified, unstable, or missing important particle, EKF, likelihood, or resampling behavior.                   | FastSLAM backend is missing, nonfunctional, or not actually FastSLAM.                                        |
-|                                           |          | ***20 points***                                                                                                                                                | ***16 points***                                                                                                                              | ***14 points***                                                                                                                |                                                                                                             |
-+-------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
-| Evaluation and diagnostics                | 15       | Provides clear trajectory, map, runtime, particle, association, map-growth, and parameter-sensitivity evidence tied to implementation decisions.               | Provides useful plots and diagnostics, but some sensitivity studies, runtime evidence, or interpretation are limited.                       | Evidence is shallow, difficult to reproduce, or not sufficient to diagnose whether the implementation is working.             | Evaluation is missing or unsupported by meaningful outputs.                                                  |
-|                                           |          | ***15 points***                                                                                                                                                | ***12 points***                                                                                                                              | ***10 points***                                                                                                                |                                                                                                             |
-+-------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
-| Technical report and method comparison    | 10       | Report is concise, reproducible, and technically grounded; compares EKF-SLAM, FastSLAM, and GraphSLAM using the student's actual results and failure modes.    | Report is mostly clear and correct, but some comparisons are generic or some reproducibility details are thin.                              | Report is superficial, poorly organized, or weakly connected to the code and plots.                                            | Report or comparison analysis is missing.                                                                   |
-|                                           |          | ***10 points***                                                                                                                                                | ***8 points***                                                                                                                               | ***7 points***                                                                                                                 |                                                                                                             |
-+-------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------+------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------+
+| Component | Points | Excellent (100%) | Acceptable (\~85%) \| Marginal (\~70%) \| Unacceptable (0%) \| |
+|------------|-----------:|-------------|------------|
+| Dataset understanding and loading | 10 | Loads the correct laser, odometry, timestamp, and GPS fields; handles units correctly; documents GPS limitations and keeps GPS out of the filter update path. ***10 points*** | Loads the main arrays correctly with only minor weaknesses in validation, organization, or explanation. \| Partially loads the dataset but has important mistakes in timing, units, field interpretation, or GPS usage. \| Dataset handling is missing, nonfunctional, or fundamentally incorrect. \| ***8 points*** \| ***7 points*** \| \| |
+| Feature extraction front end | 15 | Produces repeatable tree candidates with clear range filtering, segmentation, diameter reasoning, and diagnostic plots across multiple scans. ***15 points*** | Produces mostly useful tree candidates with minor tuning, robustness, or diagnostic weaknesses. \| Feature extraction is fragile, overfit, or creates many false or missed landmarks with limited evidence. \| No usable feature extraction. \| ***12 points*** \| ***10 points*** \| \| |
+| System and measurement model mathematics | 15 | Clearly derives and implements the bicycle transition, inverse landmark initialization, range-bearing prediction, Jacobian, covariance, innovation, and gate. ***15 points*** | Model math is mostly correct with minor weaknesses in notation, covariance explanation, or parameter justification. \| Important pieces of the model are missing, inconsistent, or only weakly connected to the implementation. \| Model description is missing or technically unusable. \| ***12 points*** \| ***10 points*** \| \| |
+| Data association and landmark management | 15 | Implements per-particle association with Mahalanobis gating, conservative landmark birth, outlier handling, and landmark lifecycle diagnostics. ***15 points*** | Association works in the main cases with minor weaknesses in birth logic, rejection policy, or diagnostics. \| Association is only partially working or often merges distinct trees, duplicates landmarks, or accepts obvious outliers. \| No meaningful association or landmark management. \| ***12 points*** \| ***10 points*** \| \| |
+| FastSLAM backend | 20 | Implements a complete FastSLAM 1.0 backend with stable log weights, per-particle landmark EKFs, effective-sample-size monitoring, and low-variance resampling. ***20 points*** | FastSLAM is fundamentally working with only minor weaknesses in tuning, numerical stability, or code organization. \| Backend is oversimplified, unstable, or missing important particle, EKF, likelihood, or resampling behavior. \| FastSLAM backend is missing, nonfunctional, or not actually FastSLAM. \| ***16 points*** \| ***14 points*** \| \| |
+| Evaluation and diagnostics | 15 | Provides clear trajectory, map, runtime, particle, association, map-growth, and parameter-sensitivity evidence tied to implementation decisions. ***15 points*** | Provides useful plots and diagnostics, but some sensitivity studies, runtime evidence, or interpretation are limited. \| Evidence is shallow, difficult to reproduce, or not sufficient to diagnose whether the implementation is working. \| Evaluation is missing or unsupported by meaningful outputs. \| ***12 points*** \| ***10 points*** \| \| |
+| Technical report and method comparison | 10 | Report is concise, reproducible, and technically grounded; compares EKF-SLAM, FastSLAM, and GraphSLAM using the student's actual results and failure modes. ***10 points*** | Report is mostly clear and correct, but some comparisons are generic or some reproducibility details are thin. \| Report is superficial, poorly organized, or weakly connected to the code and plots. \| Report or comparison analysis is missing. \| ***8 points*** \| ***7 points*** \| \| |
 
 ## Suggested Milestones
 
-1. Load the dataset and plot several laser scans.
-2. Build a feature extractor and tune it on a small scan subset.
-3. Implement and test range-bearing prediction, inverse initialization, and the landmark Jacobian.
-4. Implement and test `LandmarkEKF` on synthetic range-bearing data.
-5. Implement FastSLAM on a synthetic landmark world.
-6. Run on a short Victoria Park slice.
-7. Scale to a longer segment and add diagnostics.
-8. Complete the comparison and failure-mode report.
+1.  Load the dataset and plot several laser scans.
+2.  Build a feature extractor and tune it on a small scan subset.
+3.  Implement and test range-bearing prediction, inverse initialization, and the landmark Jacobian.
+4.  Implement and test `LandmarkEKF` on synthetic range-bearing data.
+5.  Implement FastSLAM on a synthetic landmark world.
+6.  Run on a short Victoria Park slice.
+7.  Scale to a longer segment and add diagnostics.
+8.  Complete the comparison and failure-mode report.
 
 ## References
 

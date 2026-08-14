@@ -43,6 +43,20 @@ flowchart LR
     x7 --> B((B))
 ```
 
+## Navigation's Contract with Guidance and Control
+
+Navigation does not merely publish a pose. Guidance needs a state estimate with a
+frame and a time of validity so that it can reason about where the vehicle will be
+when an action takes effect. Control needs the same information at a predictable
+rate, along with a health or uncertainty indication that tells it when tighter
+margins or a degraded mode are appropriate. In return, navigation needs
+measurements, calibration, clock information, and a clear statement of the
+vehicle point represented by each sensor.
+
+This is why covariance, timestamp, and integrity belong beside position, velocity,
+and attitude. A controller that receives a stale or overconfident state is not
+receiving a complete navigation solution.
+
 ## A Brief History of Navigation
 
 ### Navigation and the Earth and the Historical Problem of Navigation
