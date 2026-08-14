@@ -1,7 +1,7 @@
 [project]
-name = "advanced-navigation"
+name = "advanced-navigation-workspace"
 version = "0.1.0"
-description = "Add your description here"
+description = "Course notes and starter workspace for advanced navigation projects."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -13,4 +13,11 @@ dependencies = [
     "opencv-python>=4.13.0.92",
     "quarto>=0.1.0",
     "scipy>=1.17.1",
+]
+
+[tool.uv.workspace]
+members = [
+    "projects/drone_pipeline",
+    "projects/victoria_park_slam",
+    "projects/ins_gnss",
 ]
