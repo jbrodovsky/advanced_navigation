@@ -6,26 +6,29 @@ Data association answers a deceptively simple question:
 
 In Victoria Park, the measurements are tree candidates extracted from laser scans. The map landmarks are previously observed tree trunks. If the association is correct, the SLAM backend improves both pose and map. If the association is wrong, the filter confidently updates the wrong object. Confidence is not the same thing as correctness; it just makes the mistake look tidy.
 
-This chapter focuses on the association tools needed for the FastSLAM project:
+This chapter is the book's canonical treatment of gating; the sensing chapter's overview (@sec-feature-association) defers to it. It covers the association tools needed for the FastSLAM project and a few that the project does not strictly need but every navigation engineer should recognize:
 
-- nearest-neighbor and maximum-likelihood matching;
-- Mahalanobis gating;
-- outlier rejection;
-- landmark birth and deletion;
-- per-particle association in FastSLAM.
+- innovations, Mahalanobis distance, and chi-square gates;
+- nearest-neighbor and maximum-likelihood matching, and how to choose the gate;
+- joint compatibility, for when innovations are correlated through a shared pose;
+- one-to-one assignment;
+- per-particle association in FastSLAM, including how to score new landmarks and outliers;
+- landmark birth, confirmation, and deletion.
+
+The notation follows @sec-slam: robot pose $\mathbf{x} = [x, y, \theta]^T$, landmark positions $\boldsymbol{\ell}_j$, range-bearing measurements $\mathbf{z} = [r, \beta]^T$, measurement noise $\mathbf{R}$, and particle index $[i]$.
 
 ## The Association Problem {#sec-slam-association-problem}
 
-At time $t$, suppose the feature extractor returns observations
+At time $k$, suppose the feature extractor returns observations
 
 $$
-Z_t = \{z_t^1, z_t^2, \ldots, z_t^K\}.
+Z_k = \{\mathbf{z}_k^1, \mathbf{z}_k^2, \ldots, \mathbf{z}_k^K\}.
 $$
 
 The current map contains landmarks
 
 $$
-m = \{\ell_1, \ell_2, \ldots, \ell_N\}.
+\mathbf{m} = \{\boldsymbol{\ell}_1, \boldsymbol{\ell}_2, \ldots, \boldsymbol{\ell}_N\}.
 $$
 
 For each observation, we choose one of three outcomes:
@@ -38,32 +41,30 @@ The third outcome matters. A feature extractor will sometimes report moving obje
 
 ## Innovation and Mahalanobis Distance {#sec-slam-association-innovation-mahalanobis-distance}
 
-For a particle pose $x$ and landmark $\ell_j$, the predicted measurement is
+For a pose $\mathbf{x}$ and landmark $\boldsymbol{\ell}_j$, the predicted measurement is $\hat{\mathbf{z}}_j = h(\mathbf{x}, \boldsymbol{\ell}_j)$, and the innovation is
 
 $$
-\hat{z}_j = h(x, \ell_j).
+\boldsymbol{\nu}_j = \mathbf{z} - \hat{\mathbf{z}}_j,
 $$
 
-The innovation is
+with its bearing component wrapped to $[-\pi, \pi)$. The wrap is not optional. A tree almost directly behind the robot may be predicted at $+179^\circ$ and measured at $-179^\circ$; the raw difference is $-358^\circ$, the true difference is $+2^\circ$, and an unwrapped residual turns a perfect match into a confident rejection. Wrap every bearing residual before it is used anywhere: in the gate, in the likelihood, and in the update.
+
+What the innovation covariance contains depends on what is uncertain. Inside one FastSLAM particle the pose is known, and only the landmark and the sensor contribute:
 
 $$
-\nu_j = z - \hat{z}_j.
-$$
+\mathbf{S}_j = \mathbf{H}_\ell \mathbf{P}_j \mathbf{H}_\ell^T + \mathbf{R},
+$$ {#eq-slam-association-S-particle}
 
-For a range-bearing observation, wrap the bearing residual into $[-\pi, \pi)$.
-
-The innovation covariance is
+where $\mathbf{P}_j$ is landmark $j$'s covariance in that particle and $\mathbf{H}_\ell$ is the $2 \times 2$ Jacobian with respect to the landmark. In EKF-SLAM the pose is uncertain and correlated with the map, so the full state covariance enters through the sparse Jacobian $\mathbf{H} = [\mathbf{H}_x\ \mathbf{0} \cdots \mathbf{H}_\ell \cdots \mathbf{0}]$ of @sec-slam-ekf-slam-one:
 
 $$
-S_j = H_j P_j H_j^T + R,
-$$
+\mathbf{S}_j = \mathbf{H}\mathbf{P}\mathbf{H}^T + \mathbf{R}.
+$$ {#eq-slam-association-S-ekf}
 
-where $P_j$ is the landmark covariance inside the current particle and $R$ is the measurement covariance.
-
-The squared Mahalanobis distance is
+Either way, the squared Mahalanobis distance is
 
 $$
-d_j^2 = \nu_j^T S_j^{-1} \nu_j.
+d_j^2 = \boldsymbol{\nu}_j^T \mathbf{S}_j^{-1} \boldsymbol{\nu}_j.
 $$
 
 This distance accounts for uncertainty. A one-meter residual is severe for a very certain landmark and unremarkable for a weakly initialized one.
@@ -74,6 +75,7 @@ This distance accounts for uncertainty. A one-meter residual is severe for a ver
 import math
 
 import numpy as np
+from scipy.stats import chi2
 
 
 def wrap_angle(angle):
@@ -87,20 +89,34 @@ def squared_mahalanobis(residual, covariance):
     return float(residual @ np.linalg.solve(covariance, residual))
 
 
-residual = np.array([0.7, np.deg2rad(3.0)])
 S = np.diag([0.5**2, np.deg2rad(5.0)**2])
-squared_mahalanobis(residual, S)
+print(f"d^2 for a 0.7 m, 3 deg innovation: {squared_mahalanobis([0.7, np.deg2rad(3.0)], S):.2f}")
+
+# A tree almost directly behind the robot: predicted at +179 deg, measured at -179 deg.
+predicted, measured = np.deg2rad(179.0), np.deg2rad(-179.0)
+raw = np.array([0.1, measured - predicted])
+wrapped = np.array([0.1, wrap_angle(measured - predicted)])
+print(f"bearing residual raw:     {np.rad2deg(raw[1]):+7.1f} deg -> d^2 = {squared_mahalanobis(raw, S):9.1f}")
+print(f"bearing residual wrapped: {np.rad2deg(wrapped[1]):+7.1f} deg -> d^2 = {squared_mahalanobis(wrapped, S):9.2f}")
 ```
 
-For a 2D measurement, common chi-square gates are:
+If the model is right, the innovation is zero-mean Gaussian with covariance $\mathbf{S}_j$, and $d_j^2$ follows a chi-square distribution with as many degrees of freedom as the measurement has components. For a 2-D measurement the distribution has a closed form: $P(d^2 \le \gamma) = 1 - e^{-\gamma/2}$, so the gate that keeps probability $P$ of correct associations is $\gamma = -2\ln(1 - P)$:
 
-| Probability mass | Gate |
-|---:|---:|
-| 90% | 4.61 |
-| 95% | 5.99 |
-| 99% | 9.21 |
+| Probability mass | Gate | Role in this book |
+|---:|---:|---|
+| 90% | 4.61 | |
+| 95% | 5.99 | association gate |
+| 99% | 9.21 | |
+| 99.9% | 13.82 | birth gate |
 
-A 95% gate is a reasonable starting point. It is not a law of nature.
+```{python}
+#| label: chi-square-gates
+#| echo: true
+for p in (0.90, 0.95, 0.99, 0.999):
+    print(f"P = {p:5.3f}: chi2.ppf = {chi2.ppf(p, 2):6.3f}   -2 ln(1 - P) = {-2 * math.log(1 - p):6.3f}")
+```
+
+A 95% gate is a reasonable starting point. It is not a law of nature, and it comes with a built-in cost: by construction it rejects one correct association in twenty. What happens to those rejected observations is the subject of @sec-slam-association-landmark-birth.
 
 ## Nearest Neighbor and Maximum Likelihood {#sec-slam-association-nearest-neighbor-maximum}
 
@@ -115,12 +131,12 @@ Accept the match if $d_{j^*}^2$ is below the gate. Otherwise initialize a new la
 Maximum likelihood uses the full Gaussian likelihood:
 
 $$
-p(z \mid \ell_j, x) =
-\frac{1}{\sqrt{(2\pi)^k |S_j|}}
+p(\mathbf{z} \mid \boldsymbol{\ell}_j, \mathbf{x}) =
+\frac{1}{\sqrt{(2\pi)^2 \det \mathbf{S}_j}}
 \exp\left(-\frac{1}{2} d_j^2 \right).
 $$
 
-When all candidate innovation covariances are similar, nearest Mahalanobis distance and maximum likelihood usually choose the same landmark. When covariances differ substantially, likelihood is more precise.
+When all candidate innovation covariances are similar, nearest Mahalanobis distance and maximum likelihood usually choose the same landmark. When covariances differ substantially, likelihood is more precise: a vague landmark gets a small $d^2$ from almost anything, and the determinant term is what keeps it from winning every argument.
 
 ```{python}
 #| label: nearest-neighbor-association
@@ -156,38 +172,486 @@ candidate_measurements = [
 associate_by_gate(candidate_measurements)
 ```
 
-## Landmark Birth {#sec-slam-association-landmark-birth}
+## Choosing the Gate {#sec-slam-association-choosing-gate}
 
-If no existing landmark passes the gate, the measurement may be a new tree. Initialize a landmark using the inverse range-bearing model:
+The gate threshold creates a tradeoff:
+
+| Gate | Typical failure mode |
+|---|---|
+| too tight | correct matches rejected: duplicate landmarks, map bloat |
+| reasonable | stable map growth |
+| too loose | neighbors inside the gate: ambiguity, distinct trees merge |
+
+To see the tradeoff in numbers, put two trees 80 cm apart, 6 m in front of a particle, each mapped to about 15 cm, and observe tree A twenty thousand times with the toy sensor of @sec-slam. For each gate, count how often tree A falls outside it, how often its neighbor B falls inside, how often nearest neighbor picks B, and how often neither tree passes so that a single-gate filter would spawn a duplicate.
+
+```{python}
+#| label: gate-sensitivity
+#| echo: true
+R = np.diag([0.25**2, np.deg2rad(2.0)**2])      # the toy sensor of the SLAM chapter
+P_tree = 0.15**2 * np.eye(2)                      # each tree mapped to about 15 cm
+tree_a = np.array([6.0, 0.0])                     # the tree we are looking at
+tree_b = np.array([6.0, 0.8])                     # its neighbor, 80 cm away
+
+
+def range_bearing(pose, landmark):
+    """Range and bearing from pose(s) to landmark(s); broadcasts over rows."""
+    pose = np.atleast_2d(pose)
+    d = np.atleast_2d(landmark) - pose[:, :2]
+    return np.column_stack([np.hypot(d[:, 0], d[:, 1]),
+                            wrap_angle(np.arctan2(d[:, 1], d[:, 0]) - pose[:, 2])])
+
+
+def landmark_jacobian(pose, landmark):
+    """H_l = d(range, bearing) / d(landmark) at one pose."""
+    dx, dy = landmark - pose[:2]
+    q = dx * dx + dy * dy
+    r = math.sqrt(q)
+    return np.array([[dx / r, dy / r], [-dy / q, dx / q]])
+
+
+def gated_d2(z, pose, landmark, P_landmark):
+    """Mahalanobis distances of measurements z (one per row) to one mapped landmark."""
+    H = landmark_jacobian(pose, landmark)
+    S = H @ P_landmark @ H.T + R
+    nu = np.atleast_2d(z) - range_bearing(pose, landmark)
+    nu[:, 1] = wrap_angle(nu[:, 1])
+    return np.einsum("ni,ni->n", nu, np.linalg.solve(S, nu.T).T)
+
+
+rng = np.random.default_rng(7)
+pose = np.zeros(3)
+n = 20_000
+true_a = tree_a + rng.multivariate_normal(np.zeros(2), P_tree, n)   # map error
+z = range_bearing(pose, true_a) + rng.multivariate_normal(np.zeros(2), R, n)
+d2_a = gated_d2(z, pose, tree_a, P_tree)
+d2_b = gated_d2(z, pose, tree_b, P_tree)
+print(f"a perfect view of tree B sits at d^2 = "
+      f"{gated_d2(range_bearing(pose, tree_b), pose, tree_a, P_tree)[0]:.1f} from tree A\n")
+
+print(f"{'gate':>14s} {'A rejected':>11s} {'B in gate':>10s} {'wrong match':>12s} {'duplicate':>10s}")
+for gate in (4.61, 5.99, 9.21, 13.82):
+    a_in, b_in = d2_a < gate, d2_b < gate
+    wrong = b_in & (~a_in | (d2_b < d2_a))
+    duplicate = ~a_in & ~b_in                     # one gate: no match means spawn
+    print(f"{gate:14.2f} {np.mean(~a_in):11.1%} {np.mean(b_in):10.1%} "
+          f"{np.mean(wrong):12.1%} {np.mean(duplicate):10.2%}")
+
+a_in, b_in = d2_a < 5.99, d2_b < 5.99             # two gates: match at 5.99 ...
+wrong = b_in & (~a_in | (d2_b < d2_a))
+duplicate = (d2_a > 13.82) & (d2_b > 13.82)       # ... spawn only beyond 13.82
+print(f"{'5.99 / 13.82':>14s} {np.mean(~a_in):11.1%} {np.mean(b_in):10.1%} "
+      f"{np.mean(wrong):12.1%} {np.mean(duplicate):10.2%}")
+```
+
+Three lessons hide in that table. First, the too-tight gate is a duplicate factory: at 4.61, one view of tree A in ten fails the gate, and in a single-gate filter most of those failures (7.8% of all views) become a new tree. Second, the too-loose gate makes ambiguity routine: at 13.82, tree B is a candidate for most observations of tree A. Third, and less obviously, the wrong-match rate of nearest neighbor barely moves with the gate. It is set by geometry: whenever the noise carries an observation of A closer to B than to A, which happens about one time in eighteen for trees this close, nearest neighbor is wrong at any gate. No threshold can fix that; better hypotheses (@sec-slam-association-joint-compatibility) and multiple hypotheses (@sec-slam-association-per-particle-association) can.
+
+The last row is the two-gate rule the project uses: match at 5.99, spawn only beyond 13.82. It keeps the matching behavior of the 5.99 gate and the duplicate rate of the 13.82 gate. The observations that fall between the gates are discarded, which costs a little information and saves a lot of map. For the project report, a small sensitivity study is still worth doing: compare map size and trajectory shape with association gates near 4.61, 5.99, and 9.21.
+
+## Individual and Joint Compatibility {#sec-slam-association-joint-compatibility}
+
+Everything so far tests one pairing at a time. A pairing $(a, j)$ of observation $a$ with landmark $j$ is **individually compatible** if $d^2_{aj}$ passes the gate. Nearest neighbor then gives each observation its individually best landmark. That is fine when the innovations of different observations are independent. In EKF-SLAM they are not.
+
+Stack the pairings of a hypothesis $\mathcal{H} = \{(a_1, j_1), \ldots, (a_p, j_p)\}$ into one innovation $\boldsymbol{\nu}_{\mathcal{H}}$ with Jacobian $\mathbf{H}_{\mathcal{H}}$. Its covariance is
 
 $$
-\ell =
+\mathbf{S}_{\mathcal{H}} = \mathbf{H}_{\mathcal{H}} \mathbf{P} \mathbf{H}_{\mathcal{H}}^T + \mathbf{R}_{\mathcal{H}},
+$$
+
+where $\mathbf{R}_{\mathcal{H}}$ is block-diagonal with one $\mathbf{R}$ per pairing. Because every row block of $\mathbf{H}_{\mathcal{H}}$ has the same robot columns, $\mathbf{S}_{\mathcal{H}}$ has off-diagonal blocks $\mathbf{H}_{x,a}\mathbf{P}_{xx}\mathbf{H}_{x,b}^T$ (plus landmark cross terms): every innovation shares the robot's pose error. The hypothesis is **jointly compatible** if
+
+$$
+D^2_{\mathcal{H}} = \boldsymbol{\nu}_{\mathcal{H}}^T \mathbf{S}_{\mathcal{H}}^{-1} \boldsymbol{\nu}_{\mathcal{H}} < \chi^2_{2p,\,\alpha}.
+$$ {#eq-slam-association-joint}
+
+Here is why it matters. Suppose the robot's heading is off by several degrees. Every predicted observation swings around the robot by the same angle, and every real observation lands beside a tree it did not come from. Individually, each observation can usually find *some* plausible tree, because a large heading uncertainty makes every individual gate wide. But a pairing that implies "the heading is off by $+8^\circ$" and another that implies "the heading is fine" cannot both be right. Nearest neighbor never asks; the joint test does, because the shared heading error sits in the off-diagonal blocks of $\mathbf{S}_{\mathcal{H}}$.
+
+Neira and Tardós turned this into a search [@neiraTardos2001]. **Joint compatibility branch and bound** (JCBB) walks an interpretation tree: at depth $a$, observation $a$ is paired with each individually compatible landmark not already used, or left unpaired. A branch survives only if the hypothesis built so far passes @eq-slam-association-joint, and the "unpaired" branch is explored only if it could still match the best hypothesis found so far. The answer is the jointly compatible hypothesis with the most pairings, with ties broken by the smaller $D^2$. Maximizing the number of pairings is what keeps JCBB from cheerfully explaining everything as clutter. The search is exponential in the worst case, but the joint test prunes hard, and Neira and Tardós update $\mathbf{S}_{\mathcal{H}}^{-1}$ incrementally rather than recomputing it as the code below does for clarity.
+
+The scene below is a small cluttered grove: eight mapped trees, a robot whose estimated heading is wrong by $8^\circ$ (against a prior standard deviation of $6^\circ$), five detected trees, and one clutter return.
+
+```{python}
+#| label: jcbb
+#| echo: true
+def pose_and_landmark_jacobians(pose, landmark):
+    """H_x (2x3) and H_l (2x2) of range-bearing at one pose and landmark."""
+    H_l = landmark_jacobian(pose, landmark)
+    H_x = np.hstack([-H_l, np.array([[0.0], [-1.0]])])
+    return H_x, H_l
+
+
+def stacked_innovation(pairs, scan, y_hat, P, R):
+    """Stacked innovation, Jacobian, and joint covariance for (obs, landmark) pairs.
+
+    The state is y = [x, y, theta, l0x, l0y, l1x, l1y, ...]. Every row block of
+    H has a nonzero pose part, so S has off-diagonal blocks H_x P_xx H_x^T:
+    all innovations share the robot's pose error.
+    """
+    pose = y_hat[:3]
+    nus, Hs = [], []
+    for a, j in pairs:
+        landmark = y_hat[3 + 2 * j: 5 + 2 * j]
+        nu = scan[a] - range_bearing(pose, landmark)[0]
+        nu[1] = wrap_angle(nu[1])
+        H_x, H_l = pose_and_landmark_jacobians(pose, landmark)
+        H = np.zeros((2, len(y_hat)))
+        H[:, :3], H[:, 3 + 2 * j: 5 + 2 * j] = H_x, H_l
+        nus.append(nu)
+        Hs.append(H)
+    H = np.vstack(Hs)
+    S = H @ P @ H.T + np.kron(np.eye(len(pairs)), R)
+    return np.concatenate(nus), H, S
+
+
+def joint_d2(pairs, scan, y_hat, P, R):
+    nu, _, S = stacked_innovation(pairs, scan, y_hat, P, R)
+    return float(nu @ np.linalg.solve(S, nu))
+
+
+def nearest_neighbor(D, gate=5.99):
+    """Each observation independently takes its closest landmark inside the gate."""
+    return [(a, int(np.argmin(row))) for a, row in enumerate(D) if row.min() < gate]
+
+
+def jcbb(scan, y_hat, P, R, D, gate=5.99, alpha=0.95):
+    """Joint compatibility branch and bound (Neira and Tardos, 2001).
+
+    Depth-first over observations. Each observation is paired with an
+    individually compatible, unused landmark, or left unpaired. A branch is
+    kept only if the whole hypothesis so far passes the joint chi-square test,
+    and the unpaired branch is explored only if it could still match the best
+    number of pairings. Ties in pairings go to the smaller joint d^2.
+    """
+    best = {"pairs": [], "d2": np.inf}
+    num_obs = len(scan)
+
+    def search(a, pairs, d2, used):
+        if a == num_obs:
+            if (len(pairs), -d2) > (len(best["pairs"]), -best["d2"]):
+                best["pairs"], best["d2"] = pairs, d2
+            return
+        for j in np.flatnonzero(D[a] < gate):
+            if j in used:
+                continue
+            trial = pairs + [(a, int(j))]
+            trial_d2 = joint_d2(trial, scan, y_hat, P, R)
+            if trial_d2 < chi2.ppf(alpha, 2 * len(trial)):
+                search(a + 1, trial, trial_d2, used | {int(j)})
+        if len(pairs) + (num_obs - a - 1) >= len(best["pairs"]):
+            search(a + 1, pairs, d2, used)
+
+    search(0, [], 0.0, frozenset())
+    return best["pairs"]
+
+
+def ekf_update(pairs, scan, y_hat, P, R):
+    """One batch EKF update of the full state with the given pairings."""
+    nu, H, S = stacked_innovation(pairs, scan, y_hat, P, R)
+    K = np.linalg.solve(S, H @ P).T
+    y = y_hat + K @ nu
+    y[2] = wrap_angle(y[2])
+    return y
+
+
+# The scene: eight mapped trees, a robot whose heading is uncertain by 6 degrees.
+rng = np.random.default_rng(33)
+num_trees = 8
+trees = np.column_stack([rng.uniform(5, 10, num_trees), rng.uniform(-4, 4, num_trees)])
+y_hat = np.concatenate([[0.0, 0.0, 0.0], trees.ravel()])
+P = np.zeros((len(y_hat), len(y_hat)))
+P[:3, :3] = np.diag([0.3**2, 0.3**2, np.deg2rad(6.0)**2])
+P[3:, 3:] = 0.05**2 * np.eye(2 * num_trees)
+
+true_pose = np.array([0.1, -0.1, np.deg2rad(8.0)])      # 8 degrees off: unlucky, not absurd
+seen = [0, 1, 2, 4, 5]                                    # trees 3, 6, 7 are not detected
+scan = [range_bearing(true_pose, trees[j])[0] + rng.multivariate_normal(np.zeros(2), R)
+        for j in seen]
+scan.append(np.array([rng.uniform(5, 10), rng.uniform(-0.5, 0.5)]))   # one clutter return
+truth = dict(enumerate(seen))                             # observation -> tree
+
+D = np.array([[joint_d2([(a, j)], scan, y_hat, P, R) for j in range(num_trees)]
+              for a in range(len(scan))])
+nn_pairs = nearest_neighbor(D)
+jc_pairs = jcbb(scan, y_hat, P, R, D)
+
+for name, pairs in [("nearest neighbor", nn_pairs), ("JCBB", jc_pairs)]:
+    wrong = sum(truth.get(a) != j for a, j in pairs)
+    d2 = joint_d2(pairs, scan, y_hat, P, R)
+    y = ekf_update(pairs, scan, y_hat, P, R)
+    err = true_pose - y[:3]
+    print(f"{name:17s} pairs {pairs}")
+    print(f"{'':17s} wrong: {wrong}   joint d^2 = {d2:6.1f} vs chi2(95%, {2 * len(pairs)} dof) = "
+          f"{chi2.ppf(0.95, 2 * len(pairs)):.1f}")
+    print(f"{'':17s} pose error after update: {np.hypot(*err[:2]):.2f} m, "
+          f"{np.rad2deg(err[2]):+.1f} deg")
+print(f"\nprior heading error: {np.rad2deg(true_pose[2]):+.1f} deg")
+```
+
+```{python}
+#| label: fig-slam-association-jcbb
+#| fig-cap: "Nearest neighbor versus JCBB with an 8-degree heading error. Crosses are the observations placed from the *estimated* pose, so the whole pattern is swung clockwise about the robot relative to the trees that produced it. (a) Nearest neighbor pairs each cross with its individually closest tree: two observations are paired with the wrong neighbor and the clutter return is accepted. (b) JCBB finds the hypothesis that one heading correction explains, and leaves the clutter unpaired."
+#| code-fold: true
+import matplotlib.pyplot as plt
+
+
+def project(pose, z):
+    """Where a range-bearing measurement lands if the robot is at `pose`."""
+    angle = pose[2] + z[1]
+    return pose[:2] + z[0] * np.array([math.cos(angle), math.sin(angle)])
+
+
+fig, axes = plt.subplots(1, 2, figsize=(9.5, 4.6), sharey=True)
+for ax, (title, pairs) in zip(axes, [("(a) nearest neighbor", nn_pairs), ("(b) JCBB", jc_pairs)]):
+    ax.plot(trees[:, 0], trees[:, 1], "^", color="C2", ms=9, label="mapped trees")
+    for j, (tx, ty) in enumerate(trees):
+        ax.annotate(str(j), (tx, ty), textcoords="offset points", xytext=(5, 5), fontsize=8)
+    seen_from_estimate = np.array([project(y_hat[:3], z) for z in scan])
+    ax.plot(seen_from_estimate[:, 0], seen_from_estimate[:, 1], "kx", ms=7,
+            label="observations, placed from the estimated pose")
+    for a, j in pairs:
+        color = "C0" if truth.get(a) == j else "C3"
+        ax.plot([seen_from_estimate[a, 0], trees[j, 0]], [seen_from_estimate[a, 1], trees[j, 1]],
+                "-", color=color, lw=2)
+    for pose_, color, label in [(y_hat[:3], "k", "estimated pose"), (true_pose, "C7", "true pose")]:
+        tip = pose_[:2] + 3.0 * np.array([math.cos(pose_[2]), math.sin(pose_[2])])
+        ax.annotate("", xy=tip, xytext=pose_[:2], arrowprops=dict(arrowstyle="->", color=color, lw=2))
+        ax.plot(*pose_[:2], "o", color=color, ms=6, label=label)
+    ax.plot([], [], "-", color="C0", lw=2, label="correct pairing")
+    ax.plot([], [], "-", color="C3", lw=2, label="wrong pairing")
+    ax.set_title(title)
+    ax.set_aspect("equal")
+    ax.set_xlabel("x [m]")
+axes[0].set_ylabel("y [m]")
+handles, labels = axes[0].get_legend_handles_labels()
+fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=8, frameon=False)
+plt.tight_layout(rect=(0, 0.1, 1, 1))
+plt.show()
+```
+
+Every pairing nearest neighbor made (@fig-slam-association-jcbb) passed its individual gate, yet the hypothesis as a whole fails the joint test by a factor of three, and the EKF update built on it leaves most of the heading error in place. JCBB pairs all five trees correctly, rejects the clutter, and the update removes nearly all of the $8^\circ$. JCBB is not magic, though. With heading uncertainty this large and trees this dense, a wrong hypothesis is sometimes jointly compatible too (Exercise 3 counts how often); the joint test removes *inconsistent* mistakes, not *consistent* ones. Repetitive structure, like an orchard row, is where consistent mistakes live.
+
+**What changes in FastSLAM.** Inside one particle the pose is known, so $\mathbf{P}_{xx} = \mathbf{0}$, the off-diagonal blocks vanish, and $\mathbf{S}_{\mathcal{H}}$ is block-diagonal: joint compatibility reduces to individual compatibility of each pairing. That is the per-particle factorization at work. Hypotheses that correspond to different pose errors live in *different particles*, and the weights sort them out. One coupling survives, though: two observations cannot both be the same tree. Greedy matching in order of increasing $d^2$, the project's default, can get this wrong when one observation's best tree is another observation's only tree. Global nearest neighbor (GNN) solves the one-to-one problem optimally by minimizing the total negative log-likelihood, with one "unmatched" option per observation priced at $-2\log p_0$ (@sec-slam-landmark-weighting). SciPy's Hungarian-algorithm solver does it in one call.
+
+```{python}
+#| label: one-to-one-assignment
+#| echo: true
+from scipy.optimize import linear_sum_assignment
+
+LOG_P0 = math.log(1.0 / (8.0 * 2.0 * math.pi))   # footprint p0 of the toy sensor
+GATE_MATCH, GATE_BIRTH = 5.99, 13.82
+
+# One particle's view. Its pose estimate is 0.45 m to the right of the truth, so
+# both observations land 0.45 m to the right of the trees that produced them.
+particle_pose = np.zeros(3)
+true_pose_mx = np.array([0.0, 0.45, 0.0])
+mapped = {1: np.array([6.0, 0.0]), 2: np.array([6.0, 0.8])}
+scan_mx = [range_bearing(true_pose_mx, mapped[1])[0], range_bearing(true_pose_mx, mapped[2])[0]]
+
+ids = list(mapped)
+d2 = np.array([[gated_d2(z, particle_pose, mapped[j], P_tree)[0] for j in ids] for z in scan_mx])
+
+
+def log_det_2pi_S(landmark):
+    H = landmark_jacobian(particle_pose, landmark)
+    return np.linalg.slogdet(2 * np.pi * (H @ P_tree @ H.T + R))[1]
+
+
+log_det = np.array([[log_det_2pi_S(mapped[j]) for j in ids] for _ in scan_mx])
+print("d^2 table (rows: observations 0, 1; columns: trees 1, 2):")
+print(np.round(d2, 2))
+
+# Greedy: smallest d^2 first, one observation per tree.
+greedy, claimed = {}, set()
+for a, col in sorted(zip(*np.nonzero(d2 < GATE_MATCH)), key=lambda ac: d2[ac]):
+    if int(a) not in greedy and ids[col] not in claimed:
+        greedy[int(a)] = ids[col]
+        claimed.add(ids[col])
+
+# Hungarian on -2 log-likelihood, with one "unmatched" column per observation
+# that costs -2 log p0. Out-of-gate pairs get a prohibitive cost.
+BIG = 1e6
+K, N = d2.shape
+cost = np.full((K, N + K), BIG)
+cost[:, :N] = np.where(d2 < GATE_MATCH, d2 + log_det, BIG)
+cost[np.arange(K), N + np.arange(K)] = -2.0 * LOG_P0
+rows, cols = linear_sum_assignment(cost)
+hungarian = {int(a): ids[c] for a, c in zip(rows, cols) if c < N}
+
+
+def total_cost(assignment):
+    return sum(cost[a, ids.index(assignment[a])] if a in assignment else -2.0 * LOG_P0
+               for a in range(K))
+
+
+print(f"greedy:    {greedy}   (-2 log-likelihood {total_cost(greedy):.1f})")
+print(f"Hungarian: {hungarian}   (-2 log-likelihood {total_cost(hungarian):.1f})")
+print("truth:     {0: 1, 1: 2}")
+```
+
+Greedy grabs the single smallest distance (observation 1 with tree 1), which leaves observation 0 with no tree inside its gate, so it is discarded and its information lost. Worse, observation 1 was paired with the wrong tree. The Hungarian solution accepts two slightly larger distances to get both pairings right, and its total cost is lower. In a sparse map the two rules nearly always agree, which is why greedy is an acceptable default for the project; in a grove, try both.
+
+## Per-Particle Association in FastSLAM {#sec-slam-association-per-particle-association}
+
+FastSLAM performs association inside each particle. This changes the interpretation:
+
+- Particle A may believe a measurement is tree 42.
+- Particle B may believe the same measurement is a new tree.
+- Particle C may reject the measurement as an outlier.
+
+This is a useful form of multiple-hypothesis tracking, but only if the three particles are scored on a common scale; otherwise the weights compare apples, oranges, and units. Following @sec-slam-landmark-weighting, particle A's factor is the matched density $\mathcal{N}(\boldsymbol{\nu}; \mathbf{0}, \mathbf{S})$, particle B's is the new-feature density $p_0$, and particle C's is an outlier density. The natural outlier model is clutter spread uniformly over the sensor footprint, which has exactly the same form as @eq-slam-p0. The project uses one constant for both, so B and C are charged the same $p_0$.
+
+```{python}
+#| label: particle-scoring
+#| echo: true
+S_young = 2.0 * R                                  # a recently initialized tree
+log_det_young = np.linalg.slogdet(2 * np.pi * S_young)[1]
+print(f"{'hypothesis':38s} {'log factor':>10s}")
+for d2_match in (1.0, 4.0):
+    print(f"{f'A: matched to tree 42, d^2 = {d2_match:.0f}':38s} "
+          f"{-0.5 * d2_match - 0.5 * log_det_young:+10.2f}")
+print(f"{'B: new tree (log p0)':38s} {LOG_P0:+10.2f}")
+print(f"{'C: outlier (log p0, same constant)':38s} {LOG_P0:+10.2f}")
+```
+
+If particle A's match is good, A outweighs B and C by a factor of $e^{5.6} \approx 280$ on this one observation, and a few scans of that settle the question. If A's match is mediocre, the margin shrinks to $e^{4.1} \approx 60$. B and C, meanwhile, are tied, and they should be: on the first sighting, nothing in the data distinguishes a new tree from a piece of clutter. The difference only shows up later, because a real tree is seen again and clutter is not. That is precisely what the tentative stage of @sec-slam-association-landmark-birth waits for.
+
+**Association sampling.** The project picks the most likely association in each particle. An alternative, used in the FastSLAM work on unknown data association [@Thrun2004FastSLAM], is to *sample* the association: draw $n$ with probability proportional to its likelihood, $\mathcal{N}(\boldsymbol{\nu}_j; \mathbf{0}, \mathbf{S}_j)$ for each gated landmark $j$ and $p_0$ for "new". Because the association is then drawn from its own posterior, the importance weight is the *total* likelihood, $\sum_j \mathcal{N}(\boldsymbol{\nu}_j; \mathbf{0}, \mathbf{S}_j) + p_0$, not the likelihood of the option chosen. When an observation is genuinely ambiguous, different particles try different answers, and the wrong ones die off as later scans disagree with them. When it is not ambiguous, sampling and maximum likelihood agree almost always.
+
+```{python}
+#| label: association-sampling
+#| echo: true
+def sample_association(log_match, log_p0, rng):
+    """Sample a correspondence for one observation in one particle.
+
+    `log_match` maps landmark id -> log N(nu; 0, S) for the gated candidates.
+    Returns (choice, log_weight_increment): choice is a landmark id or "new",
+    and the increment is the log of the total likelihood over all options.
+    """
+    options = list(log_match) + ["new"]
+    log_scores = np.array(list(log_match.values()) + [log_p0])
+    log_total = log_scores.max() + math.log(np.sum(np.exp(log_scores - log_scores.max())))
+    choice = options[rng.choice(len(options), p=np.exp(log_scores - log_total))]
+    return choice, log_total
+
+
+# An observation exactly halfway between trees A and B of the gate example.
+z_mid = range_bearing(pose, np.array([6.0, 0.4]))[0]
+log_match = {}
+for name, tree in [("A", tree_a), ("B", tree_b)]:
+    H = landmark_jacobian(pose, tree)
+    S_tree = H @ P_tree @ H.T + R
+    nu = z_mid - range_bearing(pose, tree)[0]
+    nu[1] = wrap_angle(nu[1])
+    log_match[name] = (-0.5 * nu @ np.linalg.solve(S_tree, nu)
+                       - 0.5 * np.linalg.slogdet(2 * np.pi * S_tree)[1])
+
+rng = np.random.default_rng(3)
+choices = [sample_association(log_match, LOG_P0, rng)[0] for _ in range(1000)]
+print({c: choices.count(c) for c in ("A", "B", "new")}, "out of 1000 particles")
+```
+
+Halfway between two trees, the particles split almost exactly in half and a few bet on a new tree; later scans will sort them out.
+
+Either way, the project implementation should avoid a single global association table that is forced on all particles. Association should be a method of the particle, or of the FastSLAM update step, using that particle's pose and landmark map.
+
+## Landmark Birth {#sec-slam-association-landmark-birth}
+
+If no existing landmark explains a measurement, it may be a new tree. Initialize it with the inverse range-bearing model
+
+$$
+\boldsymbol{\ell} = g(\mathbf{x}, \mathbf{z}) =
 \begin{bmatrix}
 x + r \cos(\theta + \beta) \\
 y + r \sin(\theta + \beta)
+\end{bmatrix},
+$$
+
+whose Jacobians with respect to the pose and the measurement are
+
+$$
+\begin{aligned}
+\mathbf{G}_x &= \frac{\partial g}{\partial \mathbf{x}} =
+\begin{bmatrix}
+1 & 0 & -r\sin(\theta+\beta) \\
+0 & 1 & r\cos(\theta+\beta)
+\end{bmatrix}, \\
+\mathbf{G}_z &= \frac{\partial g}{\partial \mathbf{z}} =
+\begin{bmatrix}
+\cos(\theta+\beta) & -r\sin(\theta+\beta) \\
+\sin(\theta+\beta) & r\cos(\theta+\beta)
 \end{bmatrix}.
+\end{aligned}
 $$
 
-The initial covariance comes from propagating measurement uncertainty through that inverse model:
+What the initial covariance contains again depends on what is uncertain. Inside a FastSLAM particle the pose is known, so only the measurement noise propagates:
 
 $$
-P_\ell = G R G^T.
+\mathbf{P}_\ell = \mathbf{G}_z \mathbf{R} \mathbf{G}_z^T.
 $$
 
-New-landmark logic should be conservative. If every questionable scan segment becomes a tree, the map will grow because the detector is bad, not because the park has become a forest in fast-forward.
+In EKF-SLAM the pose is uncertain, and the new landmark inherits that uncertainty and the robot's correlations with the rest of the map (@eq-slam-ekf-augment):
 
-Practical rules:
+$$
+\begin{aligned}
+\mathbf{P}_{\ell\ell} &= \mathbf{G}_x\mathbf{P}_{xx}\mathbf{G}_x^T + \mathbf{G}_z\mathbf{R}\mathbf{G}_z^T, \\
+\mathbf{P}_{\ell x} &= \mathbf{G}_x\mathbf{P}_{xx},
+\qquad
+\mathbf{P}_{\ell m} = \mathbf{G}_x\mathbf{P}_{xm}.
+\end{aligned}
+$$
+
+At Victoria Park ranges the difference is not subtle. A $2^\circ$ heading uncertainty is 0.7 m across the line of sight at 20 m:
+
+```{python}
+#| label: landmark-birth-covariance
+#| echo: true
+r, beta = 20.0, np.deg2rad(30.0)                       # a tree 20 m away
+R_vp = np.diag([0.3**2, np.deg2rad(1.0)**2])           # a plausible laser tree detector
+P_xx = np.diag([0.5**2, 0.5**2, np.deg2rad(2.0)**2])   # an uncertain vehicle pose
+theta = 0.0
+angle = theta + beta
+G_x = np.array([[1.0, 0.0, -r * math.sin(angle)], [0.0, 1.0, r * math.cos(angle)]])
+G_z = np.array([[math.cos(angle), -r * math.sin(angle)], [math.sin(angle), r * math.cos(angle)]])
+
+P_fastslam = G_z @ R_vp @ G_z.T                        # inside one particle
+P_ekf = G_x @ P_xx @ G_x.T + G_z @ R_vp @ G_z.T         # EKF-SLAM
+P_lx = G_x @ P_xx                                      # new landmark-robot cross-covariance
+
+
+def across_track_std(P):
+    """Standard deviation perpendicular to the line of sight."""
+    u = np.array([-math.sin(angle), math.cos(angle)])
+    return math.sqrt(u @ P @ u)
+
+
+print(f"across-track std, FastSLAM particle: {across_track_std(P_fastslam):.2f} m")
+print(f"across-track std, EKF-SLAM:          {across_track_std(P_ekf):.2f} m")
+u = np.array([-math.sin(angle), math.cos(angle)])
+corr = (u @ P_lx[:, 2]) / (across_track_std(P_ekf) * math.sqrt(P_xx[2, 2]))
+print(f"correlation of the new tree's across-track position with robot heading: {corr:.2f}")
+```
+
+The FastSLAM particle's tree is not "more accurate". Its pose uncertainty lives in the spread of the particle cloud instead of in each landmark, and each particle places the tree relative to its own pose. In EKF-SLAM the same uncertainty must be carried explicitly, and the 0.75 correlation with heading is the filter remembering that if it later learns the heading was off, this tree moves too.
+
+**The two-gate birth rule.** New-landmark logic should be conservative. If every questionable scan segment becomes a tree, the map will grow because the detector is bad, not because the park has become a forest in fast-forward. The project uses two gates per particle:
+
+1. associate an observation with a landmark if $d^2 < \chi^2_{2,0.95} = 5.99$ (smallest $d^2$ first, at most one observation per landmark per scan);
+2. spawn a *tentative* landmark only if $d^2 > \chi^2_{2,0.999} = 13.82$ for **every** existing landmark in that particle, tentative ones included;
+3. otherwise the observation is ambiguous: discard it, and leave the map alone.
+
+A tentative landmark is used for association like any other, so that it can collect re-observations. It becomes **confirmed** after $k = 3$ successful associations, and a tentative landmark that is not seen again within a short time window (a few scans) is deleted. Only confirmed landmarks are reported as the map. Every observation, whatever its fate, contributes one factor to the particle weight: $\mathcal{N}(\boldsymbol{\nu}; \mathbf{0}, \mathbf{S})$ if it updated a landmark, $p_0$ if it spawned one or was discarded (@sec-slam-landmark-weighting). @sec-slam-what-goes-wrong shows what each of these rules buys.
+
+The detector deserves the same skepticism. Practical rules:
 
 - require a minimum number of scan points in the segment;
 - reject implausible trunk diameters;
 - reject landmarks too close to the vehicle path if they would be in free space;
-- optionally require a tentative landmark to be observed more than once before becoming confirmed.
+- cap the number of new landmarks per scan.
 
 ## Landmark Deletion {#sec-slam-association-landmark-deletion}
 
 A landmark may be deleted or marked inactive when:
 
-- it was observed only once;
+- it was observed only once, or fewer than $k$ times before its tentative window expired;
 - it repeatedly should have been visible but was not detected;
 - its covariance grows or remains too large;
 - it is outside the area being reported.
@@ -198,21 +662,9 @@ For the course project, a simple track state is enough:
 
 | State | Meaning |
 |---|---|
-| tentative | newly initialized, not yet trusted |
-| confirmed | repeatedly observed and usable for association |
+| tentative | newly initialized, not yet trusted; used for association, not reported |
+| confirmed | associated at least $k = 3$ times; used for association and reported |
 | inactive | not used for updates or final reporting |
-
-## Per-Particle Association in FastSLAM {#sec-slam-association-per-particle-association}
-
-FastSLAM performs association inside each particle. This changes the interpretation:
-
-- Particle A may believe a measurement is tree 42.
-- Particle B may believe the same measurement is a new tree.
-- Particle C may reject the measurement as an outlier.
-
-This is a useful form of multiple-hypothesis tracking. Particles with poor associations should receive lower measurement likelihoods and eventually disappear during resampling.
-
-The project implementation should therefore avoid a single global association table that is forced on all particles. Association should be a method of the particle or of the FastSLAM update step using that particle's pose and landmark map.
 
 ## Outlier Handling {#sec-slam-association-outlier-handling}
 
@@ -227,37 +679,25 @@ Outliers are expected in Victoria Park:
 
 Useful defenses:
 
-- gate before updating;
+- gate before updating, with the two-gate rule;
+- score unexplained observations with $p_0$, never with an implicit 1;
 - cap the maximum number of new landmarks per scan;
 - record rejected observations for debugging;
-- plot new landmarks separately from confirmed landmarks;
+- plot tentative landmarks separately from confirmed landmarks;
 - tune measurement covariance honestly instead of using artificially tiny values.
 
 The fastest way to make FastSLAM fail is to feed it overconfident outliers.
-
-## Choosing the Gate {#sec-slam-association-choosing-gate}
-
-The gate threshold creates a tradeoff:
-
-| Gate | Typical failure mode |
-|---|---|
-| too tight | duplicate landmarks, map bloat |
-| reasonable | stable map growth |
-| too loose | distinct trees merge |
-
-Students should report a small sensitivity study. For example, compare final map size and trajectory shape using gates near 4.61, 5.99, and 9.21.
 
 ## Diagnostics for the Project {#sec-slam-association-diagnostics-project}
 
 Every implementation should produce diagnostic plots or tables:
 
 - number of extracted features per scan;
-- number of accepted associations per scan;
-- number of new landmarks per scan;
+- number of accepted associations, discards, and new landmarks per scan;
 - number of confirmed landmarks over distance traveled;
-- rejected-observation count;
 - effective sample size over time;
-- final map colored by observation count or landmark age.
+- final map colored by observation count or landmark age;
+- the distribution of $d^2$ for accepted associations, which should look like a chi-square distribution with two degrees of freedom (mean near 2) if $\mathbf{R}$ is honest.
 
 These diagnostics are not extra polish. They are how students find out whether the system is doing SLAM or merely drawing increasingly confident nonsense.
 
@@ -265,11 +705,25 @@ These diagnostics are not extra polish. They are how students find out whether t
 
 Data association is the hinge between perception and estimation. A good FastSLAM implementation needs:
 
-1. range-bearing innovation calculations;
-2. Mahalanobis gating;
-3. per-particle nearest-neighbor or maximum-likelihood association;
-4. conservative landmark birth;
-5. explicit outlier handling;
+1. range-bearing innovations with wrapped bearings, and the right $\mathbf{S}$ for what is uncertain;
+2. chi-square gating, with two gates: one to match and a stricter one to spawn;
+3. per-particle nearest-neighbor or maximum-likelihood association, one observation per landmark;
+4. weights on a common scale: $\mathcal{N}(\boldsymbol{\nu}; \mathbf{0}, \mathbf{S})$ for matches, $p_0$ for everything else;
+5. conservative landmark birth with tentative and confirmed tracks;
 6. diagnostics that expose duplicate and merged landmarks.
 
-@sec-visual-nav and @sec-loop-closure place this in the larger SLAM ecosystem: visual front-ends, loop closure, and graph optimization.
+When innovations are correlated through a shared pose, as in EKF-SLAM, individual gates are not enough and joint compatibility is the tool. @sec-visual-nav and @sec-loop-closure place this in the larger SLAM ecosystem: visual front-ends, loop closure, and graph optimization.
+
+## Exercises {#sec-slam-association-exercises}
+
+1. **Chi-square gates.** (a) Let $\mathbf{u} \sim \mathcal{N}(\mathbf{0}, \mathbf{I}_2)$. Show that $\|\mathbf{u}\|^2$ is exponentially distributed with mean 2, and hence $P(d^2 \le \gamma) = 1 - e^{-\gamma/2}$. (b) Show that $d^2 = \boldsymbol{\nu}^T\mathbf{S}^{-1}\boldsymbol{\nu}$ has the same distribution when $\boldsymbol{\nu} \sim \mathcal{N}(\mathbf{0}, \mathbf{S})$. (c) Reproduce the gate table. An AUV's sonar reports range, bearing, and elevation to a mooring: what are the 95% and 99.9% gates now, and why is there no tidy closed form?
+
+2. **Joint compatibility by hand.** A robot at a known position with heading uncertainty $\sigma_\theta = 5^\circ$ measures the bearings of two known landmarks with $\sigma_\beta = 1^\circ$. (a) Show that the joint innovation covariance is $\mathbf{S} = \sigma_\theta^2 \mathbf{1}\mathbf{1}^T + \sigma_\beta^2\mathbf{I}$. (b) For innovations $(+6^\circ, -6^\circ)$, compute each individual $d^2$ and the joint $D^2$, and test both at 95%. (c) Repeat for $(+6^\circ, +6^\circ)$. Explain in one sentence each why the joint test is harsher than the individual tests in (b) and more lenient in (c).
+
+3. **How often is JCBB fooled?** Wrap the scene-building code of the JCBB example in a function of the seed, draw the true heading error from the prior ($\sigma_\theta = 6^\circ$) instead of fixing it at $8^\circ$, and run 200 scenes. Report, for nearest neighbor and JCBB, the fraction of scenes with at least one wrong pairing and the mean heading error after the EKF update. Then halve the tree area (same eight trees, denser grove) and repeat. When JCBB is wrong, is the true hypothesis jointly compatible too? Why did JCBB prefer the other one, and what does that tell you about where its guarantees end?
+
+4. **Hungarian inside FastSLAM.** Replace the greedy matching in `two_gate_decisions` of @sec-slam with a call to `linear_sum_assignment` on the cost matrix of @sec-slam-association-joint-compatibility, keeping the two-gate rule for unmatched observations. Run the multi-seed experiment of @sec-slam-what-goes-wrong (100 seeds) on the original world and on a world with a fourth tree 0.8 m from one of the others. Does the assignment rule matter on either world? Work out what pose error a particle would need for two observations to compete for one tree, and explain your result in terms of it.
+
+5. **Buoys in a channel.** A pilot boat's radar measures range with $\sigma_r = 10$ m and bearing with $\sigma_\beta = 1^\circ$. Its heading comes from a magnetic compass good to $\sigma_\theta = 2^\circ$, and its position from GNSS to 5 m. Ahead, a channel is marked by buoys every 150 m along the channel and 200 m across it. (a) At 1.5 km range, compute $\mathbf{S}$ for one buoy, including the pose uncertainty, and the $d^2$ between adjacent buoys along and across the channel. Are adjacent buoys individually compatible with one observation? (b) Why does joint compatibility help here, and what heading error would make the off-by-one-buoy hypothesis jointly compatible? (c) Many aids to navigation carry a racon or broadcast an AIS identity. Explain, with reference to @sec-feature-association, why that makes the whole problem go away.
+
+6. **Sampling versus maximum likelihood.** Add association sampling (the `sample_association` function above, with the total-likelihood weight) to the FastSLAM 1.0 filter of @sec-slam as an option. On a world with two trees 0.8 m apart, compare maximum-likelihood and sampled association over 20 seeds: landmark-count histogram, final position error, and the number of distinct scan-1 ancestors. Explain the result.

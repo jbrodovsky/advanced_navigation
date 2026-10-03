@@ -1,23 +1,51 @@
 # Project 2: Victoria Park FastSLAM {#sec-project2}
 
+Around the turn of the millennium, researchers at the Australian Centre for Field Robotics drove a utility vehicle around Victoria Park in Sydney for 26 minutes and about 4 km, logging wheel speed, steering angle, a GPS receiver that was quietly failing, and a SICK laser scanner sweeping 180 degrees in front of the bumper [@VictoriaParkDataset]. The park is full of trees, and to a laser a tree trunk is a small, round, isolated return: a natural landmark, the way a lighthouse or a charted headland is for a coastal navigator. A quarter of a century later the log is still one of the standard tests for landmark SLAM, because it is real, it is messy, and it punishes every shortcut.
+
+``` text
+laser scan (361 ranges) --> tree extractor (Part A) --> z = (r, beta) per trunk
+                                                            |
+odometry 40 Hz (v_e, delta) --> encoder correction + lever arm (Part A)
+                                                            |
+                event-driven time sync --> FastSLAM 1.0 (Parts B and C)
+                                                            |
+            laser track + tree map --> SE(2)-aligned error vs GPS (Part D)
+```
+
+Project 2 builds that pipeline. Much of the work is not the famous algorithm, which you have already seen running in @sec-slam. It is the part every navigation engineer spends their career on: knowing where each sensor is on the vehicle and what its numbers mean (a speed measured on one wheel, a laser 3.8 m in front of the axle the kinematics are written about, bearings measured from the vehicle's right-hand side), and lining up sensors that never sample at the same instant. Get those wrong and no number of particles will save you.
+
 ## Overview {#sec-project2-overview}
 
-In this project, you will implement a FastSLAM system for the original Victoria Park dataset. A vehicle was driven through Victoria Park in Sydney, Australia while collecting wheel odometry, steering, GPS, and SICK laser scanner data. The natural landmarks are tree trunks extracted from 2D laser scans.
+You will implement **FastSLAM 1.0** for the Victoria Park dataset: vehicle poses are particles sampled from the motion model, and each particle carries its own map of tree landmarks, one tiny EKF per tree [@Montemerlo2002FastSLAM; @Thrun2004FastSLAM]. FastSLAM 2.0 is an optional extension once a working FastSLAM 1.0 baseline exists. The project is worth **25% of the course grade**.
 
-The required backend is **FastSLAM 1.0**: vehicle pose is represented by particles sampled from the motion model, and each particle maintains its own independent EKF map for landmarks. FastSLAM 2.0 is allowed as an optional extension, but only after you have a working FastSLAM 1.0 baseline and can explain the proposal distribution you used.
+**Learning outcomes.** By the end of the project you should be able to
 
-This project is worth **25% of the course grade**.
+- decode a real sensor log, including its bit-packed fields and undocumented corners, and verify each convention against the data rather than trusting the documentation;
+- model a vehicle whose speed sensor, steering geometry, and exteroceptive sensor sit at different places, and carry the lever arm consistently through the motion and observation models;
+- synchronize a 40 Hz control stream with an irregular, slower measurement stream without smearing the measurements;
+- extract repeatable point landmarks from 2D laser scans and characterize the extractor's errors;
+- implement per-particle data association with two statistical gates, landmark birth and deletion, and correctly weighted particles;
+- evaluate a SLAM solution honestly against an imperfect reference, and explain its failure modes and sensitivities.
 
-**Learning outcomes:**
+## Logistics {#sec-project2-logistics}
 
-- Load and inspect the original Victoria Park laser, odometry, and GPS files.
-- Extract tree-like range-bearing landmark observations from 2D laser scans.
-- Implement per-particle data association with statistical gating.
-- Implement FastSLAM with per-particle landmark EKFs.
-- Evaluate map growth, particle behavior, runtime, and failure modes.
-- Compare EKF-SLAM, FastSLAM, and GraphSLAM for this dataset.
+**Pace and deadline.** The recommended pace is weeks 10-11, alongside the mapping, data-association, and FastSLAM chapters (@sec-mapping, @sec-slam-association, @sec-slam). That is a recommendation, not a deadline: everything is due by the **end of week 16** (@sec-syllabus-course-policies). Early submissions for feedback are welcome.
 
-The attached FastSLAM paper is technical context, not an instruction sheet. Use it to understand the factorization, the Victoria Park experiment, and the data-association problem. Your implementation should be your own clear Python implementation.
+**Submission.** Submit Project 2 once, on Canvas, as two files: a single-column **report PDF** (structure and expectations in @sec-intro-project-guidance) and a **code archive** (`.zip`) with your `victoria_park_slam` package, any scripts or notebooks you used, and a short `README` listing the exact commands that regenerate every figure and table in the report.
+
+**Environment.** From the repository root:
+
+``` bash
+uv sync                                                   # install Python and the packages
+uv run python scripts/fetch_data.py victoria-park         # download the data (about 1.5 MB)
+uv run pytest projects/victoria_park_slam                 # starter tests: support code passes, your stubs skip
+uv run victoria-park-slam summary                         # rates, gaps and data quality at a glance
+uv run python -m victoria_park_slam.run_all               # run every stage you have implemented so far
+```
+
+**AI tools and libraries.** The course policy is in @sec-intro-ai-policy-and-dependencies.
+
+**Reusing book code.** @sec-slam contains a complete, working FastSLAM for a toy world and @sec-mapping contains a tree extractor and the original detector's logic. You may adapt any of it, with attribution: cite the section in a code comment and in the report. Grading puts most of its weight on the parts that are specific to this dataset (the vehicle and lever-arm model, time synchronization, the laser front end, landmark management on real data) and on evidence and analysis. A copied filter that runs earns little; one you can justify, test, tune, and break on purpose earns a lot. One interface difference to watch: the chapter's toy `LandmarkEKF` counts time in scans, while the starter package takes time in seconds through a keyword-only argument.
 
 ## Dataset {#sec-project2-dataset}
 
@@ -27,49 +55,68 @@ Download the Victoria Park data once from the repository root:
 uv run python scripts/fetch_data.py victoria-park
 ```
 
-This places the original MATLAB files in `data/victoria-park/`:
+This places the original files in `data/victoria-park/`:
 
 ``` text
 data/victoria-park/
-  aa3_lsr2.mat   # LASER, TLsr
-  aa3_dr.mat     # speed, steering, time
-  aa3_gpsx.mat   # Lo_m, La_m, timeGps
+  aa3_lsr2.mat       # LASER (7249 x 361 uint16), TLsr (ms)
+  aa3_dr.mat         # speed (m/s), steering (rad), time (ms): 61945 samples
+  aa3_gpsx.mat       # Lo_m, La_m (m), timeGps (ms): 4466 fixes
+  info.txt, car.bmp  # sensor conventions and the vehicle drawing
+  detectTreesI16.m   # the original ACFR tree detector (MATLAB)
+  viewLsr.m          # the original scan viewer (shows the laser decoding)
 ```
 
 The starter tools find `data/victoria-park` automatically. If you keep a copy elsewhere, pass that directory explicitly or set the `ADVNAV_DATA_DIR` environment variable to the folder that contains `victoria-park/`.
 
-Important conventions:
+The facts below are the ones that bite. Each was checked on the data; the reasoning is in @sec-mapping-vehicle-model and @sec-mapping-laser-conventions.
 
-- `LASER` has 361 range bins per scan.
-- Laser ranges are stored in centimeters and must be converted to meters.
-- Laser and odometry timestamps are stored in milliseconds and must be converted to seconds.
-- GPS is useful for rough plotting and sanity checks, but it is not perfect ground truth and must not be used as a recurring filter update.
-- The laser scanner reports range-bearing structure in the vehicle/scanner frame. You are responsible for documenting your scanner angle convention.
+| Quantity | What the log contains | What to do |
+|---|---|---|
+| Laser ranges | `uint16` words: low 13 bits = range in cm, top 3 bits = flags | `raw & 0x1FFF`, divide by 100; values $\ge$ 8000 cm mean "no return" (about 83% of all beams) |
+| Laser angles | 361 beams, scanner angle $A = 0, 0.5, \ldots, 180$ degrees, $A = 0$ to the vehicle's **right** | bearing in the vehicle frame $\beta = A - \pi/2$ (positive to the left) |
+| Laser timing | a scan every 213-215 ms; the first scan (21.819 s) precedes the first odometry sample (21.940 s) | see @sec-project2-time-synchronization |
+| Speed | measured by an encoder on the **rear-left** wheel | convert to centerline speed (@eq-project2-encoder) |
+| Steering | front-wheel angle, positive = left turn, 40 Hz | |
+| Laser position | 3.78 m ahead of the rear axle, 0.50 m to the left | lever arm in the motion model (@eq-project2-laser-kinematics) |
+| GPS | antenna at the laser; ~5 Hz; gaps up to 58 s; dozens of jumps; local east/north frame | reference only, never a filter measurement; compare only after SE(2) alignment (@sec-project2-evaluation-protocol) |
+
+`load_victoria_park_data()` applies the decoding and unit conversions, keeps the raw words in `dataset.laser_raw`, and exposes GPS as `dataset.gps_xy_m` (`[Lo_m, La_m]` = east, north). GPS is useful for plots, sanity checks, and the final evaluation. It must not enter the filter.
 
 ## Starter Package {#sec-project2-starter-package}
 
-Work from the Module 2 package:
+Work in `projects/victoria_park_slam/`:
 
 ``` text
-projects/victoria_park_slam/
-  pyproject.toml
-  src/victoria_park_slam/
-  tests/
+src/victoria_park_slam/
+  datasets.py     loader and laser decoding (provided)
+  types.py        dataclasses: vehicle geometry, configs, observations, landmark states (provided)
+  utils.py        scan geometry, vehicle model, observation model, Jacobians, weights (provided)
+  timing.py       event-driven odometry/laser synchronization (provided)
+  evaluation.py   valid GPS fixes, SE(2) alignment, RMSE, dead-reckoning baselines (provided)
+  landmarks.py    Part A: extract_tree_landmarks (yours)
+  fastslam.py     Parts B and C: LandmarkEKF, FastSLAM (bookkeeping provided; algorithm yours)
+  run_all.py      runs every stage on a scan segment and writes tables and plots
+  plotting.py, cli.py
+tests/
+  test_victoria_park_slam.py   support-code tests plus tests of your deliverables
+  test_handout_api.py          checks that this handout and the code agree
 ```
 
-Useful starter interfaces include:
+The public interfaces are:
 
 ``` python
-from victoria_park_slam.datasets import (
-    load_victoria_park_data,
-    resolve_victoria_park_root,
-)
+from victoria_park_slam.datasets import decode_laser_ranges, load_victoria_park_data, resolve_victoria_park_root
 from victoria_park_slam.utils import (
-    effective_sample_size,
+    encoder_to_centerline_speed,
+    gaussian_log_likelihood,
     inverse_range_bearing,
     inverse_range_bearing_jacobian,
+    laser_pose_from_rear_axle,
     mahalanobis_squared,
-    predict_bicycle_pose,
+    normalize_log_weights,
+    numerical_jacobian,
+    predict_laser_pose,
     range_bearing_jacobian,
     range_bearing_prediction,
     scan_angles,
@@ -77,381 +124,300 @@ from victoria_park_slam.utils import (
     systematic_resample_indices,
     wrap_angle,
 )
+from victoria_park_slam.timing import scan_steps
+from victoria_park_slam.types import TreeExtractorConfig, TreeObservation, VehicleGeometry
 from victoria_park_slam.landmarks import extract_tree_landmarks
 from victoria_park_slam.fastslam import FastSLAM, FastSLAMParticle, LandmarkEKF
+from victoria_park_slam.evaluation import dead_reckoning_comparison, evaluate_against_gps, valid_gps_mask
 ```
 
-The package intentionally does **not** implement the complete assignment for you. It provides data loading, geometry utilities, plotting hooks, and public contracts. You must implement the feature extraction, landmark EKF logic, per-particle association, particle weighting, resampling policy, and FastSLAM processing loop.
+What you write, with the signatures the tests and `run_all` call:
 
-You may add helper modules, notebooks, scripts, and tests. Keep the package organized enough that another engineer can run it without reverse-engineering your folder habits.
+``` python
+extract_tree_landmarks(scan_ranges_m, *, pose_guess=None)        # -> list[TreeObservation]
+LandmarkEKF.initialize(pose, measurement, measurement_covariance, *, time_s=0.0)
+landmark.innovation(pose, measurement, measurement_covariance)   # -> (nu, H_l, S)
+landmark.updated(pose, measurement, measurement_covariance, *, time_s=None)   # -> new LandmarkEKF
+slam.predict(speed_mps, steering_rad, dt_s)
+slam.associate(particle, measurements)                           # -> list[Association]
+slam.update(observations, time_s)
+slam.resample()
+```
+
+Their docstrings are the detailed contract. Keep those signatures stable; add helpers, keyword-only options, and modules freely. Note that `landmark.updated(...)` returns a *new* landmark and leaves the old one alone: after resampling, several particles share the same landmark objects (`particle.copy()` copies the dictionary, not the landmarks), which is what makes resampling cheap (@sec-slam-why-fast). Mutating a shared landmark in place silently edits other particles' maps.
+
+The tests of your deliverables skip with a "not implemented yet" message until you write the corresponding method, then start checking it, so `uv run pytest projects/victoria_park_slam` is a quick sanity check as you go. They check interfaces and simple cases (a synthetic scan with two trunks and a wall, the two gates, a loop through a synthetic forest), not whether your Victoria Park solution is good. `uv run python -m victoria_park_slam.run_all` runs whatever you have implemented on the first 2000 scans and reports the rest as not implemented. Its `TUNING` block is where your values go.
 
 ## System Model {#sec-project2-system-model}
 
-Use a planar vehicle pose:
+The filter state of particle $i$ is the **laser pose**
 
-$$x_t =
+$$
+\mathbf{x}^{[i]} =
 \begin{bmatrix}
-p_x \\
-p_y \\
-\theta
-\end{bmatrix},$$
+x_L & y_L & \theta
+\end{bmatrix}^T,
+$$
 
-where $p_x$ and $p_y$ are position in a local map frame and $\theta$ is heading.
+the world position of the laser (which is also where the GPS antenna is) and the vehicle heading $\theta$, counter-clockwise from the world $x$ axis. Writing the state at the laser, rather than at the rear axle the kinematics are naturally written about, keeps the observation model a plain range-bearing model and makes the estimate directly comparable to GPS. The price is paid once, in the motion model.
 
-The landmark map is a set of 2D tree positions:
+The map is a set of 2D tree positions, $\{\boldsymbol{\ell}_1, \ldots, \boldsymbol{\ell}_N\}$ with $\boldsymbol{\ell}_j = [\ell_{x,j}, \ell_{y,j}]^T$, each with its own $2\times2$ covariance $\mathbf{P}_{\ell,j}$ inside each particle. The controls are the logged encoder speed and steering angle, $\mathbf{u} = [v_e, \delta]^T$, and one observation is the range and vehicle-frame bearing of a trunk center, $\mathbf{z} = [r, \beta]^T$. Your front end may also estimate trunk diameters, but the FastSLAM update uses only $\mathbf{z}$.
 
-$$m = \{\ell_1, \ell_2, \ldots, \ell_N\},
-\qquad
-\ell_j =
-\begin{bmatrix}
-m_{x,j} \\
-m_{y,j}
-\end{bmatrix}.$$
+## Vehicle Model and Lever Arm {#sec-project2-forward-mechanization-state}
 
-The control input comes from wheel speed and steering:
+@sec-mapping-vehicle-model derives the geometry; here is what you implement. The vehicle (drawing in `car.bmp`, numbers in `info.txt`) has wheelbase $L = 2.83$ m. Its speed encoder sits on the rear-left wheel, $H = 0.76$ m left of the centerline, so in a left turn it rolls on a tighter circle than the axle center and reads low. The centerline speed is
 
-$$u_t =
-\begin{bmatrix}
-v_t \\
-\delta_t
-\end{bmatrix}.$$
+$$
+v_c = \frac{v_e}{1 - \dfrac{H}{L}\tan\delta}.
+$$ {#eq-project2-encoder}
 
-The observation for one extracted tree candidate is:
+The laser is $a = L + 0.95 = 3.78$ m ahead of the rear axle and $b = 0.50$ m to the left of the centerline. (The drawing labels the 0.95 m front-axle-to-laser distance $a$; kinematic models need the distance from the rear axle.) With $\omega = (v_c/L)\tan\delta$, the laser moves as Guivant and Nebot's laser-centered kinematics say [@GuivantNebot2001CompressedEKFSLAM]:
 
-$$z_t =
-\begin{bmatrix}
-r_t \\
-\beta_t
-\end{bmatrix},$$
+$$
+\begin{aligned}
+\dot x_L &= v_c\cos\theta - \omega\,(a\sin\theta + b\cos\theta),\\
+\dot y_L &= v_c\sin\theta + \omega\,(a\cos\theta - b\sin\theta),\\
+\dot\theta &= \omega.
+\end{aligned}
+$$ {#eq-project2-laser-kinematics}
 
-where $r_t$ is range and $\beta_t$ is bearing in the scanner/vehicle frame. You may include estimated trunk diameter and scan-segment metadata in your front end, but the FastSLAM measurement update should use range and bearing.
+The extra terms are the lever arm: when the vehicle yaws, a point 3.8 m in front of the rear axle swings sideways at $\omega a$, a meter per second in a brisk turn. For controls held constant over a step, `predict_laser_pose(laser_pose, centerline_speed_mps, steering_rad, dt_s, geometry)` integrates @eq-project2-laser-kinematics exactly: it moves the pose back along the lever arm to the rear axle, follows the bicycle arc, and moves out again. `encoder_to_centerline_speed` implements @eq-project2-encoder. Both are vectorized over particles.
 
-FastSLAM factorizes the SLAM posterior by conditioning landmark estimates on each sampled path [@Montemerlo2002FastSLAM; @Thrun2004FastSLAM]. In implementation terms, each particle owns its own pose, trajectory history, landmark dictionary, and weight.
+These corrections are not cosmetic. Over the first 200 s, dead reckoning aligned to GPS has an RMSE of 28 m without the encoder correction and 13 m with it. The lever arm hardly changes that number, because GPS noise hides a half-meter effect, but it visibly sharpens the map in turns; Part A asks you to show both.
 
-## Forward Mechanization and State Transition {#sec-project2-forward-mechanization-state}
+**Process noise.** FastSLAM 1.0 samples each particle from the motion model by perturbing the measured controls,
 
-Use a bicycle-style planar motion model. With wheelbase $L$, speed $v$, steering angle $\delta$, and heading $\theta$:
+$$
+\begin{aligned}
+\tilde{\mathbf{u}}^{[i]} &= \begin{bmatrix} v_e \\ \delta \end{bmatrix} + \boldsymbol{\eta}^{[i]},\\
+\boldsymbol{\eta}^{[i]} &\sim \mathcal{N}(\mathbf{0}, \mathbf{Q}_u),
+\end{aligned}
+$$
 
-$$\dot p_x = v \cos\theta,
-\qquad
-\dot p_y = v \sin\theta,
-\qquad
-\dot\theta = \frac{v}{L}\tan\delta.$$
+and propagating with the noisy controls, encoder correction included. `MotionModelConfig.control_noise_covariance` is $\mathbf{Q}_u$, drawn once per `predict` call. Read the warning in @sec-project2-time-synchronization before you tune it.
 
-For one time step $\Delta t$, define:
+## Time Synchronization {#sec-project2-time-synchronization}
 
-$$\omega = \frac{v}{L}\tan\delta.$$
+Odometry arrives every 25 ms and laser scans every 213-215 ms, on the same clock but never at the same instant. Grabbing "the nearest odometry sample" for a scan, or integrating one big step per scan, places every observation at the wrong pose: at 6 m/s a 25 ms error is 15 cm along track, and in a turn the heading error moves a tree 40 m away by another 30 cm. The fix is an event-driven merge:
 
-If $|\omega|$ is small, the straight-line approximation is:
+1. treat odometry sample $k$, logged at $t_k$, as a zero-order hold over $[t_k, t_{k+1})$;
+2. between two scans, call `predict` once for each odometry interval;
+3. split the last interval at the laser timestamp: predict up to the scan, update, then predict the rest of the interval before the next scan.
 
-$$p_{x,t+1} = p_{x,t} + v\cos\theta_t\Delta t,$$
+`scan_steps(dataset)` yields, for every scan, the pieces to propagate (`step.controls`, each a `(speed_mps, steering_rad, dt_s)` record) and the update time `step.time_s`; `run_all` drives your filter with it:
 
-$$p_{y,t+1} = p_{y,t} + v\sin\theta_t\Delta t,$$
+``` python
+for step in scan_steps(dataset, 0, 2000):
+    for control in step.controls:
+        slam.predict(control.speed_mps, control.steering_rad, control.dt_s)
+    slam.update(extract_tree_landmarks(dataset.laser_ranges_m[step.scan_index]), step.time_s)
+```
 
-$$\theta_{t+1} = \operatorname{wrap}(\theta_t + \omega\Delta t).$$
+The very first scan (21.819 s) precedes the first odometry sample (21.940 s), so nothing is known about the motion before it; `scan_steps` skips it. You may use the helper or write your own merge, but your report must explain the timing model either way.
 
-For nonzero turn rate, use the constant-turn arc:
+**Tune $\mathbf{Q}_u$ to the step rate.** Each `predict` call draws fresh, independent noise, so control noise is sampled at 40 Hz. Independent errors average out: with per-step steering noise $\sigma_\delta$, the heading spread after $T$ seconds grows like
 
-$$p_{x,t+1}
-= p_{x,t}
-+ \frac{v}{\omega}
-\left[
-\sin(\theta_t + \omega\Delta t) - \sin\theta_t
-\right],$$
+$$
+\sigma_\theta(T) \approx \frac{v}{L}\,\sigma_\delta\,\sqrt{T\,\Delta t},
+$$
 
-$$p_{y,t+1}
-= p_{y,t}
-- \frac{v}{\omega}
-\left[
-\cos(\theta_t + \omega\Delta t) - \cos\theta_t
-\right],$$
-
-$$\theta_{t+1} = \operatorname{wrap}(\theta_t + \omega\Delta t).$$
-
-For FastSLAM 1.0, each particle samples pose from the noisy motion model:
-
-$$x_t^{[i]} \sim p(x_t \mid x_{t-1}^{[i]}, u_t).$$
-
-A practical implementation can sample additive noise on the control input:
-
-$$\tilde u_t^{[i]} =
-\begin{bmatrix}
-v_t \\
-\delta_t
-\end{bmatrix}
-+
-\eta_t^{[i]},
-\qquad
-\eta_t^{[i]} \sim \mathcal{N}(0, Q_u),$$
-
-then propagate each particle with $\tilde u_t^{[i]}$. You must report the wheelbase value, process-noise covariance, and any steering or speed preprocessing you use.
+which for $v = 4$ m/s, $\sigma_\delta = 3^\circ$, and $\Delta t = 25$ ms is under a degree after a full second. Real odometry errors (a steering offset, tire slip, a scale error) are correlated over seconds, so a $\mathbf{Q}_u$ that looks physically reasonable per sample is far too small, and an overconfident particle cloud loses track exactly where it matters. If you change the step rate (sub-stepping, or one prediction per scan), rescale $\mathbf{Q}_u$; the pose spread over a fixed time scales like $\mathbf{Q}_u\,\Delta t$.
 
 ## Observation Model {#sec-project2-observation-model}
 
-For pose $x = [p_x, p_y, \theta]^T$ and landmark $\ell_j = [m_x, m_y]^T$, define:
+With the laser pose as the state, a trunk at $\boldsymbol{\ell}_j$ is observed at
 
-$$\Delta x = m_x - p_x,
-\qquad
-\Delta y = m_y - p_y,
-\qquad
-q = \Delta x^2 + \Delta y^2.$$
-
-The ideal range-bearing measurement is:
-
-$$h(x, \ell_j) =
+$$
+h(\mathbf{x}, \boldsymbol{\ell}_j) =
 \begin{bmatrix}
 \sqrt{q} \\
-\operatorname{wrap}\left(\operatorname{atan2}(\Delta y, \Delta x) - \theta\right)
-\end{bmatrix}.$$
+\operatorname{wrap}\!\left(\operatorname{atan2}(\Delta y, \Delta x) - \theta\right)
+\end{bmatrix},
+$$
 
-The actual measurement model is:
+with $\Delta x = \ell_{x,j} - x_L$, $\Delta y = \ell_{y,j} - y_L$, and $q = \Delta x^2 + \Delta y^2$. The measurement is $\mathbf{z} = h(\mathbf{x}, \boldsymbol{\ell}_j) + \mathbf{v}$ with $\mathbf{v} \sim \mathcal{N}(\mathbf{0}, \mathbf{R})$. The bearing is in the vehicle frame, $\beta = A - \pi/2$ (@sec-mapping-laser-conventions); a trunk on the left has a positive bearing. Inside one particle the pose is treated as known, so the landmark EKF needs only the Jacobian with respect to the landmark,
 
-$$z = h(x, \ell_j) + v_z,
-\qquad
-v_z \sim \mathcal{N}(0, R).$$
-
-For one particle, the landmark EKF treats the particle pose as known. The Jacobian with respect to the landmark position is:
-
-$$H_\ell =
+$$
+\mathbf{H}_\ell =
 \begin{bmatrix}
-\frac{\Delta x}{\sqrt{q}} & \frac{\Delta y}{\sqrt{q}} \\
--\frac{\Delta y}{q} & \frac{\Delta x}{q}
-\end{bmatrix}.$$
+\Delta x/\sqrt{q} & \Delta y/\sqrt{q} \\
+-\Delta y/q & \Delta x/q
+\end{bmatrix}.
+$$
 
-The innovation is:
+A new landmark comes from the inverse model,
 
-$$\nu = z - h(x, \ell_j),$$
-
-with the bearing element wrapped into $[-\pi,\pi)$. The innovation covariance is:
-
-$$S = H_\ell P_\ell H_\ell^T + R.$$
-
-Use Mahalanobis distance for gating:
-
-$$d^2 = \nu^T S^{-1}\nu.$$
-
-Do not explicitly compute $S^{-1}$. Use a linear solve. For a 2D range-bearing measurement, a starting gate of $5.99$ corresponds to the 95% chi-square threshold. You should include a small gate-sensitivity study around values such as 4.61, 5.99, and 9.21.
-
-When no existing landmark passes the gate, initialize a new landmark with the inverse observation model:
-
-$$\ell =
+$$
+\boldsymbol{\ell} =
 \begin{bmatrix}
-p_x + r\cos(\theta + \beta) \\
-p_y + r\sin(\theta + \beta)
-\end{bmatrix}.$$
+x_L + r\cos(\theta + \beta) \\
+y_L + r\sin(\theta + \beta)
+\end{bmatrix},
+$$
 
-The measurement Jacobian for this inverse model is:
+and its covariance from the Jacobian $\mathbf{G}_z$ of that model with respect to the measurement:
 
-$$G =
+$$
+\begin{aligned}
+\mathbf{G}_z &=
 \begin{bmatrix}
 \cos(\theta+\beta) & -r\sin(\theta+\beta) \\
 \sin(\theta+\beta) & r\cos(\theta+\beta)
-\end{bmatrix}.$$
+\end{bmatrix},\\
+\mathbf{P}_\ell &= \mathbf{G}_z\mathbf{R}\mathbf{G}_z^T.
+\end{aligned}
+$$
 
-Initialize landmark covariance as:
+$\mathbf{G}_z = \mathbf{H}_\ell^{-1}$ at the same point, a useful check. `range_bearing_prediction`, `range_bearing_jacobian`, `inverse_range_bearing`, and `inverse_range_bearing_jacobian` implement these, and `numerical_jacobian` lets you verify any Jacobian you add (the tests do exactly that). If you prefer a rear-axle state, the lever arm moves into $h$ and its Jacobians; that is allowed, but derive and test it, and keep the evaluation at the laser.
 
-$$P_\ell = G R G^T.$$
+## FastSLAM Specification {#sec-project2-fastslam-specification}
 
-This covariance is conditional on the particle pose. If your implementation also accounts for pose uncertainty during landmark birth, document that extension clearly.
+The baseline is the same filter as @sec-slam-fastslam-algorithm, on real data. In every particle, for every scan:
 
-## Part A: Dataset Loading and Laser Feature Extraction {#sec-project2-part-dataset-loading}
+**Association with two gates** (@sec-slam-association-landmark-birth). For each observation $a$ and landmark $j$, compute the innovation $\boldsymbol{\nu}_{aj} = \mathbf{z}_a - h(\mathbf{x}^{[i]}, \boldsymbol{\ell}_j)$ with the bearing wrapped into $[-\pi, \pi)$, $\mathbf{S}_{aj} = \mathbf{H}_\ell\mathbf{P}_{\ell,j}\mathbf{H}_\ell^T + \mathbf{R}$, and $d^2_{aj} = \boldsymbol{\nu}_{aj}^T\mathbf{S}_{aj}^{-1}\boldsymbol{\nu}_{aj}$ (with a linear solve, never an explicit inverse). Match pairs with $d^2 < \chi^2_{2,0.95} = 5.99$, greedily in order of increasing $d^2$, so that no landmark absorbs two observations from the same scan. An unmatched observation spawns a *tentative* landmark only if $d^2 > \chi^2_{2,0.999} = 13.82$ for every landmark in the particle; otherwise it is ambiguous and discarded. Joint compatibility (@sec-slam-association-joint-compatibility) is a worthwhile extension where trees stand close together.
 
-### Goal
+**Weights** (@sec-slam-landmark-weighting). A matched observation contributes its Gaussian likelihood,
 
-Turn raw laser scans into candidate tree observations.
+$$
+\log w^{[i]} \leftarrow \log w^{[i]} - \tfrac12\,\boldsymbol{\nu}^T\mathbf{S}^{-1}\boldsymbol{\nu} - \tfrac12\log\det(2\pi\mathbf{S}),
+$$
 
-### Requirements
+and a new or discarded observation contributes the constant $\log p_0$, the density of a measurement that the particle's map does not explain [@Montemerlo2003FastSLAM2; @ProbRob]. Every observation thus contributes exactly one factor to every particle. The default `FastSLAM.log_p0` treats such a measurement as uniform over the sensor footprint, $p_0 = 1/(r_{\max}\,\pi) = 1/(75\pi)\ \text{m}^{-1}\text{rad}^{-1}$. Skipping $p_0$ compares densities against an implicit 1 per (m rad), and whether that rewards or punishes inventing trees depends on your units.
 
-1.  Load `LASER`, `TLsr`, `speed`, `steering`, `time`, and GPS arrays.
-2.  Convert ranges to meters and timestamps to seconds.
-3.  Reject invalid returns and ranges above the reliable sensor limit.
-4.  Convert selected scans to scanner-frame XY points for inspection.
-5.  Segment each scan using range discontinuities.
-6.  Estimate compact tree candidates as range-bearing observations.
-7.  Record diagnostics:
-    - features per scan;
-    - rejected scan segments;
-    - estimated tree diameters;
-    - sensitivity to segmentation thresholds.
+**Landmark management.** A tentative landmark becomes confirmed after three successful associations (`confirm_associations`); a tentative landmark not seen for `tentative_timeout_s` (2 s by default, about nine scans) is deleted. Confirmed landmarks stay.
 
-### Expected Plots
+**Normalization and resampling.** Keep weights in log space and normalize with log-sum-exp (`normalize_log_weights`). Resample with systematic resampling (`systematic_resample_indices`, which clamps the last cumulative weight to exactly 1) when $N_\text{eff} = 1/\sum_i (w^{[i]})^2$ drops below $N/2$ (`resample_threshold`).
 
-- Example raw scan in scanner coordinates.
-- Example detected tree candidates overlaid on scan points.
-- Histogram of detected feature diameters.
-- Number of extracted features over time or scan index.
+All thresholds are fields of `FastSLAM` (`gate_threshold`, `birth_threshold`, `new_landmark_log_likelihood`, `resample_threshold`, ...) and of its `motion` and `measurement` configs, and `rng` is its only source of randomness. Change them if you can justify it, and report the values you used.
 
-Do not overfit the detector to one scan. A detector that works on one frame and floods the full dataset with false trees is not a working detector.
+## Part A: Dataset, Vehicle Model, and Laser Front End {#sec-project2-part-dataset-loading}
+
+**Goal.** Turn the raw log into trustworthy inputs: decoded scans in the right frame, controls turned into laser motion, and tree observations.
+
+1.  Load the data and explain the decoding: the 13-bit mask, the no-return threshold, and what fraction of beams carry no return. Plot several scans in the vehicle frame and confirm the bearing convention with a feature whose side you can tell (for example a tree that drifts from ahead to the left during a left turn).
+2.  Reproduce the dead-reckoning comparison that `run_all` prints (`dead_reckoning_comparison`: with and without the encoder correction and the lever arm) and explain the size of each effect. Then show the lever arm where GPS cannot: project tree detections along dead reckoning in a turn and compare how tightly re-observed trees cluster with and without it.
+3.  Implement `extract_tree_landmarks`. @sec-mapping-from-laser-scan describes the original detector (`detectTreesI16.m`), whose parameters are collected in `TreeExtractorConfig`; reproduce it, improve it, or replace it, but document every threshold and its reason.
+4.  Characterize the front end: detections per scan, the diameter histogram, an overlay of detections on scans, and the effect of at least two extractor thresholds.
+5.  Explain your time-synchronization model (@sec-project2-time-synchronization).
+
+A detector that works on one frame and floods the rest of the log with false trees is not a working detector. Neither is one that finds nothing near the hedges where the vehicle turns.
 
 ## Part B: Data Association and Landmark Management {#sec-project2-part-b-data}
 
-### Goal
+**Goal.** Decide, in every particle, whether each observation is an existing tree, a new tree, or something to leave alone.
 
-Decide whether each tree observation is an existing landmark, a new landmark, or an outlier.
-
-### Requirements
-
-1.  Implement range-bearing prediction from pose and landmark position.
-2.  Compute innovation and wrap bearing residuals.
-3.  Compute Mahalanobis distance using the innovation covariance.
-4.  Apply a chi-square gate, starting with 5.99 for a 2D measurement.
-5.  Use nearest-neighbor or maximum-likelihood association inside each particle.
-6.  Implement conservative landmark birth.
-7.  Track landmark observation counts and age.
-8.  Reject or deactivate weak landmarks when appropriate.
-
-### Expected Diagnostics
-
-- Accepted associations per scan.
-- New landmarks per scan.
-- Rejected observations per scan.
-- Confirmed landmark count over distance traveled.
-- Gate-threshold sensitivity study.
-
-FastSLAM lets different particles make different association decisions. Avoid forcing one global association table onto every particle.
+Implement `LandmarkEKF.initialize`, `innovation`, and `updated` (with the Joseph-form covariance update) and `FastSLAM.associate` as specified in @sec-project2-fastslam-specification. Different particles may and should make different decisions; never force one association table onto every particle (@sec-slam-association-per-particle-association). Report matched, new, and discarded observations per scan, the confirmed landmark count against distance travelled, how often tentative landmarks die, and any duplicates you can find near revisited areas.
 
 ## Part C: FastSLAM Backend {#sec-project2-part-c-fastslam}
 
-### Goal
+**Goal.** A complete FastSLAM 1.0 on the Victoria Park log.
 
-Implement FastSLAM using particles for vehicle pose and per-particle EKFs for tree landmarks.
+Implement `FastSLAM.predict` (vectorized over particles, with the encoder correction and the lever arm), `update` (the weights, landmark updates, birth, confirmation, deletion, trajectory bookkeeping, log-sum-exp normalization, and the resampling decision), and `resample`. Each particle holds its laser pose, its trajectory, its landmark dictionary, and a log weight. Use `np.linalg.solve` rather than matrix inverses, wrap every bearing residual, and fill `slam.history` with one record per scan (for example matched, new, and discarded counts, $N_\text{eff}$ before resampling, and whether you resampled) so `run_all` can report it.
 
-### Required Particle State
-
-Each particle should maintain:
-
-- current pose `[p_x, p_y, theta]`;
-- trajectory history for plotting;
-- dictionary of landmark EKFs;
-- log weight or normalized weight.
-
-Each landmark EKF should maintain:
-
-- landmark mean `[m_x, m_y]`;
-- 2x2 covariance;
-- observation count or track state.
-
-### Required FastSLAM 1.0 Algorithm
-
-At each update:
-
-1.  Predict each particle pose using speed, steering, elapsed time, and sampled motion noise.
-2.  Extract or receive tree observations for the current laser scan.
-3.  Associate each observation independently inside each particle.
-4.  Initialize new landmark EKFs when appropriate.
-5.  Update associated landmark EKFs.
-6.  Update particle weights using measurement likelihood.
-7.  Compute effective sample size:
-
-$$N_\text{eff} = \frac{1}{\sum_i (w^{[i]})^2}.$$
-
-8.  Resample using systematic or low-variance resampling when $N_\text{eff}$ falls below your threshold.
-
-### Required Diagnostics
-
-- Estimated vehicle trajectory.
-- Final landmark map.
-- Effective sample size over time.
-- Runtime per scan or per update.
-- Number of landmarks per particle over time.
-- At least one plot showing particle behavior or trajectory spread.
-
-Use log weights unless you have a clear reason not to. Normalize angles consistently. Use `np.linalg.solve` instead of explicitly forming matrix inverses. Keep measurement covariance, process noise, gate threshold, and resampling threshold as tunable parameters, and report the values you used.
+Required figures: the estimated trajectory and confirmed map over GPS (aligned), the error against GPS over time next to dead reckoning, $N_\text{eff}$ over time, landmark counts over time, runtime per scan, and one plot of particle behavior (the particle cloud at a few instants, or trajectory spread before and after a revisit).
 
 ## Optional Extension: FastSLAM 2.0 {#sec-project2-optional-extension-fastslam}
 
-FastSLAM 2.0 uses a proposal distribution informed by the latest measurement, rather than sampling pose only from the motion model. This can reduce particle count requirements, but it is easier to implement incorrectly.
+FastSLAM 2.0 samples each pose from a proposal that already includes the current measurements (@sec-slam-fastslam2), so it needs fewer particles when the laser is much more precise than the odometry, which is the situation here. It is also easier to get subtly wrong: it needs the pose Jacobian (`range_bearing_pose_jacobian` is provided), a per-particle EKF step on the pose, and a different weight. If you implement it, identify the proposal distribution, explain how the observations shape the pose sample, keep the landmark EKFs and diagnostics unchanged, and compare against your FastSLAM 1.0 baseline at equal runtime. It is not required for full credit.
 
-If you implement FastSLAM 2.0, your report must:
+## Part D: Evaluation and Analysis {#sec-project2-part-d-analysis}
 
-- identify the proposal distribution;
-- explain how the observation affects pose sampling;
-- preserve the same landmark EKF and diagnostics;
-- compare against your FastSLAM 1.0 baseline.
+**Goal.** Show what your system does, where it fails, and why.
 
-FastSLAM 2.0 is not required for full credit.
+Evaluate with the protocol of @sec-project2-evaluation-protocol. On the first 2000 scans (about 430 s and 1.1 km), the following sensitivity studies are **required**: particle count, gate threshold, and $\mathbf{Q}_u$, which `run_all --sweep particles gate q_scale` runs with the values in its `SWEEPS` table (particles `(10, 25, 50, 100)`, gate `(4.61, 5.99, 9.21)`, $\mathbf{Q}_u$ scaled by `(0.25, 1.0, 4.0)`). Report RMSE, runtime per scan, and the final confirmed landmark count for each, and explain the trends. A particle filter is a random algorithm, so a single run proves little; say how many seeds you ran.
 
-## Part D: Analysis and Comparison {#sec-project2-part-d-analysis}
+The full run (all 7249 scans), sweeps over other parameters ($\mathbf{R}$, $p_0$, the resampling threshold, extractor thresholds), and results over several seeds are what separate Excellent from Acceptable.
 
-### Goal
+Finally, compare EKF-SLAM, FastSLAM, and GraphSLAM for this dataset (state representation, computational scaling, data association, loop closure, suitability, implementation risk), using your own results where you can. You are not required to implement loop closure or pose-graph optimization, but discuss whether your map shows revisits, duplicate trees, or particle depletion around long loops, and what a graph back end and a loop-closure front end would add (@sec-loop-closure).
 
-Explain what your implementation did, where it worked, where it failed, and how FastSLAM compares to the main alternatives.
+## Evaluation Protocol {#sec-project2-evaluation-protocol}
 
-### Required Analysis
+Everyone measures the same way, so results can be compared. `victoria_park_slam.evaluation` implements each step and `run_all` applies them.
 
-Compare EKF-SLAM, FastSLAM, and GraphSLAM on:
+1.  **Valid GPS fixes** (`valid_gps_mask`). The fixes are cut into runs at gaps longer than 1 s and at jumps, where consecutive fixes are more than 5 m farther apart than the vehicle drove between them (odometry path length). Runs of fewer than five fixes and fixes outside the odometry time span are dropped. GPS is never interpolated across a gap.
+2.  **Interpolate the estimate** to the valid fix times. The estimate is the laser track (the weighted-mean particle pose after each update, or the highest-weight particle's path; say which), which is where the antenna is.
+3.  **Align** the whole evaluated segment to GPS with one rigid SE(2) transform (`align_se2`: Kabsch/Umeyama, no scale). The alignment removes the arbitrary start frame; it cannot straighten a bent trajectory.
+4.  **Report** the position RMSE after alignment, the maximum error, and the error against time.
+5.  **Baseline.** Report dead reckoning (with both corrections) over the same fixes, aligned the same way (`dead_reckoning_comparison`).
+6.  **Cost and map growth.** Report runtime per scan (mean and maximum of predict plus update, on stated hardware) and the landmark count (all and confirmed, highest-weight particle) against scan index or distance. A map that grows with every scan rather than with explored area is a symptom, not a feature.
 
-- state representation;
-- computational scaling;
-- data association behavior;
-- loop closure handling;
-- suitability for Victoria Park;
-- implementation risk for a student project.
-
-Also analyze your own FastSLAM results as you vary:
-
-- number of particles;
-- gate threshold;
-- measurement covariance;
-- process noise;
-- feature filtering thresholds;
-- resampling threshold.
-
-### Loop Closure Discussion
-
-You are not required to implement loop closure or pose graph optimization. You should discuss whether your final map suggests revisited areas, duplicate landmarks, or particle depletion around long loops. Explain how a graph-based smoother could help and what additional loop-closure front end would be needed.
+For orientation: over the first 2000 scans, dead reckoning with both corrections has an RMSE of about 32 m against GPS, and a sound FastSLAM 1.0 brings that down to a few meters. Over the full run, dead reckoning drifts to about 93 m RMSE. GPS itself is good to a meter or two where it is valid, so do not chase centimeters.
 
 ## Deliverables {#sec-project2-deliverables}
 
-Submit:
+Submit (@sec-project2-logistics):
 
-1.  Source code for your implementation.
-2.  A short README explaining how to run it.
-3.  Unit tests or small validation scripts for your geometry, landmark EKF, association, and resampling logic.
-4.  A report with:
-    - dataset loading notes;
-    - system model and parameter values;
-    - forward mechanization/state transition description;
-    - observation model and Jacobians;
-    - feature extraction method;
-    - data association method;
-    - FastSLAM implementation details;
-    - required plots and diagnostics;
-    - comparison of EKF-SLAM, FastSLAM, and GraphSLAM;
-    - failure-mode discussion.
-5.  Final map and trajectory plots.
+1.  The code archive: your `victoria_park_slam` package with the deliverables implemented, any scripts or notebooks, and a `README` with the commands that regenerate every figure and table.
+2.  Tests or validation scripts for the parts you added beyond the provided tests (for example a test of your extractor on a hand-made scan, or of any Jacobian you derived).
+3.  The report PDF, with: the dataset conventions you verified and how; the vehicle, lever-arm, and timing model with parameter values; the observation model and the landmark EKF; the front end and its characterization; the association and landmark-management design; the FastSLAM implementation and all tuning values ($\mathbf{Q}_u$, $\mathbf{R}$, gates, $p_0$, particle count, resampling threshold, seeds); the evaluation of @sec-project2-evaluation-protocol with the required figures and sweeps; the method comparison; and a failure-mode discussion.
 
-Your report should be concise and technical. Show evidence. Do not write a travel essay about the park unless it somehow explains a covariance matrix.
+Keep the report concise and technical. Show evidence. Do not write a travel essay about the park unless it somehow explains a covariance matrix.
 
-## Contract Grading Rubric {#sec-project2-contract-grading-rubric}
+## Grading Rubric {#sec-project2-grading-rubric}
 
-Project 2 is graded out of `100` project points.
+Project 2 is graded out of 100 project points.
 
-| Component | Points | Excellent (100%) | Acceptable (\~85%) \| Marginal (\~70%) \| Unacceptable (0%) \| |
-|------------|-----------:|-------------|------------|
-| Dataset understanding and loading | 10 | Loads the correct laser, odometry, timestamp, and GPS fields; handles units correctly; documents GPS limitations and keeps GPS out of the filter update path. ***10 points*** | Loads the main arrays correctly with only minor weaknesses in validation, organization, or explanation. \| Partially loads the dataset but has important mistakes in timing, units, field interpretation, or GPS usage. \| Dataset handling is missing, nonfunctional, or fundamentally incorrect. \| ***8 points*** \| ***7 points*** \| \| |
-| Feature extraction front end | 15 | Produces repeatable tree candidates with clear range filtering, segmentation, diameter reasoning, and diagnostic plots across multiple scans. ***15 points*** | Produces mostly useful tree candidates with minor tuning, robustness, or diagnostic weaknesses. \| Feature extraction is fragile, overfit, or creates many false or missed landmarks with limited evidence. \| No usable feature extraction. \| ***12 points*** \| ***10 points*** \| \| |
-| System and measurement model mathematics | 15 | Clearly derives and implements the bicycle transition, inverse landmark initialization, range-bearing prediction, Jacobian, covariance, innovation, and gate. ***15 points*** | Model math is mostly correct with minor weaknesses in notation, covariance explanation, or parameter justification. \| Important pieces of the model are missing, inconsistent, or only weakly connected to the implementation. \| Model description is missing or technically unusable. \| ***12 points*** \| ***10 points*** \| \| |
-| Data association and landmark management | 15 | Implements per-particle association with Mahalanobis gating, conservative landmark birth, outlier handling, and landmark lifecycle diagnostics. ***15 points*** | Association works in the main cases with minor weaknesses in birth logic, rejection policy, or diagnostics. \| Association is only partially working or often merges distinct trees, duplicates landmarks, or accepts obvious outliers. \| No meaningful association or landmark management. \| ***12 points*** \| ***10 points*** \| \| |
-| FastSLAM backend | 20 | Implements a complete FastSLAM 1.0 backend with stable log weights, per-particle landmark EKFs, effective-sample-size monitoring, and low-variance resampling. ***20 points*** | FastSLAM is fundamentally working with only minor weaknesses in tuning, numerical stability, or code organization. \| Backend is oversimplified, unstable, or missing important particle, EKF, likelihood, or resampling behavior. \| FastSLAM backend is missing, nonfunctional, or not actually FastSLAM. \| ***16 points*** \| ***14 points*** \| \| |
-| Evaluation and diagnostics | 15 | Provides clear trajectory, map, runtime, particle, association, map-growth, and parameter-sensitivity evidence tied to implementation decisions. ***15 points*** | Provides useful plots and diagnostics, but some sensitivity studies, runtime evidence, or interpretation are limited. \| Evidence is shallow, difficult to reproduce, or not sufficient to diagnose whether the implementation is working. \| Evaluation is missing or unsupported by meaningful outputs. \| ***12 points*** \| ***10 points*** \| \| |
-| Technical report and method comparison | 10 | Report is concise, reproducible, and technically grounded; compares EKF-SLAM, FastSLAM, and GraphSLAM using the student's actual results and failure modes. ***10 points*** | Report is mostly clear and correct, but some comparisons are generic or some reproducibility details are thin. \| Report is superficial, poorly organized, or weakly connected to the code and plots. \| Report or comparison analysis is missing. \| ***8 points*** \| ***7 points*** \| \| |
++----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
+| Component                  | Points   | Excellent (100%)                                     | Acceptable (\~85%)                       | Marginal (\~70%)                         | Unacceptable (0%)              |
++============================+=========:+======================================================+==========================================+==========================================+================================+
+| Dataset, vehicle model,    | 20       | Decodes the laser correctly and verifies the         | Correct decoding, vehicle model, and     | Important mistakes or unverified         | Missing, nonfunctional, or     |
+| lever arm, and time        |          | conventions on the data (bearing sign, encoder       | synchronization, with only minor gaps in | assumptions in decoding, frames, lever   | fundamentally incorrect.       |
+| synchronization            |          | correction, lever-arm side, timing); implements the  | verification or explanation.             | arm, encoder correction, or timing (for  |                                |
+|                            |          | laser-centered motion model with the encoder          |                                          | example nearest-sample synchronization   |                                |
+|                            |          | correction and an event-driven synchronization;      | ***16 points***                          | or a mirrored scan).                     |                                |
+|                            |          | quantifies each correction (dead-reckoning           |                                          |                                          |                                |
+|                            |          | comparison plus a turn-sharpness or equivalent       |                                          | ***14 points***                          |                                |
+|                            |          | check); keeps GPS out of the filter.                 |                                          |                                          |                                |
+|                            |          |                                                      |                                          |                                          |                                |
+|                            |          | ***20 points***                                      |                                          |                                          |                                |
++----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
+| Laser front end            | 15       | Repeatable trunk observations across the whole log;  | Mostly useful detections, with minor     | Fragile or overfit; many false or missed | No usable feature extraction.  |
+|                            |          | every threshold documented and compared with the     | weaknesses in robustness, documentation, | trees, with limited evidence.            |                                |
+|                            |          | original detector; diameter and center-range         | or diagnostics.                          |                                          |                                |
+|                            |          | reasoning; overlays and per-scan statistics; a       |                                          | ***10 points***                          |                                |
+|                            |          | threshold-sensitivity study tied to SLAM behavior.  | ***12 points***                          |                                          |                                |
+|                            |          |                                                      |                                          |                                          |                                |
+|                            |          | ***15 points***                                      |                                          |                                          |                                |
++----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
+| Data association and       | 20       | Per-particle association with both gates and mutual  | Works in the main cases, with minor      | Partially working; often merges distinct | No meaningful association or   |
+| landmark management        |          | exclusion, consistent p0 weighting, a                | weaknesses in birth, deletion,           | trees, duplicates landmarks, accepts     | landmark management.           |
+|                            |          | tentative/confirmed lifecycle with deletion, and     | weighting, or diagnostics.               | outliers, or weights new landmarks       |                                |
+|                            |          | diagnostics (matched, new, discarded, map growth,    |                                          | inconsistently.                          |                                |
+|                            |          | duplicates) that explain the behavior.              | ***16 points***                          |                                          |                                |
+|                            |          |                                                      |                                          | ***14 points***                          |                                |
+|                            |          | ***20 points***                                      |                                          |                                          |                                |
++----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
+| FastSLAM backend           | 15       | Complete FastSLAM 1.0: vectorized prediction, copy-  | Fundamentally working, with minor        | Oversimplified, unstable, or missing     | Missing, nonfunctional, or not |
+|                            |          | on-write landmark EKFs, stable log weights, N_eff    | weaknesses in tuning, numerical care,    | important particle, EKF, likelihood, or  | actually FastSLAM.             |
+|                            |          | monitoring, and systematic resampling; passes the    | efficiency, or organization.             | resampling behavior.                    |                                |
+|                            |          | provided tests; reported runtime on the full log.    |                                          |                                          |                                |
+|                            |          |                                                      | ***12 points***                          | ***10 points***                          |                                |
+|                            |          | ***15 points***                                      |                                          |                                          |                                |
++----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
+| Evaluation, sensitivity    | 30       | Follows the evaluation protocol; the required sweeps | The required evaluation and sweeps are   | Evidence is shallow, hard to reproduce,  | Evaluation or report missing   |
+| studies, and technical     |          | plus the full run, further sweeps, and several       | present and mostly clear; extra studies, | missing required sweeps, or insufficient | or unsupported by meaningful   |
+| communication              |          | seeds; clear figures; an honest dead-reckoning       | seeds, or interpretation are limited.    | to tell whether the system works.        | outputs.                       |
+|                            |          | comparison; failure modes explained with evidence; a |                                          |                                          |                                |
+|                            |          | method comparison grounded in the student's own      | ***24 points***                          | ***21 points***                          |                                |
+|                            |          | results; a concise, reproducible report.             |                                          |                                          |                                |
+|                            |          |                                                      |                                          |                                          |                                |
+|                            |          | ***30 points***                                      |                                          |                                          |                                |
++----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
 
 ## Suggested Milestones {#sec-project2-suggested-milestones}
 
-1.  Load the dataset and plot several laser scans.
-2.  Build a feature extractor and tune it on a small scan subset.
-3.  Implement and test range-bearing prediction, inverse initialization, and the landmark Jacobian.
-4.  Implement and test `LandmarkEKF` on synthetic range-bearing data.
-5.  Implement FastSLAM on a synthetic landmark world.
-6.  Run on a short Victoria Park slice.
-7.  Scale to a longer segment and add diagnostics.
-8.  Complete the comparison and failure-mode report.
+1.  Load the data, plot scans in the vehicle frame, and reproduce the dead-reckoning comparison.
+2.  Build the tree extractor on a few hundred scans, then check it on the whole log.
+3.  Implement the landmark EKF and pass its tests; check any Jacobian you add with `numerical_jacobian`.
+4.  Implement prediction, association, update, and resampling; pass the synthetic-loop test.
+5.  Run the first 2000 scans with `run_all`, read the diagnostics, and tune.
+6.  Run the required sweeps, then (for Excellent) the full log and the extra studies.
+7.  Write the report around the evidence.
 
 ## References {#sec-project2-references}
 
-- FastSLAM original formulation: @Montemerlo2002FastSLAM
-- FastSLAM with unknown data association and Victoria Park context: @Thrun2004FastSLAM
-- Victoria Park dataset source/mirror: @VictoriaParkDataset
-- SLAM tutorial context: @DurrantWhyteBailey2006SLAMTutorial
-- Probabilistic Robotics reference: @ProbRob
+- FastSLAM: @Montemerlo2002FastSLAM; FastSLAM 2.0 and the new-feature likelihood: @Montemerlo2003FastSLAM2
+- FastSLAM with unknown data association, including Victoria Park: @Thrun2004FastSLAM
+- Victoria Park dataset and vehicle model: @VictoriaParkDataset, @GuivantNebot2001CompressedEKFSLAM
+- SLAM tutorial: @DurrantWhyteBailey2006SLAMTutorial
+- Probabilistic Robotics: @ProbRob

@@ -3,97 +3,170 @@
 Simultaneous Localization and Mapping (SLAM) estimates the robot trajectory and the map at the same time:
 
 $$
-p(x_{1:t}, m \mid z_{1:t}, u_{1:t}).
+p(\mathbf{x}_{1:k}, \mathbf{m} \mid \mathbf{z}_{1:k}, \mathbf{u}_{1:k}).
 $$
 
 The problem is hard because localization needs a map, while mapping needs a pose estimate. The usual joke is that SLAM is a chicken-and-egg problem. The less funny version is that a wrong data association can quietly poison the map and then use that poisoned map to justify future wrong poses.
 
-This chapter gives a broad view of EKF-SLAM, FastSLAM, and GraphSLAM, but it goes deepest on FastSLAM because that is the implementation target for the Victoria Park project [@Montemerlo2002FastSLAM; @Thrun2004FastSLAM].
+This chapter gives a broad view of EKF-SLAM, FastSLAM, and GraphSLAM, but it goes deepest on FastSLAM because that is the implementation target for the Victoria Park project [@Montemerlo2002FastSLAM; @Thrun2004FastSLAM]. Throughout, $\mathbf{x}_k = [x_k, y_k, \theta_k]^T$ is the planar robot pose, $\boldsymbol{\ell}_j$ is the position of landmark $j$, and the map is $\mathbf{m} = \{\boldsymbol{\ell}_1, \ldots, \boldsymbol{\ell}_N\}$. Because $N$ counts landmarks, the number of particles is $M$.
 
 ## Online SLAM and Full SLAM {#sec-slam-online-slam-full}
 
 **Online SLAM** estimates only the current robot pose and the map:
 
 $$
-p(x_t, m \mid z_{1:t}, u_{1:t}).
+p(\mathbf{x}_k, \mathbf{m} \mid \mathbf{z}_{1:k}, \mathbf{u}_{1:k}).
 $$
 
 **Full SLAM** estimates the whole trajectory and the map:
 
 $$
-p(x_{1:t}, m \mid z_{1:t}, u_{1:t}).
+p(\mathbf{x}_{1:k}, \mathbf{m} \mid \mathbf{z}_{1:k}, \mathbf{u}_{1:k}).
 $$
 
-Filtering methods such as EKF-SLAM and FastSLAM are usually presented as online algorithms. GraphSLAM and factor-graph methods are usually presented as full-trajectory smoothing algorithms.
+Filtering methods such as EKF-SLAM and FastSLAM are usually presented as online algorithms. GraphSLAM and factor-graph methods are usually presented as full-trajectory smoothing algorithms. FastSLAM sits in between: each particle carries a whole path hypothesis, but the filter only ever moves forward in time.
 
 ## EKF-SLAM in One Page {#sec-slam-ekf-slam-one}
 
-EKF-SLAM augments the robot state with all landmark positions. The compressed EKF work around Victoria Park is a useful historical reference for why dense covariance management became a practical bottleneck [@GuivantNebot2001CompressedEKFSLAM]:
+EKF-SLAM puts the robot pose and every landmark into one state vector and runs an ordinary EKF (@sec-ekf) on it. For a planar robot and $N$ point landmarks the state has $3 + 2N$ entries:
 
 $$
-y_t =
+\mathbf{y} =
 \begin{bmatrix}
-x_t \\
-\ell_1 \\
-\ell_2 \\
-\vdots \\
-\ell_N
+\mathbf{x} \\ \boldsymbol{\ell}_1 \\ \vdots \\ \boldsymbol{\ell}_N
 \end{bmatrix}.
 $$
 
-For a planar robot and 2D point landmarks,
+Its covariance splits into robot, map, and cross blocks,
 
 $$
-y_t =
+\mathbf{P} =
 \begin{bmatrix}
-x & y & \theta & \ell_{1,x} & \ell_{1,y} & \cdots & \ell_{N,x} & \ell_{N,y}
-\end{bmatrix}^T.
+\mathbf{P}_{xx} & \mathbf{P}_{xm} \\
+\mathbf{P}_{mx} & \mathbf{P}_{mm}
+\end{bmatrix},
 $$
 
-The covariance is dense:
+and it is dense. Those cross-correlations are not decorative: they are how the filter remembers that landmark uncertainty and robot uncertainty came from the same observations. The compressed EKF work on Victoria Park is a useful historical reference for why managing this dense matrix became the practical bottleneck [@GuivantNebot2001CompressedEKFSLAM].
+
+**Prediction.** Landmarks do not move, so only the robot block and the robot-map cross terms change. With $\mathbf{F} = \partial f / \partial \mathbf{x}$ and $\mathbf{L} = \partial f / \partial \mathbf{u}$ evaluated at the current estimate, and odometry noise $\mathbf{Q}_u$ entering through the inputs (@sec-kf-input-noise),
 
 $$
-P_t =
+\begin{aligned}
+\hat{\mathbf{x}}_{k|k-1} &= f(\hat{\mathbf{x}}_{k-1|k-1}, \mathbf{u}_k), \\
+\mathbf{P}_{xx} &\leftarrow \mathbf{F}\mathbf{P}_{xx}\mathbf{F}^T + \mathbf{L}\mathbf{Q}_u\mathbf{L}^T, \\
+\mathbf{P}_{xm} &\leftarrow \mathbf{F}\mathbf{P}_{xm},
+\qquad \mathbf{P}_{mx} = \mathbf{P}_{xm}^T, \\
+\mathbf{P}_{mm} &\leftarrow \mathbf{P}_{mm}.
+\end{aligned}
+$$ {#eq-slam-ekf-predict}
+
+The robot moved, so its correlation with each landmark is carried along by $\mathbf{F}$; the landmark block is untouched. Prediction costs $O(N)$.
+
+**Update.** A range-bearing observation of landmark $j$ depends only on the robot pose and $\boldsymbol{\ell}_j$, so its Jacobian is zero except in two column blocks:
+
+$$
+\mathbf{H} =
 \begin{bmatrix}
-P_{xx} & P_{xm} \\
-P_{mx} & P_{mm}
+\mathbf{H}_x & \mathbf{0} & \cdots & \mathbf{0} & \mathbf{H}_\ell & \mathbf{0} & \cdots & \mathbf{0}
 \end{bmatrix}.
 $$
 
-Those cross-correlations are not decorative. They are how the filter remembers that landmark uncertainty and robot uncertainty came from the same observations.
-
-The update for one landmark uses the normal EKF equations:
+Here $\mathbf{H}_x$ is the $2 \times 3$ pose Jacobian of @eq-measurement-models-range-bearing-H, and the $2 \times 2$ landmark Jacobian $\mathbf{H}_\ell$ is minus its first two columns. With the innovation's bearing component wrapped to $[-\pi, \pi)$, the update is the usual EKF update,
 
 $$
-S = H P^- H^T + R,
-$$
+\begin{aligned}
+\boldsymbol{\nu} &= \mathbf{z} - h(\hat{\mathbf{x}}, \hat{\boldsymbol{\ell}}_j), \\
+\mathbf{S} &= \mathbf{H}\mathbf{P}\mathbf{H}^T + \mathbf{R}, \\
+\mathbf{K} &= \mathbf{P}\mathbf{H}^T\mathbf{S}^{-1}, \\
+\hat{\mathbf{y}} &\leftarrow \hat{\mathbf{y}} + \mathbf{K}\boldsymbol{\nu}, \\
+\mathbf{P} &\leftarrow \mathbf{P} - \mathbf{K}\mathbf{S}\mathbf{K}^T,
+\end{aligned}
+$$ {#eq-slam-ekf-update}
+
+but the sparsity of $\mathbf{H}$ says a lot about where the work goes. $\mathbf{S}$ only involves the blocks $\mathbf{P}_{xx}$, $\mathbf{P}_{xj}$, and $\mathbf{P}_{jj}$, so it is cheap. $\mathbf{P}\mathbf{H}^T$ only uses the robot and landmark-$j$ columns of $\mathbf{P}$, but every row of it is generally nonzero, so the gain is dense: one observation of one tree nudges every landmark that is correlated with the robot. That is exactly how EKF-SLAM propagates a loop closure through the whole map. The bill arrives in the covariance update, where $\mathbf{K}\mathbf{S}\mathbf{K}^T$ is a full $(3+2N) \times (3+2N)$ outer product. Every observation costs $O(N^2)$ time, and storing $\mathbf{P}$ costs $O(N^2)$ memory. Use the Joseph form (@sec-kf-joseph-form) if you care about keeping $\mathbf{P}$ symmetric and positive definite, which you do.
+
+**Augmentation.** A new landmark comes from the inverse observation model,
 
 $$
-K = P^- H^T S^{-1},
+\boldsymbol{\ell} = g(\mathbf{x}, \mathbf{z}) =
+\begin{bmatrix}
+x + r\cos(\theta + \beta) \\
+y + r\sin(\theta + \beta)
+\end{bmatrix},
 $$
 
+with Jacobians with respect to the pose and the measurement
+
 $$
-y = y^- + K(z - h(y^-)).
+\begin{aligned}
+\mathbf{G}_x &=
+\begin{bmatrix}
+1 & 0 & -r\sin(\theta+\beta) \\
+0 & 1 & r\cos(\theta+\beta)
+\end{bmatrix}, \\
+\mathbf{G}_z &=
+\begin{bmatrix}
+\cos(\theta+\beta) & -r\sin(\theta+\beta) \\
+\sin(\theta+\beta) & r\cos(\theta+\beta)
+\end{bmatrix}.
+\end{aligned}
 $$
 
-The issue is scale. The covariance grows with all landmarks, and updating it becomes expensive as the map grows. EKF-SLAM is conceptually elegant and historically important, but it is not the project backend.
+The state grows by two entries, and the covariance by a new row and column of blocks:
+
+$$
+\begin{aligned}
+\mathbf{P}_{\ell\ell} &= \mathbf{G}_x\mathbf{P}_{xx}\mathbf{G}_x^T + \mathbf{G}_z\mathbf{R}\mathbf{G}_z^T, \\
+\mathbf{P}_{\ell x} &= \mathbf{G}_x\mathbf{P}_{xx}, \\
+\mathbf{P}_{\ell m} &= \mathbf{G}_x\mathbf{P}_{xm}.
+\end{aligned}
+$$ {#eq-slam-ekf-augment}
+
+The new landmark inherits the robot's uncertainty and, through it, a correlation with every landmark the robot is already correlated with. Dropping the cross terms would declare the new tree independent of the robot that just measured it, an overconfident lie that the filter would happily believe forever.
+
+**Consistency.** Julier and Uhlmann showed with a deceptively simple counterexample that the EKF-SLAM covariance can shrink below anything the measurements justify, so the filter becomes inconsistent, most visibly in heading [@julierUhlmann2001slam]. Huang, Mourikis, and Roumeliotis traced the cause to observability [@huang2010]. Planar SLAM cannot observe the global position and orientation of the whole map-plus-robot picture: three directions are unobservable. Because the EKF evaluates its Jacobians at different estimates at different times, its *linearized* system appears to observe the global heading, and the filter acquires heading information that does not exist. Their first-estimates Jacobian (FEJ) EKF evaluates each Jacobian at the first estimate of the state it involves, and their observability-constrained (OC) EKF chooses linearization points that keep the correct unobservable subspace. Both cost essentially nothing extra and fix most of the overconfidence.
+
+So EKF-SLAM is conceptually elegant and historically important, and its correlations do real work, but $O(N^2)$ per observation and linearization-induced overconfidence are why it is not the project backend.
 
 ## FastSLAM: The Project Backend {#sec-slam-fastslam-project-backend}
 
-FastSLAM uses a Rao-Blackwellized particle filter [@Montemerlo2002FastSLAM]. The key factorization is
+FastSLAM uses a Rao-Blackwellized particle filter (@sec-pf-rao-blackwellized) [@Montemerlo2002FastSLAM]. Let $n_k$ be the *correspondence* of the measurement at time $k$: the index of the landmark that produced it. The key factorization holds *given the correspondences*:
 
 $$
-p(x_{1:t}, m \mid z_{1:t}, u_{1:t})
+\begin{aligned}
+p(\mathbf{x}_{1:k}, \mathbf{m} \mid \mathbf{z}_{1:k}, \mathbf{u}_{1:k}, n_{1:k})
+={}& p(\mathbf{x}_{1:k} \mid \mathbf{z}_{1:k}, \mathbf{u}_{1:k}, n_{1:k}) \\
+&\times \prod_{j=1}^{N} p(\boldsymbol{\ell}_j \mid \mathbf{x}_{1:k}, \mathbf{z}_{1:k}, n_{1:k}).
+\end{aligned}
+$$ {#eq-slam-fastslam-factorization}
+
+Here is why. Condition on the whole path. By Bayes' rule, and with independent landmark priors,
+
+$$
+p(\mathbf{m} \mid \mathbf{x}_{1:k}, \mathbf{z}_{1:k}, n_{1:k})
+\propto
+\prod_{j=1}^{N} p(\boldsymbol{\ell}_j)
+\prod_{\tau=1}^{k} p(\mathbf{z}_\tau \mid \mathbf{x}_\tau, \boldsymbol{\ell}_{n_\tau}).
+$$
+
+Each measurement likelihood involves exactly one landmark, the one named by $n_\tau$. Group the factors by landmark and the posterior splits into $N$ independent pieces, each of which is a small estimation problem for a fixed point seen from known sensor positions. That is precisely what a $2 \times 2$ EKF solves.
+
+Now drop the correspondences. The likelihood of one measurement becomes a mixture over which landmark produced it,
+
+$$
+p(\mathbf{z}_\tau \mid \mathbf{x}_\tau, \mathbf{m})
 =
-p(x_{1:t} \mid z_{1:t}, u_{1:t})
-\prod_{n=1}^{N} p(\ell_n \mid x_{1:t}, z_{1:t}).
+\sum_{j} P(n_\tau = j)\, p(\mathbf{z}_\tau \mid \mathbf{x}_\tau, \boldsymbol{\ell}_j),
 $$
 
-Given a full robot path, landmarks become conditionally independent. FastSLAM therefore represents:
+and a product of sums does not split into a product over landmarks. Unknown association couples every landmark to every other. FastSLAM's way out is to let each particle carry its own correspondence history $n_{1:k}^{[i]}$ along with its path $\mathbf{x}_{1:k}^{[i]}$. Inside a particle the correspondences are "known" and @eq-slam-fastslam-factorization holds, so the particles sample paths and associations jointly. That is why different particles may disagree about which tree is which, and why a wrong association need not be fatal as long as some particle got it right. @sec-slam-association is about making those per-particle decisions well.
 
-- the robot path with particles;
+FastSLAM therefore represents:
+
+- the robot path and the association history with particles;
 - each landmark inside each particle with a small EKF;
-- the particle weight with the likelihood of recent observations.
+- the particle weight with the likelihood of the observations (@sec-slam-landmark-weighting).
 
 For Victoria Park, each particle carries its own hypothesis about the vehicle path through the park and its own tree map.
 
@@ -103,33 +176,30 @@ A practical particle contains:
 
 ```text
 pose:          [x, y, theta]
-trajectory:    previous poses for plotting and analysis
-landmarks:     dictionary landmark_id -> LandmarkEKF
-log_weight:    measurement log-likelihood
+trajectory:    previous poses, for plotting and for the path posterior
+landmarks:     dictionary landmark_id -> LandmarkEKF (mean, covariance,
+               hit count, last scan seen; tentative until confirmed)
+log_weight:    accumulated measurement log-likelihood
 ```
 
 The per-landmark EKF state is only two-dimensional:
 
 $$
-\ell_i =
-\begin{bmatrix}
-x_i \\
-y_i
-\end{bmatrix},
+\hat{\boldsymbol{\ell}}_j^{[i]} \in \mathbb{R}^{2},
 \qquad
-P_i \in \mathbb{R}^{2 \times 2}.
+\mathbf{P}_j^{[i]} \in \mathbb{R}^{2 \times 2}.
 $$
 
-That is why FastSLAM is attractive for large landmark maps.
+That is why FastSLAM is attractive for large landmark maps: $M$ particles times $N$ tiny filters, instead of one filter with a $(3+2N)^2$ covariance.
 
 ## A Small Range-Bearing World {#sec-slam-small-range-bearing}
 
-Before working with the dataset, it helps to make the geometry concrete.
+Before working with the dataset, it helps to make the geometry concrete. The toy world below has three trees, a robot driving a gentle left-hand arc, and a 360-degree range-bearing sensor that sees from 1 m out to 8 m. (The minimum range is not decoration: the path passes within half a meter of the first tree, and a range-bearing EKF fed a 30 cm range with 25 cm of noise is a filter being asked to divide by nearly zero.) The true robot executes the commanded speed and turn rate *plus noise*, so the odometry handed to the filter is wrong in the same way real odometry is wrong. Nobody tells the filter which measurement came from which tree.
 
 ```{python}
 #| label: fastslam-toy-world
 #| echo: true
-import copy
+import collections
 import math
 
 import numpy as np
@@ -141,7 +211,7 @@ def wrap_angle(angle):
 
 
 def predict_pose(pose, control, dt):
-    """Planar unicycle motion model."""
+    """Planar unicycle motion model; control = [v, omega]."""
     x, y, theta = pose
     v, omega = control
 
@@ -171,131 +241,267 @@ true_landmarks = np.array([
     [10.0, 2.0],
 ])
 
-pose = np.array([0.0, 0.0, 0.0])
-first_observation = observe_landmark(pose, true_landmarks[0])
-first_observation
+R = np.diag([0.25**2, np.deg2rad(2.0)**2])     # measurement noise: range [m], bearing [rad]
+Q_u = np.diag([0.05**2, np.deg2rad(1.0)**2])   # odometry noise on [v, omega] per 1 s step
+COMMAND = np.array([0.8, 0.05])                # commanded [m/s, rad/s]
+MIN_RANGE, MAX_RANGE = 1.0, 8.0                # [m]; the sensor sees all the way around
+
+
+def simulate_run(seed, *, steps=12, control_covariance=Q_u, measurement_covariance=R):
+    """Simulate the toy world: true poses and unlabeled range-bearing scans.
+
+    The true robot executes COMMAND plus noise drawn from `control_covariance`,
+    so the odometry the filter receives (COMMAND) is imperfect. Each scan lists
+    noisy [range, bearing] pairs for every tree between MIN_RANGE and MAX_RANGE.
+    """
+    rng = np.random.default_rng(seed)
+    pose = np.zeros(3)
+    true_poses, scans = [], []
+    for _ in range(steps):
+        executed = COMMAND + rng.multivariate_normal(np.zeros(2), control_covariance)
+        pose = predict_pose(pose, executed, dt=1.0)
+        scan = []
+        for landmark_xy in true_landmarks:
+            z = observe_landmark(pose, landmark_xy)
+            if MIN_RANGE < z[0] < MAX_RANGE:
+                z = z + rng.multivariate_normal(np.zeros(2), measurement_covariance)
+                z[1] = wrap_angle(z[1])
+                scan.append(z)
+        true_poses.append(pose.copy())
+        scans.append(scan)
+    return np.array(true_poses), scans
+
+
+true_poses, scans = simulate_run(seed=4)
+print(f"{len(scans)} scans; observations per scan: {[len(s) for s in scans]}")
+print("first scan (range m, bearing rad):", np.round(scans[0], 3).tolist())
 ```
 
 ## Per-Landmark EKF {#sec-slam-per-landmark-ekf}
 
-Each landmark EKF estimates a fixed point in the world. The robot pose is treated as known within a particle.
+Each landmark EKF estimates a fixed point in the world. The robot pose is treated as known within a particle, which is the whole point of @eq-slam-fastslam-factorization. Initialization pushes the measurement noise through the inverse observation model, $\mathbf{P}_\ell = \mathbf{G}_z \mathbf{R} \mathbf{G}_z^T$; there is no $\mathbf{G}_x$ term because inside a particle the pose has no uncertainty to inherit. (@sec-slam-association-landmark-birth contrasts this with full EKF-SLAM initialization.)
 
 ```{python}
 #| label: landmark-ekf
 #| echo: true
-class LandmarkEKF:
-    """Tiny EKF for one 2D landmark conditioned on one particle path."""
+LOG_2PI = math.log(2.0 * math.pi)
 
-    def __init__(self, mean, covariance):
+
+def gaussian_log_likelihood(nu, S):
+    """log N(nu; 0, S) = -1/2 nu^T S^-1 nu - 1/2 log det(2 pi S)."""
+    _, logdet = np.linalg.slogdet(S)
+    return float(-0.5 * nu @ np.linalg.solve(S, nu) - 0.5 * (len(nu) * LOG_2PI + logdet))
+
+
+class LandmarkEKF:
+    """EKF for one 2D landmark, conditioned on one particle's path.
+
+    Instances are treated as immutable values: `updated()` returns a new
+    object instead of modifying this one. That is what lets resampled particles
+    share landmarks safely (@sec-slam-why-fast).
+    """
+
+    __slots__ = ("mean", "covariance", "hits", "last_seen")
+
+    def __init__(self, mean, covariance, hits=0, last_seen=0):
         self.mean = np.asarray(mean, dtype=float)
         self.covariance = np.asarray(covariance, dtype=float)
+        self.hits = hits              # successful associations since birth
+        self.last_seen = last_seen    # scan index of the latest association
 
     @classmethod
-    def initialize(cls, pose, measurement, measurement_covariance):
-        """Initialize from one range-bearing observation."""
+    def initialize(cls, pose, measurement, measurement_covariance, scan_index=0):
+        """Initialize from one range-bearing observation (inverse model)."""
         r, bearing = measurement
         angle = pose[2] + bearing
-
         mean = np.array([
             pose[0] + r * math.cos(angle),
             pose[1] + r * math.sin(angle),
         ])
-
-        jacobian = np.array([
+        # G_z = d(landmark) / d(range, bearing). The pose is known in a particle.
+        G_z = np.array([
             [math.cos(angle), -r * math.sin(angle)],
             [math.sin(angle), r * math.cos(angle)],
         ])
-        covariance = jacobian @ measurement_covariance @ jacobian.T
-        return cls(mean, covariance)
+        return cls(mean, G_z @ measurement_covariance @ G_z.T, 0, scan_index)
 
     def expected_measurement(self, pose):
-        """Predict range-bearing measurement and Jacobian wrt landmark position."""
+        """Predicted [range, bearing] and the Jacobian H_l wrt the landmark."""
         dx, dy = self.mean - pose[:2]
         q = dx * dx + dy * dy
         r = math.sqrt(q)
-
-        z_hat = np.array([
-            r,
-            wrap_angle(math.atan2(dy, dx) - pose[2]),
-        ])
-
-        H = np.array([
+        z_hat = np.array([r, wrap_angle(math.atan2(dy, dx) - pose[2])])
+        H_l = np.array([
             [dx / r, dy / r],
             [-dy / q, dx / q],
         ])
-        return z_hat, H
+        return z_hat, H_l
 
-    def innovation(self, pose, measurement):
-        z_hat, H = self.expected_measurement(pose)
-        residual = np.asarray(measurement) - z_hat
-        residual[1] = wrap_angle(residual[1])
-        return residual, H
+    def innovation(self, pose, measurement, measurement_covariance):
+        """Innovation nu (bearing wrapped), H_l, and S = H_l P H_l^T + R."""
+        z_hat, H_l = self.expected_measurement(pose)
+        nu = np.asarray(measurement, dtype=float) - z_hat
+        nu[1] = wrap_angle(nu[1])
+        S = H_l @ self.covariance @ H_l.T + measurement_covariance
+        return nu, H_l, S
 
-    def likelihood(self, pose, measurement, measurement_covariance):
-        residual, H = self.innovation(pose, measurement)
-        S = H @ self.covariance @ H.T + measurement_covariance
-        solved = np.linalg.solve(S, residual)
-        exponent = -0.5 * residual @ solved
-        normalizer = 2.0 * math.pi * math.sqrt(np.linalg.det(S))
-        return float(math.exp(exponent) / normalizer), residual, S
-
-    def update(self, pose, measurement, measurement_covariance):
-        residual, H = self.innovation(pose, measurement)
-        S = H @ self.covariance @ H.T + measurement_covariance
-        K = np.linalg.solve(S, H @ self.covariance).T
-
-        self.mean = self.mean + K @ residual
-
-        I_KH = np.eye(2) - K @ H
-        self.covariance = (
+    def updated(self, pose, measurement, measurement_covariance, scan_index=0):
+        """Return the posterior landmark after one EKF update (Joseph form)."""
+        nu, H_l, S = self.innovation(pose, measurement, measurement_covariance)
+        K = np.linalg.solve(S, H_l @ self.covariance).T
+        I_KH = np.eye(2) - K @ H_l
+        covariance = (
             I_KH @ self.covariance @ I_KH.T
             + K @ measurement_covariance @ K.T
         )
+        return LandmarkEKF(self.mean + K @ nu, covariance, self.hits + 1, scan_index)
 
 
-R = np.diag([0.25**2, np.deg2rad(2.0)**2])
+pose = np.zeros(3)
+first_observation = observe_landmark(pose, true_landmarks[0])
 landmark = LandmarkEKF.initialize(pose, first_observation, R)
-landmark.mean
+print("landmark mean:", landmark.mean)
+print("landmark std devs [m]:", np.sqrt(np.diag(landmark.covariance)).round(3))
 ```
 
-The Joseph-form covariance update is used here for the same reason it was used in @sec-kf-joseph-form: it is slightly more expensive and much less annoying.
+The Joseph-form covariance update is used here for the same reason it was used in @sec-kf-joseph-form: it is slightly more expensive and much less annoying. Notice the initial uncertainty: 0.25 m along the line of sight (the range noise) but only about 0.14 m across it (2 degrees at 4.1 m). Beyond about 7 m, where 2 degrees of bearing equals 25 cm, the ellipse turns the other way, and at the tens of meters typical of Victoria Park the bearing error dominates: new trees start out as long thin ellipses lying across the line of sight.
+
+## Weighting Particles: Matched and New Landmarks {#sec-slam-landmark-weighting}
+
+FastSLAM 1.0 samples each particle's new pose from the motion model, so by @eq-pf-bootstrap-weight its weight is multiplied by the likelihood of the scan given that particle's pose and map. For an observation matched to landmark $j$, integrate the uncertain landmark out. Linearizing $h$ about $\hat{\boldsymbol{\ell}}_j$ gives a Gaussian in the innovation,
+
+$$
+\begin{aligned}
+\log \mathcal{N}(\boldsymbol{\nu}; \mathbf{0}, \mathbf{S})
+&=
+-\tfrac{1}{2}\boldsymbol{\nu}^T\mathbf{S}^{-1}\boldsymbol{\nu}
+-\tfrac{1}{2}\log\det(2\pi\mathbf{S}), \\
+\mathbf{S} &= \mathbf{H}_\ell\mathbf{P}_j\mathbf{H}_\ell^T + \mathbf{R},
+\end{aligned}
+$$ {#eq-slam-matched-weight}
+
+with the bearing component of $\boldsymbol{\nu}$ wrapped to $[-\pi, \pi)$. Both terms matter. The first rewards a small Mahalanobis distance. The second rewards a confident map: of two particles that explain the data equally well, the one with the tighter landmarks is the better hypothesis.
+
+An observation that spawns a *new* landmark has no prediction to compare with, so there is no innovation to score. FastSLAM charges it a constant, the new-feature likelihood $p_0$ [@Montemerlo2003FastSLAM2; @ProbRob]:
+
+$$
+\log w^{[i]} \leftarrow \log w^{[i]} + \log p_0 .
+$$
+
+It is tempting to skip $p_0$ and simply leave the weight alone, which amounts to multiplying by one. Don't. @eq-slam-matched-weight is a probability *density* over measurement space, so it carries units, here $1/(\text{m}\cdot\text{rad})$, and its numerical value depends on them. Write ranges in centimeters instead of meters and every matched density is divided by 100 (the Jacobian of the unit change), while the Mahalanobis distances do not change at all. Leaving new-landmark particles alone means comparing those densities against an implicit 1, and *1 per what* is decided by whoever wrote the parser. In meters, the matched densities of the toy sensor are mostly larger than one, so the implicit choice mildly penalizes particles that spawn landmarks. In centimeters, they are mostly smaller than one, and the same code now rewards particles for inventing trees. A weighting rule that flips with your choice of units is not a rule.
+
+So $p_0$ must itself be a density in the same units: the density of a measurement produced by something that is not in the particle's map. A natural choice treats such a measurement as equally likely anywhere in the sensor footprint,
+
+$$
+p_0 = \frac{1}{r_{\max}\, \Delta\beta},
+$$ {#eq-slam-p0}
+
+where $\Delta\beta$ is the field of view. For the toy sensor ($r_{\max} = 8$ m, $\Delta\beta = 2\pi$), $p_0 = 0.020\ \text{m}^{-1}\text{rad}^{-1}$. In centimeters it is $0.00020\ \text{cm}^{-1}\text{rad}^{-1}$: divided by 100, exactly like the matched densities, so every comparison is unit-invariant.
+
+A useful sanity check is the Mahalanobis distance at which a well-mapped landmark ($\mathbf{S} \approx \mathbf{R}$) stops being a better explanation than "something new". Setting $\mathcal{N}(\boldsymbol{\nu}; \mathbf{0}, \mathbf{R}) = p_0$ gives
+
+$$
+d^2_\times = -2 \log\!\left(2\pi\, p_0 \sqrt{\det \mathbf{R}}\right) \approx 13.6
+$$
+
+for the toy sensor, right next to the 99.9% chi-square value of 13.82 that the project uses as its birth gate (@sec-slam-association-landmark-birth). The gate and $p_0$ are two views of the same decision. For a different sensor, compute both and make sure they tell a consistent story.
+
+This book uses one more rule: **every observation contributes exactly one factor to every particle's weight**, $\mathcal{N}(\boldsymbol{\nu}; \mathbf{0}, \mathbf{S})$ if it updated a landmark and $p_0$ otherwise. "Otherwise" includes observations that a particle discards as ambiguous (@sec-slam-fastslam-algorithm): the particle could not explain them with its map, and charging nothing would reintroduce the units problem. Because every particle receives the same number of factors, adding a constant to all the factors of one observation shifts every log weight equally and disappears in normalization. One consequence is used in the experiment of @sec-slam-what-goes-wrong: running without $p_0$ with ranges in centimeters is *exactly* running with $p_0 = 100\ \text{m}^{-1}\text{rad}^{-1}$ in meters.
+
+```{python}
+#| label: landmark-weighting-units
+#| echo: true
+p0 = 1.0 / (MAX_RANGE * 2.0 * math.pi)          # [1 / (m rad)]
+nu_m = np.array([0.30, np.deg2rad(1.5)])         # a typical matched innovation
+S_m = 2.0 * R                                    # roughly a young landmark
+
+to_cm = np.diag([100.0, 1.0])                    # range in cm, bearing still in rad
+nu_cm, S_cm = to_cm @ nu_m, to_cm @ S_m @ to_cm.T
+
+print(f"Mahalanobis d^2:  m: {nu_m @ np.linalg.solve(S_m, nu_m):.3f}   "
+      f"cm: {nu_cm @ np.linalg.solve(S_cm, nu_cm):.3f}")
+print(f"log N(nu; 0, S):  m: {gaussian_log_likelihood(nu_m, S_m):+.3f}   "
+      f"cm: {gaussian_log_likelihood(nu_cm, S_cm):+.3f}   "
+      f"(difference = log 100 = {math.log(100):.3f})")
+print(f"log p0:           m: {math.log(p0):+.3f}   cm: {math.log(p0 / 100):+.3f}")
+
+d2_crossover = -2.0 * math.log(2.0 * math.pi * p0 * math.sqrt(np.linalg.det(R)))
+print(f"N(nu; 0, R) drops below p0 at d^2 = {d2_crossover:.1f}")
+```
+
+With the same innovation, the log-likelihood is $+1.7$ in meters and $-2.9$ in centimeters. Against an implicit $\log 1 = 0$, that match wins in one unit system and loses in the other. Against $\log p_0$, it wins by the same margin in both.
 
 ## FastSLAM Algorithm {#sec-slam-fastslam-algorithm}
 
-For each time step:
+For each scan $k$, and for each particle $i$:
 
-1. **Predict each particle pose** using the motion model and sampled control noise.
-2. **Associate each observation** to an existing landmark in that particle, or create a new landmark.
-3. **Update landmark EKFs** using the associated measurements.
-4. **Update particle weights** using measurement likelihoods.
-5. **Resample** when the effective sample size is too small.
+1. **Predict.** Sample $\mathbf{x}_k^{[i]} \sim p(\mathbf{x}_k \mid \mathbf{x}_{k-1}^{[i]}, \mathbf{u}_k)$ by adding noise drawn from $\mathbf{Q}_u$ to the odometry and pushing it through the motion model.
+2. **Associate**, inside the particle's own map (@sec-slam-association). Compute $d^2_{aj} = \boldsymbol{\nu}_{aj}^T\mathbf{S}_{aj}^{-1}\boldsymbol{\nu}_{aj}$ for every observation $a$ and landmark $j$. Match pairs with $d^2 < \chi^2_{2,0.95} = 5.99$ greedily in order of increasing $d^2$, and never let two observations of one scan update the same landmark (mutual exclusion). An unmatched observation spawns a *tentative* landmark only if $d^2 > \chi^2_{2,0.999} = 13.82$ for every existing landmark; otherwise it is ambiguous and is discarded.
+3. **Update and weight.** A matched observation updates its landmark EKF and adds @eq-slam-matched-weight to the log weight. A new or discarded observation adds $\log p_0$.
+4. **Manage tracks.** A tentative landmark becomes *confirmed* after three successful associations; a tentative landmark not seen again within a few scans is deleted.
 
-The effective sample size is
+Then, once per scan:
+
+5. **Normalize** the log weights with log-sum-exp (@sec-pf-practical-implementation-considerations), remember the highest-weight particle, and **resample** (systematic, with the `cumulative[-1] = 1.0` guard of @sec-pf-resampling) when the effective sample size drops below half the particles:
 
 $$
-N_\text{eff} = \frac{1}{\sum_m (w^{[m]})^2}.
+N_\text{eff} = \frac{1}{\sum_{i=1}^{M} \left(w^{[i]}\right)^2} < \frac{M}{2}.
 $$
 
-Resampling every step is usually too aggressive. Resampling only when $N_\text{eff}$ drops below a threshold preserves more particle diversity.
+Resampling every step is usually too aggressive; resampling only when $N_\text{eff}$ drops preserves more particle diversity. The two-gate rule is the heart of the bookkeeping. One gate is not enough: with a single 95% gate, one correct re-observation in twenty fails it and spawns a duplicate tree, which over a few hundred observations is a forest. The band between the gates is where an honest filter says "I am not sure" and declines to touch the map.
 
 ```{python}
 #| label: minimal-fastslam
 #| echo: true
-class FastSLAMParticle:
-    """One FastSLAM particle."""
+CHI2_2DOF_95 = 5.991     # association gate
+CHI2_2DOF_999 = 13.816   # birth gate
+NEW, DISCARD = "new", "discard"
 
-    def __init__(self, pose):
+
+def two_gate_decisions(d2, landmark_ids, associate_gate, birth_gate, mutual_exclusion=True):
+    """Decide each observation's fate from a (K x N) table of Mahalanobis distances.
+
+    Observation a is matched to landmark j when d2[a, j] < associate_gate,
+    greedily in order of increasing d2 and, with mutual exclusion, at most one
+    observation per landmark per scan. An unmatched observation spawns a new
+    landmark only if d2 > birth_gate for every existing landmark; otherwise it
+    is ambiguous and is discarded.
+    """
+    num_obs = d2.shape[0]
+    decisions = [None] * num_obs
+    claimed = set()
+    for a, col in sorted(zip(*np.nonzero(d2 < associate_gate)), key=lambda ac: d2[ac]):
+        j = landmark_ids[col]
+        if decisions[a] is None and (j not in claimed or not mutual_exclusion):
+            decisions[a] = j
+            claimed.add(j)
+    for a in range(num_obs):
+        if decisions[a] is None:
+            far_from_all = d2.shape[1] == 0 or d2[a].min() > birth_gate
+            decisions[a] = NEW if far_from_all else DISCARD
+    return decisions
+
+
+class FastSLAMParticle:
+    """One FastSLAM particle: a pose history, a landmark map, and a log weight."""
+
+    __slots__ = ("pose", "trajectory", "landmarks", "log_weight")
+
+    def __init__(self, pose, trajectory=None, landmarks=None, log_weight=0.0):
         self.pose = np.asarray(pose, dtype=float)
-        self.trajectory = [self.pose.copy()]
-        self.landmarks = {}
-        self.log_weight = 0.0
+        self.trajectory = [self.pose] if trajectory is None else trajectory
+        self.landmarks = {} if landmarks is None else landmarks
+        self.log_weight = log_weight
 
     def copy(self):
-        return copy.deepcopy(self)
+        """Copy-on-write copy: new containers, shared (immutable) landmarks."""
+        return FastSLAMParticle(
+            self.pose, list(self.trajectory), dict(self.landmarks), self.log_weight
+        )
 
 
 class FastSLAM:
-    """Minimal FastSLAM implementation for range-bearing landmarks."""
+    """FastSLAM 1.0 for range-bearing point landmarks with unknown association."""
 
     def __init__(
         self,
@@ -304,188 +510,497 @@ class FastSLAM:
         control_covariance,
         measurement_covariance,
         *,
-        gate_threshold=5.99,
+        log_p0,
+        associate_gate=CHI2_2DOF_95,
+        birth_gate=CHI2_2DOF_999,
+        confirm_hits=3,
+        tentative_window=3,
         resample_fraction=0.5,
+        mutual_exclusion=True,
         rng=None,
     ):
         self.particles = [FastSLAMParticle(initial_pose) for _ in range(num_particles)]
         self.control_covariance = np.asarray(control_covariance, dtype=float)
-        self.measurement_covariance = np.asarray(measurement_covariance, dtype=float)
-        self.gate_threshold = gate_threshold
+        self.R = np.asarray(measurement_covariance, dtype=float)
+        self.log_p0 = log_p0
+        self.associate_gate = associate_gate
+        self.birth_gate = birth_gate
+        self.confirm_hits = confirm_hits
+        self.tentative_window = tentative_window
         self.resample_fraction = resample_fraction
+        self.mutual_exclusion = mutual_exclusion
         self.rng = np.random.default_rng(0) if rng is None else rng
+        self.scan_index = 0
         self.next_landmark_id = 0
+        self.num_resamples = 0
+        self.ess_history = []
+        self.best_particle = self.particles[0]
 
+    def step(self, control, dt, scan):
+        self.predict(control, dt)
+        self.update(scan)
+
+    # -- 1. prediction: sample the motion model (the FastSLAM 1.0 proposal) ---
     def predict(self, control, dt):
+        noise = self.rng.multivariate_normal(
+            np.zeros(2), self.control_covariance, size=len(self.particles)
+        )
+        for particle, control_noise in zip(self.particles, noise):
+            particle.pose = predict_pose(particle.pose, control + control_noise, dt)
+            particle.trajectory.append(particle.pose)
+
+    # -- 2. association inside one particle ----------------------------------
+    def associate(self, particle, scan):
+        ids = list(particle.landmarks)
+        d2 = np.empty((len(scan), len(ids)))
+        cache = {}
+        for col, j in enumerate(ids):
+            for a, z in enumerate(scan):
+                nu, _, S = particle.landmarks[j].innovation(particle.pose, z, self.R)
+                d2[a, col] = nu @ np.linalg.solve(S, nu)
+                cache[a, j] = (nu, S)
+        decisions = two_gate_decisions(
+            d2, ids, self.associate_gate, self.birth_gate, self.mutual_exclusion
+        )
+        return decisions, cache
+
+    # -- 3. and 4. update, weight, and manage tracks -------------------------
+    def update(self, scan):
+        self.scan_index += 1
         for particle in self.particles:
-            noisy_control = control + self.rng.multivariate_normal(
-                np.zeros(2), self.control_covariance
-            )
-            particle.pose = predict_pose(particle.pose, noisy_control, dt)
-            particle.trajectory.append(particle.pose.copy())
-
-    def associate(self, particle, measurement):
-        best_id = None
-        best_distance = np.inf
-
-        for landmark_id, landmark in particle.landmarks.items():
-            residual, H = landmark.innovation(particle.pose, measurement)
-            S = H @ landmark.covariance @ H.T + self.measurement_covariance
-            distance = float(residual @ np.linalg.solve(S, residual))
-
-            if distance < best_distance:
-                best_id = landmark_id
-                best_distance = distance
-
-        if best_distance < self.gate_threshold:
-            return best_id, best_distance
-        return None, best_distance
-
-    def update(self, measurements):
-        for measurement in measurements:
-            new_landmark_id = self.next_landmark_id
-            used_new_landmark = False
-
-            for particle in self.particles:
-                landmark_id, _ = self.associate(particle, measurement)
-
-                if landmark_id is None:
-                    particle.landmarks[new_landmark_id] = LandmarkEKF.initialize(
-                        particle.pose, measurement, self.measurement_covariance
+            decisions, cache = self.associate(particle, scan)
+            for a, (z, decision) in enumerate(zip(scan, decisions)):
+                if decision == NEW:
+                    particle.landmarks[self.next_landmark_id] = LandmarkEKF.initialize(
+                        particle.pose, z, self.R, self.scan_index
                     )
-                    used_new_landmark = True
-                    continue
+                    self.next_landmark_id += 1
+                    particle.log_weight += self.log_p0
+                elif decision == DISCARD:
+                    particle.log_weight += self.log_p0
+                else:
+                    nu, S = cache[a, decision]
+                    particle.log_weight += gaussian_log_likelihood(nu, S)
+                    particle.landmarks[decision] = particle.landmarks[decision].updated(
+                        particle.pose, z, self.R, self.scan_index
+                    )
+            self._delete_stale_tentative(particle)
+        self._finish_update()
 
-                landmark = particle.landmarks[landmark_id]
-                likelihood, _, _ = landmark.likelihood(
-                    particle.pose, measurement, self.measurement_covariance
-                )
-                particle.log_weight += math.log(max(likelihood, 1e-300))
-                landmark.update(particle.pose, measurement, self.measurement_covariance)
+    def _delete_stale_tentative(self, particle):
+        stale = [
+            j for j, lm in particle.landmarks.items()
+            if lm.hits < self.confirm_hits
+            and self.scan_index - lm.last_seen > self.tentative_window
+        ]
+        for j in stale:
+            del particle.landmarks[j]
 
-            if used_new_landmark:
-                self.next_landmark_id += 1
+    # -- 5. normalize, remember the best particle, maybe resample -------------
+    def _finish_update(self):
+        log_w = np.array([p.log_weight for p in self.particles])
+        peak = log_w.max()
+        log_w = log_w - (peak + math.log(np.sum(np.exp(log_w - peak))))
+        for particle, lw in zip(self.particles, log_w):
+            particle.log_weight = float(lw)
 
-        self._normalize_log_weights()
+        weights = np.exp(log_w)
+        ess = 1.0 / np.sum(weights**2)
+        self.ess_history.append(ess)
+        # Keep a handle on the best particle *before* resampling equalizes weights.
+        self.best_particle = self.particles[int(np.argmax(weights))]
+        if ess < self.resample_fraction * len(self.particles):
+            self.resample(weights)
 
-        if self.effective_sample_size() < self.resample_fraction * len(self.particles):
-            self.resample()
-
-    def _normalize_log_weights(self):
-        log_weights = np.array([p.log_weight for p in self.particles])
-        max_log_weight = np.max(log_weights)
-        weights = np.exp(log_weights - max_log_weight)
-        weights = weights / np.sum(weights)
-
-        for particle, weight in zip(self.particles, weights):
-            particle.log_weight = math.log(float(weight))
-
-    def weights(self):
-        return np.array([math.exp(p.log_weight) for p in self.particles])
-
-    def effective_sample_size(self):
-        weights = self.weights()
-        return float(1.0 / np.sum(weights * weights))
-
-    def resample(self):
-        weights = self.weights()
+    def resample(self, weights):
+        """Systematic resampling with the cumulative[-1] = 1 guard."""
         n = len(self.particles)
-        step = 1.0 / n
-        start = self.rng.uniform(0.0, step)
-        positions = start + step * np.arange(n)
+        positions = (self.rng.random() + np.arange(n)) / n
         cumulative = np.cumsum(weights)
-
+        cumulative[-1] = 1.0
         indexes = np.searchsorted(cumulative, positions)
         self.particles = [self.particles[i].copy() for i in indexes]
-
-        log_uniform = math.log(1.0 / n)
         for particle in self.particles:
-            particle.log_weight = log_uniform
+            particle.log_weight = -math.log(n)
+        self.num_resamples += 1
+
+    def weights(self):
+        return np.exp([p.log_weight for p in self.particles])
+
+    def effective_sample_size(self):
+        return float(1.0 / np.sum(self.weights() ** 2))
 
     def estimated_pose(self):
         weights = self.weights()
         poses = np.array([p.pose for p in self.particles])
-
         xy = weights @ poses[:, :2]
-        theta = math.atan2(
-            weights @ np.sin(poses[:, 2]),
-            weights @ np.cos(poses[:, 2]),
-        )
+        theta = math.atan2(weights @ np.sin(poses[:, 2]), weights @ np.cos(poses[:, 2]))
         return np.array([xy[0], xy[1], theta])
 
     def best_map(self):
-        best_particle = self.particles[int(np.argmax(self.weights()))]
-        return {i: lm.mean.copy() for i, lm in best_particle.landmarks.items()}
+        """Confirmed landmarks of the highest-weight particle (pre-resampling)."""
+        return {
+            j: lm.mean.copy()
+            for j, lm in self.best_particle.landmarks.items()
+            if lm.hits >= self.confirm_hits
+        }
 
 
-rng = np.random.default_rng(4)
-slam = FastSLAM(
-    num_particles=30,
-    initial_pose=np.array([0.0, 0.0, 0.0]),
-    control_covariance=np.diag([0.05**2, np.deg2rad(1.0)**2]),
-    measurement_covariance=R,
-    rng=rng,
-)
+def run_fastslam(filter_class, seed, num_particles=30, **options):
+    """Run one filter on the simulated data set for `seed`; return (filter, truth)."""
+    true_poses, scans = simulate_run(seed)
+    slam = filter_class(
+        num_particles,
+        np.zeros(3),
+        options.pop("control_covariance", Q_u),
+        options.pop("measurement_covariance", R),
+        rng=np.random.default_rng(1000 + seed),
+        **options,
+    )
+    for scan in scans:
+        slam.step(COMMAND, 1.0, scan)
+    return slam, true_poses
 
-true_pose = np.array([0.0, 0.0, 0.0])
-for _ in range(12):
-    control = np.array([0.8, 0.05])
-    true_pose = predict_pose(true_pose, control, dt=1.0)
-    slam.predict(control, dt=1.0)
 
-    measurements = []
-    for landmark_xy in true_landmarks:
-        z = observe_landmark(true_pose, landmark_xy)
-        if z[0] < 8.0:
-            noisy_z = z + rng.multivariate_normal(np.zeros(2), R)
-            noisy_z[1] = wrap_angle(noisy_z[1])
-            measurements.append(noisy_z)
+LOG_P0 = math.log(1.0 / (MAX_RANGE * 2.0 * math.pi))
+slam, true_poses = run_fastslam(FastSLAM, seed=4, log_p0=LOG_P0)
 
-    slam.update(measurements)
-
-slam.estimated_pose(), len(slam.best_map()), slam.effective_sample_size()
+final_error = np.linalg.norm(slam.estimated_pose()[:2] - true_poses[-1][:2])
+print(f"final position error: {final_error:.3f} m")
+print("confirmed landmarks in the best particle:")
+for j, xy in slam.best_map().items():
+    miss = np.min(np.linalg.norm(true_landmarks - xy, axis=1))
+    print(f"  id {j:3d}: ({xy[0]:6.2f}, {xy[1]:6.2f})   {miss:.2f} m from the nearest true tree")
+print(f"N_eff = {slam.effective_sample_size():.1f} of {len(slam.particles)}; "
+      f"resampled {slam.num_resamples} times in {slam.scan_index} scans")
 ```
 
-This is a minimal implementation, not a production one. The project version should add better feature filtering, better landmark management, timing measurements, diagnostic plots, and careful tuning.
+Three trees in, three trees out, each within about 25 cm of the truth. The landmark IDs are large because every particle that spawns a landmark draws a fresh ID; IDs only need to be unique within a particle, and drawing them from one global counter is the lazy way to guarantee that.
+
+Two details in the code deserve a second look. First, `best_map()` reads `best_particle`, recorded *before* resampling. After resampling every weight is $1/M$, so `argmax` of the weights would just return particle 0, which is an arbitrary choice dressed up as a decision. Second, `step()` takes the scan as an argument even though FastSLAM 1.0's prediction ignores it. FastSLAM 2.0 will not (@sec-slam-fastslam2).
+
+```{python}
+#| label: fig-slam-fastslam-demo
+#| fig-cap: "FastSLAM 1.0 on the toy world (seed 4, 30 particles). (a) The true path, the path of the highest-weight particle, the final particle cloud, and every particle's landmark estimates (small dots) next to the true trees. (b) A close-up of the far tree: each particle has its own estimate of it, and the ellipse is the best particle's 2-sigma landmark covariance, which is conditioned on that particle's path."
+#| code-fold: true
+import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
+
+
+def covariance_ellipse(mean, cov, n_sigma=2.0, **kwargs):
+    values, vectors = np.linalg.eigh(cov)
+    angle = math.degrees(math.atan2(vectors[1, 1], vectors[0, 1]))
+    width, height = 2.0 * n_sigma * np.sqrt(values[::-1])
+    return Ellipse(mean, width, height, angle=angle, **kwargs)
+
+
+best = slam.best_particle
+truth_path = np.vstack([np.zeros(3), true_poses])
+best_path = np.array(best.trajectory)
+cloud = np.array([p.pose for p in slam.particles])
+all_landmarks = np.array([lm.mean for p in slam.particles for lm in p.landmarks.values()])
+
+fig, axes = plt.subplots(1, 2, figsize=(9.5, 3.8), gridspec_kw={"width_ratios": [2.2, 1]})
+for ax in axes:
+    ax.plot(truth_path[:, 0], truth_path[:, 1], "k-", lw=2, label="true path")
+    ax.plot(best_path[:, 0], best_path[:, 1], "C0--", lw=1.5, label="best particle path")
+    ax.plot(cloud[:, 0], cloud[:, 1], "C0.", ms=4, alpha=0.6, label="final particles")
+    ax.plot(all_landmarks[:, 0], all_landmarks[:, 1], ".", color="C1", ms=3, alpha=0.5,
+            label="landmarks, all particles")
+    for lm in best.landmarks.values():
+        ax.add_patch(covariance_ellipse(lm.mean, lm.covariance, fill=False, color="C3", lw=1.5))
+    ax.plot(true_landmarks[:, 0], true_landmarks[:, 1], "k*", mfc="none", ms=13, label="true trees")
+    ax.set_aspect("equal")
+    ax.set_xlabel("x [m]")
+axes[0].set_ylabel("y [m]")
+axes[0].set_ylim(-2.5, 4.0)
+axes[0].plot([], [], "-", color="C3", label="best particle, 2$\\sigma$")
+axes[0].legend(loc="upper left", fontsize=7, ncol=2)
+axes[0].set_title("(a) path and map")
+axes[1].set_xlim(9.4, 10.6)
+axes[1].set_ylim(1.4, 2.6)
+axes[1].set_title("(b) the far tree, close up")
+plt.tight_layout()
+plt.show()
+```
+
+Panel (b) of @fig-slam-fastslam-demo deserves a second look, because the true tree sits *outside* the best particle's 2-sigma ellipse, and that is not a bug. The ellipse is the tree's uncertainty *given that particle's path*, and the path has drifted about 15 cm to the left of the truth (panel a), carrying the whole map with it. Nothing in the measurements can detect a drift that moves the robot and every tree together; the map is only as well anchored as the first pose. The spread of the particle cloud is supposed to carry that uncertainty, and right after a resampling it carries very little of it, which is the inconsistency of @sec-slam-practical-failure-modes in miniature. When you evaluate the project against GPS, this is why the trajectory is aligned before errors are computed.
+
+This is a minimal implementation, not a production one. The project version should add feature extraction, timing measurements, diagnostic plots, and careful tuning, and it must handle a real vehicle model rather than a unicycle.
+
+## What Goes Wrong Without $p_0$ {#sec-slam-what-goes-wrong}
+
+One run proves little; a filter can get lucky. The experiment below runs twenty seeds (twenty different noise realizations of the same world) through five versions of the filter that differ in one or two lines, and counts how many confirmed landmarks end up in the best particle. The right answer is 3.
+
+```{python}
+#| label: fastslam-multi-seed
+#| echo: true
+def landmark_count_table(variants, seeds=range(20)):
+    """Histogram of confirmed-landmark counts in the best particle, per variant."""
+    rows = []
+    for name, options in variants:
+        counts, errors = [], []
+        for seed in seeds:
+            slam, truth = run_fastslam(FastSLAM, seed, **options)
+            counts.append(len(slam.best_map()))
+            errors.append(np.linalg.norm(slam.estimated_pose()[:2] - truth[-1][:2]))
+        rows.append((name, collections.Counter(counts), float(np.mean(errors))))
+    return rows
+
+
+variants = [
+    ("this chapter: p0, two gates", {"log_p0": LOG_P0}),
+    ("no p0, ranges in meters", {"log_p0": 0.0}),
+    ("no p0, ranges in centimeters", {"log_p0": math.log(100.0)}),
+    ("p0, one gate (spawn if d2 > 5.99)", {"log_p0": LOG_P0, "birth_gate": CHI2_2DOF_95}),
+    ("old demo: no p0, one gate, no MX/confirm",
+     {"log_p0": 0.0, "birth_gate": CHI2_2DOF_95, "mutual_exclusion": False, "confirm_hits": 0}),
+]
+
+print(f"{'landmarks in best particle:':42s} {'<2':>3s} {'2':>3s} {'3':>3s} {'4':>3s} {'5':>3s}"
+      f" {'6+':>3s}   final error [m]")
+for name, counter, error in landmark_count_table(variants):
+    cells = [sum(v for k, v in counter.items() if k < 2)]
+    cells += [counter.get(n, 0) for n in (2, 3, 4, 5)]
+    cells.append(sum(v for k, v in counter.items() if k >= 6))
+    print(f"{name:42s} " + " ".join(f"{c:3d}" for c in cells) + f"   {error:8.2f}")
+```
+
+Read the table row by row; each row is twenty runs.
+
+**No $p_0$, meters.** Leaving new and discarded observations unweighted is the implicit choice $p_0 = 1\ \text{m}^{-1}\text{rad}^{-1}$, fifty times the footprint value. In meters the toy sensor's matched densities are mostly above one, so particles that spawn or discard are still penalized, just less than they should be, and one run keeps a duplicate.
+
+**No $p_0$, centimeters.** Same code, ranges in centimeters, which is exactly $p_0 = 100\ \text{m}^{-1}\text{rad}^{-1}$ in meters (@sec-slam-landmark-weighting). Now a particle that *fails* to match outscores one that matches, so the weights systematically favor particles whose pose disagrees with their own map: they discard re-observations and re-spawn trees they already had. In six runs the best particle ends up holding a tree only as an unconfirmed tentative copy, or not at all (fewer than three confirmed trees); in four more it confirms a duplicate; and the final position error more than doubles. Nothing about the physics changed; the parser did.
+
+**One gate.** With $p_0$ but a single 95% gate, about one correct re-observation in twenty lands outside the gate and spawns a duplicate in that particle. Mutual exclusion, confirmation, and $p_0$ catch many of these, but three runs still keep one.
+
+**The old demo.** Configured like an earlier version of this chapter's demo, with no $p_0$, one gate, no mutual exclusion (MX), and no tentative stage, the filter does not recover the true map in a single run out of twenty. Every bookkeeping rule in @sec-slam-fastslam-algorithm is there because its absence shows up in this table.
+
+The full filter gets all twenty, but it is not perfect: over 200 seeds, five runs (2.5%) end with a duplicate. These residual failures share a signature: a correct re-observation lands beyond the birth gate in *every* particle at once, so more particles do not help. Sometimes the cause is the measurement itself. A 99.9% gate is breached by about one correct observation in a thousand, a run has about thirty re-observations, and every particle sees the same noisy measurement, so every particle spawns the duplicate together; even a filter told the true path would have done it. Sometimes it is FastSLAM 1.0's pose sampling, which lets the whole cloud drift far enough from its own map to push a borderline innovation over the gate. Inflating $\mathbf{R}$ by 50% in the filter removes all five in this world, at the price of a slightly less confident map, and production systems also merge confirmed landmarks that drift within a small Mahalanobis distance of each other. Exercise 4 has you hunt them down.
 
 ## Data Association Inside FastSLAM {#sec-slam-data-association-inside}
 
-In EKF-SLAM, there is one global association decision for each measurement. In FastSLAM, each particle can make its own association decision. This is one of FastSLAM's advantages: different particles can preserve different hypotheses when the pose is uncertain.
+In EKF-SLAM, there is one global association decision for each measurement. In FastSLAM, each particle makes its own decision with its own pose and map, so different particles can preserve different hypotheses while the pose is uncertain. This is one of FastSLAM's real advantages, and it is the second half of the factorization argument: particles sample the association history along with the path.
 
-For one particle and one observation:
+For one particle and one scan, the project spec is the procedure coded above:
 
-1. predict the measurement to every nearby landmark;
-2. compute Mahalanobis distance;
-3. accept the best landmark if it passes a $\chi^2$ gate;
-4. otherwise initialize a new landmark.
+1. predict the measurement of every nearby landmark and compute the innovation, with the bearing wrapped;
+2. compute the Mahalanobis distance $d^2$ of every observation-landmark pair;
+3. match pairs below the 95% gate, smallest $d^2$ first, at most one observation per landmark;
+4. spawn a tentative landmark only if an unmatched observation is beyond the 99.9% gate for *every* landmark, and discard it otherwise;
+5. charge $\mathcal{N}(\boldsymbol{\nu}; \mathbf{0}, \mathbf{S})$ for matches and $p_0$ for everything else.
 
-The gate threshold matters. A gate that is too tight creates duplicate trees. A gate that is too loose fuses distinct trees. Both failure modes are visible in the final map.
+The gates matter. A gate that is too tight creates duplicate trees. A gate that is too loose fuses distinct trees. Both failure modes are visible in the final map. @sec-slam-association develops the gating statistics, a worked gate-sensitivity example on closely spaced trees, joint compatibility for when innovations are correlated, optimal one-to-one assignment, and association sampling.
+
+## Why "Fast": Sharing Landmarks Between Particles {#sec-slam-why-fast}
+
+The name is not about the per-landmark EKFs, which are cheap in any implementation. It is about resampling. When a particle is selected three times, the naive implementation deep-copies its map three times, so each resampling step costs $O(MN)$ and a 100-particle filter with a 1,000-tree map copies 100,000 landmark filters every time $N_\text{eff}$ dips.
+
+Montemerlo et al. avoided the copies by storing each particle's landmarks in a balanced binary tree keyed by landmark index [@Montemerlo2002FastSLAM]. A resampled particle starts out as a pointer to its parent's tree. Updating landmark $j$ copies only the $O(\log N)$ nodes on the path from the root to $j$ and shares every other subtree with the parent, so a scan costs $O(M \log N)$ instead of $O(MN)$. That logarithm is what let FastSLAM scale, in simulation, to maps with tens of thousands of landmarks, far beyond what a dense covariance allowed at the time.
+
+In Python, the cheap and nearly-as-good version is **copy-on-write**. Treat each `LandmarkEKF` as an immutable value (`updated()` returns a new object; nothing ever modifies one in place), and copy a particle by making a new dictionary that points at the same landmark objects. Copying a dictionary is still $O(N)$, but it copies $N$ pointers rather than $2N$ NumPy arrays: on a typical laptop, copying a particle with 500 landmarks this way is about three orders of magnitude faster than `copy.deepcopy`. A persistent map, such as a hash array mapped trie, gives the true $O(\log N)$ behavior; it is not in the standard library, and for the project the dictionary is plenty.
+
+```{python}
+#| label: copy-on-write
+#| echo: true
+parent = slam.best_particle
+child = parent.copy()
+j = next(iter(child.landmarks))
+parent_mean_before = parent.landmarks[j].mean.copy()
+print("shared before the update:", child.landmarks[j] is parent.landmarks[j])
+
+z = observe_landmark(child.pose, child.landmarks[j].mean) + np.array([0.1, 0.0])
+child.landmarks[j] = child.landmarks[j].updated(child.pose, z, R)
+print("shared after the update: ", child.landmarks[j] is parent.landmarks[j])
+print("parent's landmark untouched:", np.array_equal(parent.landmarks[j].mean, parent_mean_before))
+print("every other landmark still shared:",
+      all(child.landmarks[k] is parent.landmarks[k] for k in child.landmarks if k != j))
+```
+
+The one rule that makes this safe is the one that is easy to break at 2 a.m.: never modify a landmark in place. If `updated()` were changed to assign to `self.mean`, every particle sharing that landmark would silently receive the update, and the filter would still run, just wrongly.
+
+## FastSLAM 2.0 {#sec-slam-fastslam2}
+
+FastSLAM 1.0's proposal ignores the scan. When the sensor is much sharper than the odometry, most sampled poses land where the measurement likelihood is negligible, a handful of particles take all the weight, and resampling copies those few over and over until every particle shares the same recent history. This is the sample impoverishment of @sec-pf-sample-impoverishment, applied to whole paths. FastSLAM 2.0 [@Montemerlo2003FastSLAM2] instead samples each pose from a Gaussian approximation of the optimal proposal (@sec-pf-weighting), conditioned on the particle's own map and its association:
+
+$$
+\mathbf{x}_k^{[i]} \sim p\left(\mathbf{x}_k \mid \mathbf{x}_{k-1}^{[i]}, \mathbf{u}_k, \mathbf{z}_k, \mathbf{m}^{[i]}, n_k^{[i]}\right).
+$$
+
+Build it from two linearizations. The motion model gives a Gaussian prior for the new pose, $\mathbf{x}_k \sim \mathcal{N}(\bar{\mathbf{x}}, \mathbf{Q}_x)$, with $\bar{\mathbf{x}} = f(\mathbf{x}_{k-1}^{[i]}, \mathbf{u}_k)$ and pose-space process noise $\mathbf{Q}_x = \mathbf{L}\mathbf{Q}_u\mathbf{L}^T$. The measurement of the matched landmark, linearized in both the pose and the landmark and with the landmark integrated out, gives $\mathbf{z} \mid \mathbf{x}_k \sim \mathcal{N}\left(\hat{\mathbf{z}} + \mathbf{H}_x(\mathbf{x}_k - \bar{\mathbf{x}}),\ \mathbf{S}_\ell\right)$, where $\hat{\mathbf{z}} = h(\bar{\mathbf{x}}, \hat{\boldsymbol{\ell}}_j)$, $\mathbf{H}_x$ and $\mathbf{H}_\ell$ are the pose and landmark Jacobians, and $\mathbf{S}_\ell = \mathbf{H}_\ell \mathbf{P}_j \mathbf{H}_\ell^T + \mathbf{R}$ is the FastSLAM 1.0 innovation covariance. The product of the two Gaussians in $\mathbf{x}_k$ is the proposal:
+
+$$
+\begin{aligned}
+\boldsymbol{\Sigma}_x &= \left(\mathbf{H}_x^T\mathbf{S}_\ell^{-1}\mathbf{H}_x + \mathbf{Q}_x^{-1}\right)^{-1}, \\
+\boldsymbol{\mu}_x &= \bar{\mathbf{x}} + \boldsymbol{\Sigma}_x\mathbf{H}_x^T\mathbf{S}_\ell^{-1}\left(\mathbf{z} - \hat{\mathbf{z}}\right), \\
+\mathbf{x}_k^{[i]} &\sim \mathcal{N}(\boldsymbol{\mu}_x, \boldsymbol{\Sigma}_x).
+\end{aligned}
+$$ {#eq-slam-fastslam2-proposal}
+
+This is an EKF update of the pose that treats the landmark as a slightly fuzzy beacon. With the optimal proposal, the importance weight is the predictive likelihood of the measurement, which does not depend on the sampled pose:
+
+$$
+w_k^{[i]} \propto w_{k-1}^{[i]}\,
+\mathcal{N}\left(\mathbf{z};\ \hat{\mathbf{z}},\ \mathbf{H}_x\mathbf{Q}_x\mathbf{H}_x^T + \mathbf{S}_\ell\right).
+$$ {#eq-slam-fastslam2-weight}
+
+Compared with @eq-slam-matched-weight, the only change is the extra $\mathbf{H}_x\mathbf{Q}_x\mathbf{H}_x^T$: the particle is judged before its pose is sampled, so the pose uncertainty belongs in the denominator.
+
+::: {.callout-warning title="The literature swaps R and Q"}
+Montemerlo et al. and Thrun, Burgard, and Fox [@Montemerlo2003FastSLAM2; @ProbRob] write the same equations with $\mathbf{R}$ for the motion noise and $\mathbf{Q}$ for the measurement (plus landmark) covariance, the reverse of this book's letters, and with their own names for the Jacobians. In this book $\mathbf{Q}$ is always process noise and $\mathbf{R}$ is always measurement noise. Translate before you copy.
+:::
+
+Four practical points turn the equations into code:
+
+- For a unicycle with two noisy inputs, $\mathbf{Q}_x = \mathbf{L}\mathbf{Q}_u\mathbf{L}^T$ is $3 \times 3$ with rank 2, so $\mathbf{Q}_x^{-1}$ does not exist. Use the equivalent Kalman form, which the matrix inversion lemma guarantees: $\mathbf{K} = \mathbf{Q}_x\mathbf{H}_x^T(\mathbf{H}_x\mathbf{Q}_x\mathbf{H}_x^T + \mathbf{S}_\ell)^{-1}$, $\boldsymbol{\mu}_x = \bar{\mathbf{x}} + \mathbf{K}(\mathbf{z} - \hat{\mathbf{z}})$, $\boldsymbol{\Sigma}_x = (\mathbf{I} - \mathbf{K}\mathbf{H}_x)\mathbf{Q}_x$.
+- A scan with several matched observations is folded in one observation at a time, each update starting from the previous $(\boldsymbol{\mu}_x, \boldsymbol{\Sigma}_x)$ and contributing its own factor @eq-slam-fastslam2-weight. The product of those factors is the joint predictive likelihood of the scan.
+- Association is decided before sampling, at $\bar{\mathbf{x}}$, using the covariance $\mathbf{H}_x\mathbf{Q}_x\mathbf{H}_x^T + \mathbf{S}_\ell$ that includes the pose uncertainty, with the same two gates and mutual exclusion as before. A new or discarded observation says nothing about the pose, leaves the proposal alone, and is charged $p_0$.
+- After sampling the pose, the landmark updates are exactly those of FastSLAM 1.0.
+
+Montemerlo et al. prove that in the linear-Gaussian SLAM case FastSLAM 2.0 converges to the correct map even with a single particle, $M = 1$ [@Montemerlo2003FastSLAM2]. FastSLAM 1.0 has no such guarantee, and it is easy to see why: with $M = 1$, FastSLAM 1.0 is dead reckoning with a map attached, because a single particle drawn from the motion model never uses a measurement to correct its pose.
+
+```{python}
+#| label: fastslam2
+#| echo: true
+def control_jacobian(pose, control, dt, step=1e-6):
+    """L = df/du for the unicycle model, by central differences."""
+    L = np.zeros((3, 2))
+    for k in range(2):
+        du = np.zeros(2)
+        du[k] = step
+        diff = predict_pose(pose, control + du, dt) - predict_pose(pose, control - du, dt)
+        diff[2] = wrap_angle(diff[2])
+        L[:, k] = diff / (2.0 * step)
+    return L
+
+
+def pose_jacobian(H_l):
+    """H_x = dh/d(pose) for range-bearing: [-H_l, (0, -1)^T]."""
+    return np.hstack([-H_l, np.array([[0.0], [-1.0]])])
+
+
+class FastSLAM2(FastSLAM):
+    """FastSLAM 2.0: sample each pose from a Gaussian proposal that sees the scan."""
+
+    def step(self, control, dt, scan):
+        self.scan_index += 1
+        for particle in self.particles:
+            x_bar = predict_pose(particle.pose, control, dt)
+            L = control_jacobian(particle.pose, control, dt)
+            Sigma = L @ self.control_covariance @ L.T          # Q_x, rank 2
+
+            # Associate at the predicted mean, with the pose uncertainty in S.
+            ids = list(particle.landmarks)
+            d2 = np.empty((len(scan), len(ids)))
+            for col, j in enumerate(ids):
+                lm = particle.landmarks[j]
+                z_hat, H_l = lm.expected_measurement(x_bar)
+                H_x = pose_jacobian(H_l)
+                S_full = H_x @ Sigma @ H_x.T + H_l @ lm.covariance @ H_l.T + self.R
+                for a, z in enumerate(scan):
+                    nu = z - z_hat
+                    nu[1] = wrap_angle(nu[1])
+                    d2[a, col] = nu @ np.linalg.solve(S_full, nu)
+            decisions = two_gate_decisions(
+                d2, ids, self.associate_gate, self.birth_gate, self.mutual_exclusion
+            )
+
+            # Fold matched observations into the proposal one at a time (Kalman
+            # form, so the rank-deficient Q_x is never inverted), and weight.
+            x_hat = x_bar.copy()
+            for z, j in zip(scan, decisions):
+                if j in (NEW, DISCARD):
+                    particle.log_weight += self.log_p0
+                    continue
+                lm = particle.landmarks[j]
+                z_hat, H_l = lm.expected_measurement(x_hat)
+                H_x = pose_jacobian(H_l)
+                S_full = H_x @ Sigma @ H_x.T + H_l @ lm.covariance @ H_l.T + self.R
+                nu = z - z_hat
+                nu[1] = wrap_angle(nu[1])
+                particle.log_weight += gaussian_log_likelihood(nu, S_full)
+                K = np.linalg.solve(S_full, H_x @ Sigma).T
+                x_hat = x_hat + K @ nu
+                x_hat[2] = wrap_angle(x_hat[2])
+                Sigma = (np.eye(3) - K @ H_x) @ Sigma
+                Sigma = 0.5 * (Sigma + Sigma.T)
+
+            # Sample the pose, then update the landmarks exactly as in 1.0.
+            pose = self.rng.multivariate_normal(x_hat, Sigma)
+            pose[2] = wrap_angle(pose[2])
+            particle.pose = pose
+            particle.trajectory.append(pose)
+            for z, j in zip(scan, decisions):
+                if j == NEW:
+                    particle.landmarks[self.next_landmark_id] = LandmarkEKF.initialize(
+                        pose, z, self.R, self.scan_index
+                    )
+                    self.next_landmark_id += 1
+                elif j != DISCARD:
+                    particle.landmarks[j] = particle.landmarks[j].updated(
+                        pose, z, self.R, self.scan_index
+                    )
+            self._delete_stale_tentative(particle)
+        self._finish_update()
+```
 
 ## FastSLAM 1.0 vs. FastSLAM 2.0 {#sec-slam-fastslam-1-0}
 
-FastSLAM 1.0 samples pose from the motion model:
+FastSLAM 1.0 samples pose from the motion model,
+$\mathbf{x}_k^{[i]} \sim p(\mathbf{x}_k \mid \mathbf{x}_{k-1}^{[i]}, \mathbf{u}_k)$;
+FastSLAM 2.0 samples from @eq-slam-fastslam2-proposal, which also sees $\mathbf{z}_k$. On the toy world above, where the sensor is not much sharper than the odometry, the two behave about the same. The difference appears when the sensor is precise and the odometry is sloppy, which describes a lidar on a skid-steer robot, or a ship's radar fixing on charted buoys while the log and a magnetic compass do their best. The comparison below sharpens the sensor to 5 cm and half a degree, doubles the speed noise and triples the turn-rate noise of the odometry, and runs both filters on the same twenty data sets. "Scan-1 ancestors" counts how many distinct versions of the first second of the drive survive at the end, a direct measure of path diversity.
 
-$$
-x_t^{[m]} \sim p(x_t \mid x_{t-1}^{[m]}, u_t).
-$$
+```{python}
+#| label: fastslam1-vs-2
+#| echo: true
+R_lidar = np.diag([0.05**2, np.deg2rad(0.5)**2])     # a sharp sensor ...
+Q_sloppy = np.diag([0.10**2, np.deg2rad(3.0)**2])    # ... on sloppy odometry
 
-FastSLAM 2.0 uses the current measurement to build a better proposal distribution:
 
-$$
-x_t^{[m]} \sim p(x_t \mid x_{t-1}^{[m]}, u_t, z_t).
-$$
+def compare_proposals(configs, seeds=range(20)):
+    print(f"{'filter':13s} {'M':>3s} {'exactly 3 trees':>16s} {'resamples':>10s}"
+          f" {'mean N_eff/M':>13s} {'scan-1 ancestors':>17s}")
+    for name, filter_class, num_particles in configs:
+        exact, resamples, ess, ancestors = 0, [], [], []
+        for seed in seeds:
+            _, scans = simulate_run(seed, control_covariance=Q_sloppy,
+                                    measurement_covariance=R_lidar)
+            slam = filter_class(num_particles, np.zeros(3), Q_sloppy, R_lidar,
+                                log_p0=LOG_P0, rng=np.random.default_rng(1000 + seed))
+            for scan in scans:
+                slam.step(COMMAND, 1.0, scan)
+            exact += len(slam.best_map()) == 3
+            resamples.append(slam.num_resamples)
+            ess.append(np.mean(slam.ess_history) / num_particles)
+            ancestors.append(len({id(p.trajectory[1]) for p in slam.particles}))
+        print(f"{name:13s} {num_particles:3d} {exact:10d} / {len(seeds)}"
+              f" {np.mean(resamples):10.1f} {np.mean(ess):13.2f} {np.mean(ancestors):17.1f}")
 
-FastSLAM 2.0 can need fewer particles, especially when sensor measurements are accurate relative to odometry. It is also more complex. For this course project, a solid FastSLAM 1.0 implementation with honest diagnostics is preferable to a fragile FastSLAM 2.0 implementation.
+
+compare_proposals([
+    ("FastSLAM 1.0", FastSLAM, 30),
+    ("FastSLAM 2.0", FastSLAM2, 30),
+    ("FastSLAM 1.0", FastSLAM, 5),
+    ("FastSLAM 2.0", FastSLAM2, 5),
+])
+```
+
+FastSLAM 1.0 resamples at nearly every scan, its effective sample size averages under a fifth of the particle count, and by the end every particle descends from the same ancestor: thirty particles, one path hypothesis. Only 13 of its 20 maps are right with thirty particles, and 6 with five, because when every particle is a copy of the same slightly-off pose, a correct re-observation can fail the birth gate in all of them at once. FastSLAM 2.0 resamples once or twice per run, keeps several distinct path histories alive, and recovers the three trees every time, even with five particles. The table deliberately leaves out position error against the truth: with sloppy odometry, the heading error accumulated before the first trees are mapped rotates the whole map, both filters inherit it, and no SLAM algorithm can observe it.
+
+FastSLAM 2.0 can therefore need far fewer particles, especially when sensor measurements are accurate relative to odometry. It is also more complex: it needs the pose Jacobian, a per-particle EKF step, and care with rank-deficient covariances. For the course project, a solid FastSLAM 1.0 implementation with honest diagnostics is the required baseline, and FastSLAM 2.0 is an extension for after that baseline works (@sec-project2).
 
 ## GraphSLAM in One Page {#sec-slam-graphslam-one-page}
 
 GraphSLAM treats poses and landmarks as variables in a nonlinear least-squares problem. The Durrant-Whyte and Bailey tutorial is a good high-level bridge between the filtering and graph views of SLAM [@DurrantWhyteBailey2006SLAMTutorial]:
 
 $$
-\min_X \sum_i \|e_i(X)\|_{\Omega_i}^2.
+\begin{aligned}
+\hat{\mathbf{X}} &= \arg\min_{\mathbf{X}} \sum_i \left\|\mathbf{e}_i(\mathbf{X})\right\|_{\boldsymbol{\Omega}_i}^2, \\
+\|\mathbf{e}\|_{\boldsymbol{\Omega}}^2 &= \mathbf{e}^T\boldsymbol{\Omega}\,\mathbf{e}.
+\end{aligned}
 $$
 
-Each residual $e_i$ comes from a motion constraint, landmark observation, GPS prior, loop closure, or other measurement. The graph is sparse because each measurement touches only a few variables.
+Each residual $\mathbf{e}_i$ comes from a motion constraint, landmark observation, GPS prior, loop closure, or other measurement, and $\boldsymbol{\Omega}_i$ is its information matrix, the inverse of that measurement's covariance (@sec-information-filter). Minimizing the weighted squared residuals is maximum-likelihood estimation under Gaussian noise. The graph is sparse because each measurement touches only a few variables.
 
 This is the dominant style in many modern systems:
 
@@ -493,7 +1008,7 @@ This is the dominant style in many modern systems:
 - bundle adjustment for visual SLAM;
 - factor graphs in libraries such as GTSAM, Ceres, and g2o.
 
-GraphSLAM handles loop closure naturally because past poses remain variables. Filtering methods are causal; once they have marginalized or resampled away a past hypothesis, they cannot easily revise the entire trajectory.
+GraphSLAM handles loop closure naturally because past poses remain variables, and every iteration relinearizes them at the current best estimate. Filters marginalize the past instead. EKF-SLAM keeps the past's influence in its covariance and does propagate a loop correction through the whole map, but it cannot go back and relinearize old poses, so linearization errors made early are baked in. FastSLAM keeps whole paths, but only the ones its particles still carry; if resampling has already discarded the history that the loop closure needs, it is gone.
 
 ## Comparison for the Project Report {#sec-slam-comparison-project-report}
 
@@ -502,8 +1017,8 @@ GraphSLAM handles loop closure naturally because past poses remain variables. Fi
 | State representation | one joint Gaussian | particles plus landmark EKFs | graph of variables and factors |
 | Landmark correlations | explicit dense covariance | conditional independence per particle | implicit through graph solution |
 | Data association | one decision per measurement | per-particle hypotheses | front-end plus robust optimization |
-| Loop closure | difficult for long loops | possible but particle-hungry | natural |
-| Scaling concern | dense covariance | particle count and map copies | sparse linear algebra |
+| Loop closure | correction propagates through the correlations; limited by $O(N^2)$ cost and linearization overconfidence | possible, if a particle with the right history survived | natural: the trajectory is re-solved |
+| Scaling concern | $O(N^2)$ per update and in memory | particle count; map copies ($O(M \log N)$ with sharing) | sparse linear algebra |
 | Project role | compare only | implement | compare only |
 
 Students should use this comparison to interpret their Victoria Park results, not as a second implementation assignment.
@@ -512,23 +1027,38 @@ Students should use this comparison to interpret their Victoria Park results, no
 
 FastSLAM fails in recognizable ways:
 
-- **Particle depletion:** too few particles survive after repeated informative measurements.
-- **Duplicate landmarks:** the gate is too tight or the pose uncertainty is too large.
+- **Particle depletion:** too few particles survive after repeated informative measurements; $N_\text{eff}$ stays low and resampling fires at nearly every scan.
+- **Path degeneracy:** even with healthy $N_\text{eff}$, repeated resampling leaves every particle descended from one ancestor a few dozen scans back. Bailey, Nieto, and Nebot showed that this makes FastSLAM 1.0 inconsistent over long runs no matter how many particles it uses [@bailey2006fastslam]; the ancestor count in @sec-slam-fastslam-1-0 shows it happening.
+- **Duplicate landmarks:** the gate is too tight, the pose uncertainty is too large, $p_0$ is missing, or one gate is doing the work of two.
 - **Merged landmarks:** the gate is too loose or measurement covariance is too optimistic.
-- **Outlier landmarks:** moving objects, non-tree returns, or bad segmentation are accepted.
+- **Outlier landmarks:** moving objects, non-tree returns, or bad segmentation are accepted; the tentative stage exists to keep them out of the reported map.
 - **Delayed loop closure:** the correct revisited-place hypothesis may no longer exist in the particle set.
 
 The cure is not one magic parameter. It is measurement modeling, feature filtering, enough particles, careful resampling, and diagnostic plots.
 
 ## Summary {#sec-slam-summary}
 
-EKF-SLAM teaches why landmark correlations matter. GraphSLAM teaches why sparse optimization dominates many modern systems. FastSLAM is the implementation target because it sits directly between the particle filters students already know and the landmark-based Victoria Park dataset.
+EKF-SLAM teaches why landmark correlations matter and what they cost. GraphSLAM teaches why sparse optimization dominates many modern systems. FastSLAM is the implementation target because it sits directly between the particle filters students already know and the landmark-based Victoria Park dataset.
 
 For the project, the expected backend is:
 
-1. sample particle poses from odometry;
-2. maintain per-particle landmark EKFs;
-3. use per-particle data association;
-4. weight particles by measurement likelihood;
-5. resample by effective sample size;
+1. sample particle poses from odometry (FastSLAM 1.0);
+2. maintain per-particle landmark EKFs (2-D mean, $2 \times 2$ covariance);
+3. associate per particle with two gates (5.99 to match, 13.82 to spawn), mutual exclusion, and tentative/confirmed tracks;
+4. weight with $\log \mathcal{N}(\boldsymbol{\nu}; \mathbf{0}, \mathbf{S})$ for matches and $\log p_0$ otherwise, normalized with log-sum-exp;
+5. resample systematically when $N_\text{eff} < M/2$;
 6. report both map quality and failure modes.
+
+## Exercises {#sec-slam-exercises}
+
+1. **EKF-SLAM bookkeeping.** (a) Starting from the joint linearization of the motion model with $\mathbf{x}_k = f(\mathbf{x}_{k-1}, \mathbf{u}_k)$ and $\boldsymbol{\ell}_j$ constant, derive @eq-slam-ekf-predict, including why $\mathbf{P}_{mm}$ is unchanged. (b) Derive the augmentation @eq-slam-ekf-augment by linearizing $g$ in both of its arguments. (c) Count the floating-point operations of one update @eq-slam-ekf-update as a function of $N$, exploiting the sparsity of $\mathbf{H}$ wherever you can. Which term is $O(N^2)$, and why can sparsity not remove it?
+
+2. **Correspondences and the factorization.** (a) Prove @eq-slam-fastslam-factorization, stating every independence assumption you use. (b) Take two landmarks with independent Gaussian priors, one robot pose known exactly, and one range-only measurement whose correspondence is unknown with $P(n = 1) = P(n = 2) = 1/2$. Write the posterior $p(\boldsymbol{\ell}_1, \boldsymbol{\ell}_2 \mid \mathbf{z})$ and show that it does not factor into a function of $\boldsymbol{\ell}_1$ times a function of $\boldsymbol{\ell}_2$.
+
+3. **Units, $p_0$, and the birth gate.** (a) Show that converting range from meters to centimeters multiplies $\mathcal{N}(\boldsymbol{\nu}; \mathbf{0}, \mathbf{S})$ by $10^{-2}$ and leaves $d^2$ unchanged. (b) Show that adding a constant $c_a$ to every particle's weight factor for observation $a$ leaves the normalized weights unchanged, and use it to prove the claim that "no $p_0$ in centimeters" equals "$p_0 = 100\ \text{m}^{-1}\text{rad}^{-1}$ in meters". (c) A SICK laser on a Victoria Park-style vehicle has a 180° field of view, and suppose tree detections are trusted out to 30 m with $\sigma_r = 0.3$ m and $\sigma_\beta = 1°$. Compute $p_0$ from @eq-slam-p0 and the crossover $d^2_\times$. Is it consistent with a 13.82 birth gate? What would you change, and why?
+
+4. **Hunting the residual duplicates.** Run the full filter (`log_p0=LOG_P0`) on seeds 0 to 199 and list the seeds whose best map does not have exactly three trees. For each, find the scan where the duplicate was born and print the $d^2$ of the offending observation to every landmark in the best particle, together with its range. Then rerun those scans with a filter that is given the true poses (an oracle). Which failures does the oracle reproduce? Finally, rerun all 200 seeds with $\mathbf{R}$ inflated by a factor of 1.5 in the filter only, and with `FastSLAM2`. Report the failure counts and explain each change.
+
+5. **The FastSLAM 2.0 proposal.** (a) Derive @eq-slam-fastslam2-proposal by completing the square in the product of $\mathcal{N}(\mathbf{x}; \bar{\mathbf{x}}, \mathbf{Q}_x)$ and the linearized measurement density. (b) Use the matrix inversion lemma to show that the Kalman form used in the code gives the same $\boldsymbol{\mu}_x$ and $\boldsymbol{\Sigma}_x$ when $\mathbf{Q}_x$ is invertible, and explain why the Kalman form still makes sense when it is not. (c) Derive @eq-slam-fastslam2-weight as $\int p(\mathbf{z} \mid \mathbf{x})\,p(\mathbf{x} \mid \mathbf{x}_{k-1}, \mathbf{u}_k)\,d\mathbf{x}$.
+
+6. **A softer discard rule.** This chapter charges $p_0$ for an observation a particle discards as ambiguous, which makes the weight jump at the 5.99 gate: a match at $d^2 = 5.9$ earns the full Gaussian density, but a discard at $d^2 = 6.0$ earns only $p_0$. Implement the alternative that charges $\max\{\mathcal{N}(\boldsymbol{\nu}_{\text{nearest}}; \mathbf{0}, \mathbf{S}_{\text{nearest}}), p_0\}$, the density of the particle's best explanation, while still declining to update the map. Plot the weight factor against $d^2$ for both rules, then compare the two on the multi-seed experiment of @sec-slam-what-goes-wrong. Does it matter here? When would it?
