@@ -10,7 +10,7 @@ While not required or even neccessarily standard, I highly recommend using a pac
 
 ## Python Version and Environment {#sec-python-version-environment}
 
-Use a modern Python 3 release and isolate dependencies per project. At time of writing (Summer 2026), Python 3.14 is the latest stable release and will be preferred, but any Python 3.10+ should work fine for the examples in this class. *Avoid using the system Python or installing packages globally!* This can cause conflicts between projects and your operating system's dependencies. Only install packages to the system Python is you expressly know what you are doing and why you are doing it! For project development purposes _**always**_ use virtual environments to create isolated Python environments as this allows you to manage dependencies and avoid version conflicts.
+Use a modern Python 3 release and isolate dependencies per project. At time of writing (Summer 2026), Python 3.14 is the latest stable release and will be preferred, but the course packages require Python 3.11 or newer. *Avoid using the system Python or installing packages globally!* This can cause conflicts between projects and your operating system's dependencies. Only install packages to the system Python is you expressly know what you are doing and why you are doing it! For project development purposes _**always**_ use virtual environments to create isolated Python environments as this allows you to manage dependencies and avoid version conflicts.
 
 Recommended baseline workflow:
 

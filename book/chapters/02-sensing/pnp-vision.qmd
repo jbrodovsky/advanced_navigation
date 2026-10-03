@@ -536,7 +536,7 @@ The exact camera-to-body rotation should match the project handout diagrams and 
 
 ## Euler Angles for the Project {#sec-pnp-euler-angles-project}
 
-The Project 3 handout uses roll, pitch, and yaw as the orientation output:
+The Project 1 handout uses roll, pitch, and yaw as the orientation output:
 
 $$
 \mathbf{q} =
@@ -574,7 +574,7 @@ Euler angles are not universal; two libraries can use the same words and mean di
 2. Validate against the ground truth orientation plots.
 3. Keep the conversion isolated in one function.
 
-For the Project 3 convention, the structure of the matrix gives:
+For the Project 1 convention, the structure of the matrix gives:
 
 $$
 \phi = \sin^{-1}(R_{32}),
@@ -599,7 +599,7 @@ import numpy as np
 
 def rotation_matrix_to_rpy_zxy(R: np.ndarray) -> np.ndarray:
     """
-    Convert rotation matrix to Project 3 roll, pitch, yaw.
+    Convert rotation matrix to Project 1 roll, pitch, yaw.
 
     Convention:
         R = Rz(yaw) Rx(roll) Ry(pitch)
@@ -673,11 +673,11 @@ def estimate_pose(data_entry: dict,
     return position, orientation
 ```
 
-This function is the observation model interface Project 3 needs: a data element goes in, and a robot pose measurement comes out.
+This function is the observation model interface Project 1 needs: a data element goes in, and a robot pose measurement comes out.
 
 ## Covariance Estimation for the Observation Model {#sec-pnp-covariance-estimation-observation}
 
-Project 3 uses the PnP pose as a measurement:
+Project 1 uses the PnP pose as a measurement:
 
 $$
 \mathbf{z} =

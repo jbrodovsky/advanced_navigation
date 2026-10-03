@@ -21,7 +21,7 @@ For this chapter, the nominal navigation state is
 $$\mathbf{x}_{nom}
 =
 \left[
-\phi,\lambda,h,
+L,\lambda,h,
 \mathbf{v}^n,
 \mathbf{q}_b^n,
 \mathbf{b}_a,
@@ -30,12 +30,12 @@ $$\mathbf{x}_{nom}
 
 where:
 
-- $\phi,\lambda,h$ are geodetic latitude (degrees), longitude (degrees), and height (meters) above the WGS84 ellipsoid;
+- $L,\lambda,h$ are geodetic latitude and longitude (radians) and height (meters) above the WGS84 ellipsoid;
 - $\mathbf{v}^n = [v_N, v_E, v_D]^T$ is velocity resolved in the local North-East-Down frame (meters per second);
-- $\mathbf{q}_b^n = \left[\phi, \theta, \psi \right]$ represents attitude from body axes to navigation axes (roll, pitch, yaw XYZ rotation);
+- $\mathbf{q}_b^n$ is the unit attitude quaternion (Hamilton, scalar first) of the body axes relative to the navigation axes, with $\mathbf{C}_b^n = \mathbf{C}(\mathbf{q}_b^n)$;
 - $\mathbf{b}_a$ and $\mathbf{b}_g$ are accelerometer and gyro bias estimates.
 
-For our purposes, we will adopt the conventions and notation in Groves Chapter 5.4 and used an X-Y-Z rotation scheme and an Euler angle representation. Alternative approaches exist (such as using a quaternion representation), however this is one of the more intuitive approaches. Mathematically, we will use the rotation matrix form ($\mathbf{C}_b^n$) for ease of computation.
+The mechanization follows Groves, Section 5.4 [@groves], written in this book's conventions (@sec-frames-conventions). The state carries attitude as a quaternion. The equations below use the equivalent rotation matrix $\mathbf{C}_b^n$ because it makes each term easy to read. Roll, pitch, and yaw (Z-Y-X sequence) appear only for display and initialization. Groves writes the meridian and transverse radii of curvature as $R_N$ and $R_E$; this chapter uses $R_M$ and $R_N$.
 
 ## WGS84 Geometry {#sec-ins-gnss-wgs84-geometry}
 
@@ -47,17 +47,17 @@ e^2 = 6.69437999014132 \times 10^{-3}.$$
 
 The meridian radius of curvature is
 
-$$R_M(\phi)
+$$R_M(L)
 =
 \frac{a(1-e^2)}
-{(1-e^2\sin^2\phi)^{3/2}},$$
+{(1-e^2\sin^2 L)^{3/2}},$$
 
 and the prime vertical radius of curvature is
 
-$$R_N(\phi)
+$$R_N(L)
 =
 \frac{a}
-{\sqrt{1-e^2\sin^2\phi}}.$$
+{\sqrt{1-e^2\sin^2 L}}.$$
 
 The Earth rotation rate (rotation of the ECEF frame ($e$) with respect to the ECI frame ($i$) is
 
@@ -68,9 +68,9 @@ Resolved in the local NED frame, Earth rate vector is
 $$\boldsymbol{\omega}_{ie}^n
 =
 \begin{bmatrix}
-\omega_{ie}\cos\phi \\
+\omega_{ie}\cos L \\
 0 \\
--\omega_{ie}\sin\phi
+-\omega_{ie}\sin L
 \end{bmatrix}.$$
 
 The transport rate accounts for the rotation of the local navigation frame as the vehicle moves over the ellipsoid:
@@ -80,7 +80,7 @@ $$\boldsymbol{\omega}_{en}^n
 \begin{bmatrix}
 \frac{v_E}{R_N + h} \\
 -\frac{v_N}{R_M + h} \\
--\frac{v_E\tan\phi}{R_N + h}
+-\frac{v_E\tan L}{R_N + h}
 \end{bmatrix}.$$
 
 Some references use a different sign convention for NED transport rate depending on whether the angular rate is written as frame-with-respect-to-frame or the reverse. The convention above is paired with the velocity and attitude equations in this chapter. Do not mix formulas from two sources without checking the frame subscripts.
@@ -144,16 +144,16 @@ $$\mathbf{g}^n
 \begin{bmatrix}
 0 \\
 0 \\
-g(\phi,h)
+g(L,h)
 \end{bmatrix}.$$
 
 A simple WGS84-compatible gravity approximation is
 
-$$g(\phi,h)
+$$g(L,h)
 =
 9.7803253359
 \left(
-1 + 0.0053024\sin^2\phi - 0.0000058\sin^2(2\phi)
+1 + 0.0053024\sin^2 L - 0.0000058\sin^2(2L)
 \right)
 - 3.086 \times 10^{-6}h.$$
 
@@ -163,13 +163,13 @@ This is sufficient for course-scale examples. Precision navigation systems use m
 
 The geodetic position rates follow from NED velocity:
 
-$$\dot{\phi}
+$$\dot{L}
 =
 \frac{v_N}{R_M + h},$$
 
 $$\dot{\lambda}
 =
-\frac{v_E}{(R_N + h)\cos\phi},$$
+\frac{v_E}{(R_N + h)\cos L},$$
 
 $$\dot{h}
 =

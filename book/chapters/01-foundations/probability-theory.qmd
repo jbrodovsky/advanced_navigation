@@ -359,7 +359,7 @@ $$\mathbb{E}[\text{profit}] = -\tau$$
 The bettor loses the take $\tau$ in expectation *regardless of which horse wins*, regardless of the bettor's skill in picking horses, and regardless of the odds displayed on the board. The take is extracted before any payout calculations are made. A typical 20 % take means that, in the long run, every dollar bet at the track returns 80 cents.
 
 ::: {.callout-note}
-## Connection to Bayesian Filtering
+## Connection to Bayesian Filtering {#sec-probability-connection-bayesian-filtering}
 
 There is a structural analogy worth noting. In Bayes' rule:
 
