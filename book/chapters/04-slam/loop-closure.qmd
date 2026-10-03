@@ -1,82 +1,619 @@
 # Loop Closure and Long-Term Consistency {#sec-loop-closure}
 
-Loop closure occurs when a robot recognizes that it has returned to a previously visited place. The measurement is not just "I see a feature." It is "this current region corresponds to that old region."
+Loop closure occurs when a robot recognizes that it has returned to a previously
+visited place. The measurement is not just "I see a feature." It is "this
+current region corresponds to that old region," and it arrives as a constraint
+between the present pose and a pose from minutes or hours ago.
 
-This matters because dead reckoning drifts. A four-kilometer path through Victoria Park can look locally plausible while ending up globally misaligned. Loop closure is the mechanism that can pull the trajectory back into consistency.
+Navigators have done a version of this for centuries. A ship's officer who has
+run on dead reckoning all night takes a bearing on a charted lighthouse at dawn
+and discovers the ship is two miles from where the plot says. That fix is
+absolute, because the lighthouse is on the chart. A robot doing SLAM has no
+chart. Its lighthouse is a piece of its own map, built earlier from the same
+drifting estimate. Loop closure is the art of using your own old, imperfect map
+as the chart, which is why it is powerful and also why it is dangerous.
 
-In Project 2, loop closure is something to analyze rather than implement: the project already covers feature extraction, association, and FastSLAM (see @sec-project2).
+It matters because dead reckoning drifts. A four-kilometer drive through
+Victoria Park can look locally plausible while ending up globally misaligned,
+and loop closure is the mechanism that pulls the trajectory back into
+consistency. This chapter covers how revisits are recognized and verified, why
+filters and smoothers respond so differently to them, and then builds a small
+pose-graph optimizer from scratch, breaks it with a false loop closure, and
+repairs it with a robust kernel.
+
+In Project 2, loop closure is something to analyze rather than implement: the
+project covers feature extraction, association, and FastSLAM, and asks you to
+explain what your results say about revisits (see @sec-project2 and
+@sec-loop-closure-project-report).
 
 ## Why Drift Accumulates {#sec-loop-closure-why-drift-accumulates}
 
-Suppose odometry has a small heading bias. Each short motion update looks reasonable. Over hundreds or thousands of updates, the position error grows. When the robot returns near the start, the estimated pose may be far away from where the map says it should be.
+Suppose odometry has a small heading bias. Each short motion update looks
+reasonable. A constant heading error $\delta\psi$ produces a cross-track error
+that grows linearly with distance, roughly $d\,\delta\psi$ after $d$ meters. A
+heading error that random-walks is worse: the position error then grows like
+$d^{3/2}$, because every heading error is integrated twice. When the robot
+returns near the start, the estimated pose may be far from where the map says
+it should be.
 
 This is the essential loop-closure pattern:
 
 1. the robot revisits an old place;
-2. the front-end proposes a match to prior map structure;
+2. the front end proposes a match to prior map structure;
 3. the system verifies the match geometrically;
-4. the backend uses the constraint to reduce accumulated drift.
+4. the back end uses the constraint to reduce accumulated drift.
 
-The difficult part is that a false loop closure can be worse than no loop closure. A single confident wrong match can bend the map into nonsense.
+The difficult part is that a false loop closure can be worse than no loop
+closure. A single confident wrong match can bend the map into nonsense, and
+@sec-loop-closure-robust-kernels shows it happening.
 
 ## Recognition and Verification {#sec-loop-closure-recognition-verification}
 
-Loop closure has two stages:
+Loop closure has two stages. **Place recognition** finds candidate revisited
+locations, and **geometric verification** checks whether a candidate is
+physically consistent and measures the relative pose it implies.
 
-- **Place recognition:** find candidate revisited locations.
-- **Geometric verification:** check whether the candidate is physically consistent.
+Place recognition is a retrieval problem rather than an estimation problem: the
+question is "which old place does this look like?", not "what is my pose?". The
+cheapest recognizer is the pose estimate itself: search only the old poses that
+fall inside the current position uncertainty. That works for short loops and
+fails exactly when loop closure matters most, after a long excursion, when the
+uncertainty ellipse has grown large enough to contain half the map. Practical
+systems therefore recognize places from what the sensor sees, independently of
+the estimate, and use the estimate only to rank or sanity-check candidates.
 
-For visual SLAM, place recognition often uses bag-of-words image retrieval or learned image descriptors. For landmark SLAM, place recognition can use local landmark geometry: relative distances, bearings, and spatial patterns.
+### Appearance-Based Recognition {#sec-loop-closure-appearance-recognition}
 
-In Victoria Park, a simple analysis can ask:
+Cameras see a great deal of appearance, and the classic way to search it is a
+**bag of words**. Local descriptors such as ORB or SIFT (@sec-visual-nav-features-descriptors)
+are quantized into a vocabulary of "visual words," learned offline by clustering
+descriptors from many images. An image becomes a sparse histogram of word counts,
+weighted so that words appearing in every image (asphalt, sky) count for little,
+and an inverted index from words to images makes retrieval over thousands of
+keyframes take milliseconds. DBoW2 [@galvezlopez2012dbow] does this with binary
+descriptors and a hierarchical vocabulary, requires a loop to be confirmed by
+several consecutive frames before reporting it, and is the loop detector inside
+ORB-SLAM (@sec-visual-nav-orb-slam-as). Learned global descriptors such as
+NetVLAD [@arandjelovic2016netvlad] replace the hand-built vocabulary with a
+neural network trained so that images of the same place land close together
+even across changes of lighting, weather, and season.
 
-- Does the final map show revisited tree clusters lining up?
-- Do candidate old and new landmark sets have compatible geometry?
-- Does the vehicle trajectory return near previously mapped structure?
-- Did particle diversity survive long enough to represent the loop-closing hypothesis?
+### Geometry-Based Recognition {#sec-loop-closure-geometry-recognition}
+
+Lidar scans carry little appearance but a lot of shape. Scan Context
+[@kim2018scancontext] bins a 3D scan into a polar grid of rings and sectors
+around the sensor and stores the maximum point height in each bin. Two such
+descriptors are compared over all circular shifts of the sector axis, which
+makes the comparison independent of the vehicle's heading at the two visits.
+
+For a landmark map such as Victoria Park's trees, the natural descriptor is the
+constellation itself. Distances between pairs of trees, and the trunk diameters,
+do not change under a planar rigid motion, so a local group of trees seen now can
+be compared with groups in the old map by matching triangles or sets of
+inter-tree distances. This is the same trick a spacecraft star tracker uses for
+"lost in space" attitude determination: it matches the angles between observed
+stars against triangles in its onboard catalog. Two correctly matched trees are
+enough to hypothesize the planar transform between the old and new visits.
+
+### Geometric Verification {#sec-loop-closure-geometric-verification}
+
+A candidate is only a hypothesis. Verification fits a geometric model to the
+correspondences the candidate proposes, robustly. RANSAC [@fischler1981ransac]
+repeatedly samples a minimal set (two tree pairs for a planar transform, five
+points for an essential matrix, three or four for PnP; see
+@sec-visual-nav-geometry-checks), keeps the model with the most inliers, and
+rejects the candidate if too few correspondences agree. The surviving transform
+is then refined by scan matching (iterative closest point [@besl1992icp] or a
+correlative matcher on lidar, reprojection-error minimization on images), which
+also provides the covariance of the relative pose.
+
+The output of a verified loop closure is therefore a measurement like any other:
+a relative pose between two poses, with an information matrix. The rest of this
+chapter is about what the back end does with it.
 
 ## Why Filtering SLAM Struggles {#sec-loop-closure-why-filtering-slam}
 
-Filtering methods update the current state as measurements arrive. EKF-SLAM keeps a dense covariance, but the state still evolves causally. FastSLAM keeps a set of particles, but resampling removes low-weight path hypotheses.
+Filtering methods estimate the current state and fold everything else into it.
+That does not mean a filter cannot correct the past map. When EKF-SLAM
+re-observes an old landmark at the end of a loop, the innovation is large, and
+the update moves not only the robot but every landmark correlated with it. The
+dense cross-covariances of @sec-slam-ekf-slam-one are precisely the memory that
+carries the correction around the whole loop, and for a linear-Gaussian problem
+the filter's final map would be identical to the batch solution.
 
-This creates a loop-closure problem:
+What a filter cannot do is **relinearize** the past. The old poses have been
+marginalized out (@sec-information-filter-marginalization-conditioning shows
+how that fills in the information matrix; see @fig-information-fill-in), and
+every Jacobian along the way was evaluated at the estimate available at that
+moment. After a long loop with a large heading error those linearization points
+were wrong, and the errors they caused are baked permanently into the mean and
+covariance. The filter becomes overconfident, which is the EKF-SLAM
+inconsistency analyzed by Huang, Mourikis, and Roumeliotis [@huang2010]. The
+iterated EKF (@sec-ekf-iterated-ekf) relinearizes the current update but cannot
+reach back to earlier ones. Add the cost of updating a dense covariance that
+grows with the square of the map size, and EKF-SLAM struggles on long loops for
+reasons of both accuracy and arithmetic.
 
-- If the correct old trajectory hypothesis survives, FastSLAM can benefit from revisiting known landmarks.
-- If the correct hypothesis was resampled away, the filter cannot recover it later.
-- If the map contains duplicate landmarks, the system may treat a revisited place as new territory.
+FastSLAM has a different weakness. Each particle carries a complete path
+hypothesis and its own map, so a revisit re-weights the particles: those whose
+map agrees with what the robot sees gain weight. That works only if a particle
+with a good path is still alive. Resampling repeatedly discards low-weight
+paths, and over a long loop the particle set can collapse onto a few ancestors
+from the middle of the loop. Then:
 
-This is why particle count, process noise, data association, and resampling threshold all affect long-loop behavior.
+- If the correct old trajectory hypothesis survives, FastSLAM benefits from
+  revisiting known landmarks.
+- If the correct hypothesis was resampled away, the filter cannot recover it
+  later.
+- If the map contains duplicate landmarks, the system may treat a revisited
+  place as new territory.
+
+This is why particle count, process noise, data association, and resampling
+threshold all affect long-loop behavior.
 
 ## Why GraphSLAM Handles Loops Naturally {#sec-loop-closure-why-graphslam-handles}
 
-GraphSLAM keeps past poses as variables. A loop closure adds a constraint between two distant poses [@DurrantWhyteBailey2006SLAMTutorial]:
+GraphSLAM keeps past poses as variables
+[@DurrantWhyteBailey2006SLAMTutorial; @dellaert2006]. Odometry, landmark
+observations, GPS fixes, and loop closures all become **factors** that each
+constrain a few of those variables, and the optimizer adjusts the whole
+trajectory to satisfy them together. Because the past poses are still
+variables, the optimizer relinearizes them at every iteration; nothing is baked
+in.
+
+In a **pose graph** the variables are the poses themselves. Write planar pose
+$i$ as a homogeneous matrix
 
 $$
-e_{ij} = z_{ij} - h(x_i, x_j).
+\begin{aligned}
+\mathbf{X}_i &=
+\begin{bmatrix}
+\mathbf{C}(\theta_i) & \mathbf{t}_i \\
+\mathbf{0}^T & 1
+\end{bmatrix}
+\in SE(2), \\
+\mathbf{C}(\theta) &=
+\begin{bmatrix}
+\cos\theta & -\sin\theta \\
+\sin\theta & \cos\theta
+\end{bmatrix},
+\end{aligned}
 $$
 
-The optimizer adjusts the entire trajectory to satisfy odometry, landmark, and loop constraints together:
+with $\theta_i$ measured counter-clockwise from the world $x$ axis. In the
+notation of @sec-frames-camera-transforms, $\mathbf{X}_i$ is
+$\mathbf{T}_{b_i}^w$, the pose of the body at time $i$ in the world. The pose of
+$j$ as seen from $i$ is $\mathbf{X}_i^{-1}\mathbf{X}_j$, and that is what both
+odometry and a loop closure measure: a relative pose $\mathbf{Z}_{ij}$ with
+information matrix $\boldsymbol{\Omega}_{ij}$. The residual must compare the
+predicted and measured relative poses *on the group*:
 
 $$
-\min_X \sum_k \|e_k(X)\|_{\Omega_k}^2.
+\mathbf{E}_{ij} = \mathbf{Z}_{ij}^{-1}\mathbf{X}_i^{-1}\mathbf{X}_j,
+\qquad
+\mathbf{e}_{ij} = \operatorname{Log}\left(\mathbf{E}_{ij}\right) \in \mathbb{R}^3.
+$$ {#eq-loop-closure-se2-residual}
+
+If the measurement is satisfied exactly, $\mathbf{E}_{ij}$ is the identity and
+$\mathbf{e}_{ij} = \mathbf{0}$. $\operatorname{Log}$ maps a group element to
+its tangent vector, the three numbers of translation and rotation "left over"
+[@barfoot2017]. The same formula holds in 3D with $\mathbf{X} \in SE(3)$, where
+$\operatorname{Log}$ returns six numbers: three of translation and a rotation
+vector.
+
+Writing the residual as plain subtraction, $\mathbf{z}_{ij} - (\mathbf{x}_j - \mathbf{x}_i)$,
+is tempting and wrong in two ways. The simplest symptom is the angle. A robot
+heading $179^\circ$ at pose $i$ and $-179^\circ$ at pose $j$ has turned
+$2^\circ$, but subtraction reports $-358^\circ$, and the optimizer will dutifully
+try to spin part of the map through a full turn to fix it. Wrapping the heading
+difference into $[-\pi, \pi)$ repairs that symptom (@sec-ukf-angles). The deeper
+problem is the translation: odometry measures how far the robot moved *in its own
+frame at pose $i$*, so the predicted translation is
+$\mathbf{C}(\theta_i)^T(\mathbf{t}_j - \mathbf{t}_i)$, not
+$\mathbf{t}_j - \mathbf{t}_i$. Subtraction works only for a robot that always
+faces along the world $x$ axis. In 3D there is no single angle to wrap, and the traps are quaternion
+sign flips and rotation vectors near $\pi$ (@sec-ukf-attitude).
+
+Carrying out the products for $SE(2)$, with $\mathbf{Z}_{ij}$ built from the
+measured translation $\mathbf{t}_z$ and rotation $\theta_z$, the error
+transform $\mathbf{E}_{ij}$ has rotation angle and translation
+
+$$
+\begin{aligned}
+\phi_{ij} &= \operatorname{wrap}\left(\theta_j - \theta_i - \theta_z\right), \\
+\boldsymbol{\tau}_{ij} &= \mathbf{C}(\theta_z)^T
+\left[\mathbf{C}(\theta_i)^T\left(\mathbf{t}_j - \mathbf{t}_i\right) - \mathbf{t}_z\right].
+\end{aligned}
+$$ {#eq-loop-closure-se2-error-parts}
+
+The exact logarithm is
+$\operatorname{Log}(\mathbf{E}_{ij}) = [\mathbf{V}(\phi_{ij})^{-1}\boldsymbol{\tau}_{ij};\ \phi_{ij}]$,
+with
+
+$$
+\mathbf{V}(\phi) = \frac{1}{\phi}
+\begin{bmatrix}
+\sin\phi & -(1 - \cos\phi) \\
+1 - \cos\phi & \sin\phi
+\end{bmatrix}
+= \mathbf{I} + O(\phi).
 $$
 
-The tradeoff is that the backend is more complex. Sparse linear algebra and robust loss functions become central. This is powerful, but it is outside the required project implementation.
+In a converged graph the leftover rotation $\phi_{ij}$ is a fraction of a degree,
+so $\mathbf{V} \approx \mathbf{I}$, and most 2D solvers, including g2o's planar
+edges and the tutorial of Grisetti et al. [@grisetti2010tutorial], use the
+simpler residual $\mathbf{e}_{ij} = [\boldsymbol{\tau}_{ij};\ \phi_{ij}]$. It
+vanishes exactly when the logarithm does, differs from it only at second order
+in the error, and has short Jacobians. The code below uses it and then checks how
+far it is from the exact $\operatorname{Log}$ at the solution.
 
-## Loop Closure in the Project Report {#sec-loop-closure-project-report}
+The optimizer minimizes the sum of squared Mahalanobis norms over all edges
+$\mathcal{E}$, odometry and loop closures alike:
 
-Students should not be asked to implement pose-graph optimization for this project. They should analyze loop closure using their FastSLAM results.
+$$
+\mathbf{X}^\star = \arg\min_{\mathbf{X}_0, \ldots, \mathbf{X}_{n-1}}
+\sum_{(i,j) \in \mathcal{E}} \mathbf{e}_{ij}^T\,\boldsymbol{\Omega}_{ij}\,\mathbf{e}_{ij}.
+$$ {#eq-loop-closure-pose-graph-cost}
 
-Recommended report questions:
+The mathematical reference (@sec-math-reference-pose-graph-optimization) gives
+the general Gauss-Newton and Levenberg-Marquardt machinery. The next section
+builds it for one concrete loop.
 
-- Where does the trajectory appear to revisit previously mapped areas?
-- Did the map show duplicate tree clusters near revisited locations?
-- How did particle count affect long-term consistency?
-- How did the resampling threshold affect particle diversity?
-- Would a graph-based smoother help? Why?
-- What additional front-end information would be needed to add reliable loop closures?
+## A Pose Graph from Scratch {#sec-loop-closure-pose-graph}
 
-This is a compare-and-contrast analysis, not another coding assignment.
+The robot drives 1 m steps around a 10 m square, turning left at each corner,
+for one and a quarter laps. Its odometry has white noise and also a small
+heading bias of $0.6^\circ$ per step that the noise model knows nothing about,
+the slowly accumulating error of @sec-loop-closure-why-drift-accumulates. When
+the robot returns to the start at pose 40, the front end recognizes the place
+and verifies a loop closure to pose 0. Nothing else is detected on the second
+pass; this front end is conservative.
+
+First, the $SE(2)$ helpers. `v2t` and `t2v` convert between the pose vector
+$\mathbf{x}_i = [x_i, y_i, \theta_i]^T$ and the matrix $\mathbf{X}_i$;
+`relative_pose` computes $\mathbf{X}_i^{-1}\mathbf{X}_j$, which is what an
+odometry or loop-closure measurement reports; `se2_log` is the exact logarithm,
+used only as a check.
+
+```{python}
+#| label: loop-closure-se2-helpers
+import matplotlib.pyplot as plt
+import numpy as np
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
+
+
+def wrap_angle(angle):
+    """Wrap an angle (or array of angles) to [-pi, pi)."""
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def rot2(theta):
+    """2x2 rotation matrix C(theta), theta counter-clockwise from +x."""
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, -s], [s, c]])
+
+
+def v2t(pose):
+    """Pose vector (x, y, theta) -> 3x3 homogeneous SE(2) matrix X."""
+    X = np.eye(3)
+    X[:2, :2] = rot2(pose[2])
+    X[:2, 2] = pose[:2]
+    return X
+
+
+def t2v(X):
+    """3x3 homogeneous SE(2) matrix -> pose vector (x, y, theta)."""
+    return np.array([X[0, 2], X[1, 2], np.arctan2(X[1, 0], X[0, 0])])
+
+
+def relative_pose(pose_i, pose_j):
+    """Pose j expressed in the frame of pose i: t2v(X_i^-1 X_j)."""
+    return t2v(np.linalg.inv(v2t(pose_i)) @ v2t(pose_j))
+
+
+def compose(pose, delta):
+    """Apply the relative motion `delta` (in the frame of `pose`): t2v(X Delta)."""
+    return t2v(v2t(pose) @ v2t(delta))
+
+
+def se2_log(X):
+    """Exact SE(2) logarithm [rho; phi], where the translation is V(phi) rho."""
+    phi = np.arctan2(X[1, 0], X[0, 0])
+    if abs(phi) < 1e-9:
+        return np.array([X[0, 2], X[1, 2], phi])
+    a, b = np.sin(phi) / phi, (1.0 - np.cos(phi)) / phi
+    V = np.array([[a, -b], [b, a]])
+    return np.append(np.linalg.solve(V, X[:2, 2]), phi)
+```
+
+Next, the simulated drive. Every edge is a tuple `(i, j, z_ij, Omega_ij)`: a
+measurement of pose $j$ relative to pose $i$ and its information matrix. The
+initial guess for the optimizer is plain dead reckoning, the odometry chained
+from pose 0.
+
+```{python}
+#| label: loop-closure-simulate
+rng = np.random.default_rng(7)
+
+# Ground truth: 1 m steps around a 10 m square, turning left 90 deg at each
+# corner, for one and a quarter laps (51 poses). Pose 40 is back at the start.
+steps_per_side = 10
+n_poses = 5 * steps_per_side + 1
+truth = [np.zeros(3)]
+for k in range(n_poses - 1):
+    turn = np.pi / 2 if (k + 1) % steps_per_side == 0 else 0.0
+    truth.append(compose(truth[-1], np.array([1.0, 0.0, turn])))
+truth = np.array(truth)
+
+# Odometry: true relative poses plus white noise plus an unmodeled heading bias.
+sigma_odo = np.array([0.05, 0.05, np.deg2rad(1.0)])   # per step [m, m, rad]
+heading_bias = np.deg2rad(0.6)                          # per step, not in the model
+Omega_odo = np.diag(1.0 / sigma_odo**2)
+edges = []
+for i in range(n_poses - 1):
+    z = relative_pose(truth[i], truth[i + 1]) + rng.normal(0.0, sigma_odo)
+    z[2] += heading_bias
+    edges.append((i, i + 1, z, Omega_odo))
+
+# One verified loop closure: back at the start, pose 40 is matched to pose 0.
+sigma_loop = np.array([0.05, 0.05, np.deg2rad(0.5)])
+Omega_loop = np.diag(1.0 / sigma_loop**2)
+z_loop = relative_pose(truth[40], truth[0]) + rng.normal(0.0, sigma_loop)
+edges.append((40, 0, z_loop, Omega_loop))
+
+# Initial guess: chain the odometry (dead reckoning).
+dead_reckoning = [truth[0]]
+for i, j, z, _ in edges[: n_poses - 1]:
+    dead_reckoning.append(compose(dead_reckoning[-1], z))
+dead_reckoning = np.array(dead_reckoning)
+
+gap = np.linalg.norm(dead_reckoning[40, :2] - dead_reckoning[0, :2])
+print(f"{n_poses} poses, {len(edges)} edges; dead-reckoned pose 40 is {gap:.2f} m from pose 0")
+```
+
+### Linearizing and Solving {#sec-loop-closure-linearizing-solving}
+
+Gauss-Newton linearizes every residual at the current estimate. The update of
+each pose is additive in $(x, y, \theta)$, followed by wrapping the heading,
+which is a legitimate way to move on $SE(2)$ for small steps. With
+$\mathbf{x}_i \leftarrow \mathbf{x}_i + \Delta\mathbf{x}_i$, the residual of
+@eq-loop-closure-se2-error-parts changes as
+$\mathbf{e}_{ij} + \mathbf{A}_{ij}\Delta\mathbf{x}_i + \mathbf{B}_{ij}\Delta\mathbf{x}_j$,
+with Jacobians
+
+$$
+\begin{aligned}
+\mathbf{A}_{ij} = \frac{\partial \mathbf{e}_{ij}}{\partial \mathbf{x}_i} &=
+\begin{bmatrix}
+-\mathbf{C}(\theta_z)^T\mathbf{C}(\theta_i)^T &
+\mathbf{C}(\theta_z)^T\,\dfrac{\partial\mathbf{C}(\theta_i)^T}{\partial\theta_i}\,(\mathbf{t}_j - \mathbf{t}_i) \\
+\mathbf{0}^T & -1
+\end{bmatrix}, \\
+\mathbf{B}_{ij} = \frac{\partial \mathbf{e}_{ij}}{\partial \mathbf{x}_j} &=
+\begin{bmatrix}
+\mathbf{C}(\theta_z)^T\mathbf{C}(\theta_i)^T & \mathbf{0} \\
+\mathbf{0}^T & 1
+\end{bmatrix}, \\
+\frac{\partial\mathbf{C}(\theta)^T}{\partial\theta} &=
+\begin{bmatrix}
+-\sin\theta & \cos\theta \\
+-\cos\theta & -\sin\theta
+\end{bmatrix}.
+\end{aligned}
+$$ {#eq-loop-closure-jacobians}
+
+Substituting the linearized residuals into @eq-loop-closure-pose-graph-cost and
+setting the derivative with respect to $\Delta\mathbf{x}$ to zero gives the
+normal equations $\mathbf{H}\,\Delta\mathbf{x} = -\mathbf{b}$. Here
+$\mathbf{H}$ is the Gauss-Newton information matrix of the whole trajectory,
+not a measurement Jacobian (there are only so many letters). Each edge touches
+two poses, so it adds four $3 \times 3$ blocks to $\mathbf{H}$ and two
+3-vectors to $\mathbf{b}$:
+
+$$
+\begin{aligned}
+\mathbf{H}_{ii} &\mathrel{+}= \mathbf{A}_{ij}^T\boldsymbol{\Omega}_{ij}\mathbf{A}_{ij}, &
+\mathbf{H}_{ij} &\mathrel{+}= \mathbf{A}_{ij}^T\boldsymbol{\Omega}_{ij}\mathbf{B}_{ij}, \\
+\mathbf{H}_{ji} &\mathrel{+}= \mathbf{B}_{ij}^T\boldsymbol{\Omega}_{ij}\mathbf{A}_{ij}, &
+\mathbf{H}_{jj} &\mathrel{+}= \mathbf{B}_{ij}^T\boldsymbol{\Omega}_{ij}\mathbf{B}_{ij}, \\
+\mathbf{b}_i &\mathrel{+}= \mathbf{A}_{ij}^T\boldsymbol{\Omega}_{ij}\mathbf{e}_{ij}, &
+\mathbf{b}_j &\mathrel{+}= \mathbf{B}_{ij}^T\boldsymbol{\Omega}_{ij}\mathbf{e}_{ij}.
+\end{aligned}
+$$ {#eq-loop-closure-normal-equations}
+
+One more detail before solving. Every measurement is relative, so translating
+and rotating the entire trajectory changes no residual. The cost has a
+three-dimensional valley of equally good solutions, the **gauge freedom**, and
+$\mathbf{H}$ is singular. We fix the gauge by holding pose 0 where it is, which
+means deleting its three rows and columns and solving for the remaining poses;
+that is the same as a prior on $\mathbf{x}_0$ with infinite information.
+Exercise 2 finds the null space this removes.
+
+```{python}
+#| label: loop-closure-gauss-newton
+def edge_residual_and_jacobians(pose_i, pose_j, z):
+    """Residual e = [tau; phi] of E = Z^-1 X_i^-1 X_j, and A = de/dx_i, B = de/dx_j."""
+    C_i, C_z = rot2(pose_i[2]), rot2(z[2])
+    dt = pose_j[:2] - pose_i[:2]
+    e = np.empty(3)
+    e[:2] = C_z.T @ (C_i.T @ dt - z[:2])
+    e[2] = wrap_angle(pose_j[2] - pose_i[2] - z[2])
+
+    c, s = np.cos(pose_i[2]), np.sin(pose_i[2])
+    dCiT_dtheta = np.array([[-s, c], [-c, -s]])
+    A = np.zeros((3, 3))
+    A[:2, :2] = -C_z.T @ C_i.T
+    A[:2, 2] = C_z.T @ dCiT_dtheta @ dt
+    A[2, 2] = -1.0
+    B = np.zeros((3, 3))
+    B[:2, :2] = C_z.T @ C_i.T
+    B[2, 2] = 1.0
+    return e, A, B
+
+
+def build_normal_equations(poses, edges, weights=None):
+    """Sparse H and b of the linearized pose graph, and the current cost.
+
+    `weights` (one per edge, default 1) scale each information matrix; the
+    robust kernels later in the chapter use them.
+    """
+    n = len(poses)
+    rows, cols, vals = [], [], []
+    b = np.zeros(3 * n)
+    cost = 0.0
+
+    def add_block(i, j, block):
+        rows.extend(3 * i + np.repeat(np.arange(3), 3))
+        cols.extend(3 * j + np.tile(np.arange(3), 3))
+        vals.extend(block.ravel())
+
+    for k, (i, j, z, Omega) in enumerate(edges):
+        e, A, B = edge_residual_and_jacobians(poses[i], poses[j], z)
+        W = Omega if weights is None else weights[k] * Omega
+        add_block(i, i, A.T @ W @ A)
+        add_block(i, j, A.T @ W @ B)
+        add_block(j, i, B.T @ W @ A)
+        add_block(j, j, B.T @ W @ B)
+        b[3 * i:3 * i + 3] += A.T @ W @ e
+        b[3 * j:3 * j + 3] += B.T @ W @ e
+        cost += e @ W @ e
+    # Duplicate (row, col) entries are summed when the sparse matrix is built.
+    H = sp.csc_matrix((vals, (rows, cols)), shape=(3 * n, 3 * n))
+    return H, b, cost
+
+
+def gauss_newton(initial, edges, weight_fn=None, max_iterations=50, tol=1e-8, verbose=False):
+    """Gauss-Newton on the pose graph, holding pose 0 fixed to remove the gauge freedom.
+
+    `weight_fn(poses, edges)`, if given, returns per-edge weights at each
+    iteration (iteratively reweighted least squares).
+    """
+    poses = initial.copy()
+    for iteration in range(max_iterations):
+        weights = None if weight_fn is None else weight_fn(poses, edges)
+        H, b, cost = build_normal_equations(poses, edges, weights)
+        dx = np.zeros(3 * len(poses))
+        dx[3:] = spla.spsolve(H[3:, 3:], -b[3:])      # pose 0 stays put
+        poses = poses + dx.reshape(-1, 3)              # x <- x + dx, then wrap headings
+        poses[:, 2] = wrap_angle(poses[:, 2])
+        if verbose:
+            print(f"iteration {iteration}: cost {cost:9.2f}, max |dx| = {np.abs(dx).max():.1e}")
+        if np.abs(dx).max() < tol:
+            break
+    return poses, H
+```
+
+Before trusting the optimizer, check the analytic Jacobians of
+@eq-loop-closure-jacobians against central differences. Then run it from the
+dead-reckoning guess.
+
+```{python}
+#| label: loop-closure-run
+# Jacobian check on one edge, at a perturbed estimate so nothing is trivially zero.
+i, j, z, _ = edges[17]
+pose_i, pose_j = dead_reckoning[i] + [0.1, -0.2, 0.3], dead_reckoning[j]
+_, A, B = edge_residual_and_jacobians(pose_i, pose_j, z)
+eps = 1e-6
+A_num = np.column_stack([(edge_residual_and_jacobians(pose_i + d, pose_j, z)[0]
+                          - edge_residual_and_jacobians(pose_i - d, pose_j, z)[0]) / (2 * eps)
+                         for d in eps * np.eye(3)])
+B_num = np.column_stack([(edge_residual_and_jacobians(pose_i, pose_j + d, z)[0]
+                          - edge_residual_and_jacobians(pose_i, pose_j - d, z)[0]) / (2 * eps)
+                         for d in eps * np.eye(3)])
+print(f"Jacobian check: max |A - A_num| = {np.abs(A - A_num).max():.1e},"
+      f" max |B - B_num| = {np.abs(B - B_num).max():.1e}")
+
+optimized, H = gauss_newton(dead_reckoning, edges, verbose=True)
+
+
+def position_rmse(poses):
+    """RMS position error of a trajectory against the simulated truth [m]."""
+    return np.sqrt(np.mean(np.sum((poses[:, :2] - truth[:, :2]) ** 2, axis=1)))
+
+
+print(f"position RMSE: dead reckoning {position_rmse(dead_reckoning):.2f} m,"
+      f" pose graph {position_rmse(optimized):.2f} m")
+print(f"H is {H.shape[0]} x {H.shape[1]} with {H.nnz} nonzeros"
+      f" ({H.nnz / H.shape[0] ** 2:.1%} of the entries)")
+
+# How far is the simple residual [tau; phi] from the exact Log at the solution?
+log_gap = max(
+    np.abs(se2_log(np.linalg.inv(v2t(z)) @ np.linalg.inv(v2t(optimized[i])) @ v2t(optimized[j]))
+           - edge_residual_and_jacobians(optimized[i], optimized[j], z)[0]).max()
+    for i, j, z, _ in edges
+)
+print(f"largest |Log(E) - [tau; phi]| over all edges at the solution: {log_gap:.1e}")
+```
+
+```{python}
+#| label: fig-loop-closure-pose-graph
+#| fig-cap: "A 2D pose graph with one loop closure. (a) Truth, dead reckoning (the initial guess), and the optimized trajectory; the dotted segment is the loop closure between pose 40 and pose 0. (b) Position error along the trajectory: dead-reckoning error grows over the first lap, while the optimized error is spread around the loop. (c) Sparsity pattern of the Gauss-Newton information matrix H: block-tridiagonal from odometry, plus one pair of off-diagonal blocks (circled) from the loop closure."
+#| code-fold: true
+fig, axes = plt.subplots(1, 3, figsize=(13, 4.2), gridspec_kw={"width_ratios": [1.1, 1.1, 1]})
+
+ax = axes[0]
+ax.plot(truth[:, 0], truth[:, 1], color="black", linewidth=1.2, label="truth")
+ax.plot(dead_reckoning[:, 0], dead_reckoning[:, 1], "--", color="C1", linewidth=1.2,
+        label="dead reckoning")
+ax.plot(optimized[:, 0], optimized[:, 1], color="C0", linewidth=1.5, label="pose graph")
+ax.plot(dead_reckoning[[40, 0], 0], dead_reckoning[[40, 0], 1], ":", color="C3", linewidth=2,
+        label="loop closure (40, 0)")
+ax.set_aspect("equal")
+ax.set_xlabel("x [m]")
+ax.set_ylabel("y [m]")
+ax.set_title("(a) trajectories")
+ax.legend(loc="center", fontsize=8)
+ax.grid(True, alpha=0.25)
+
+ax = axes[1]
+pose_index = np.arange(n_poses)
+for poses, style, color, label in [(dead_reckoning, "--", "C1", "dead reckoning"),
+                                   (optimized, "-", "C0", "pose graph")]:
+    ax.plot(pose_index, np.linalg.norm(poses[:, :2] - truth[:, :2], axis=1), style, color=color,
+            linewidth=1.5, label=label)
+ax.axvline(40, color="C3", linestyle=":", linewidth=1.5, label="loop closure at pose 40")
+ax.set_xlabel("pose index")
+ax.set_ylabel("position error [m]")
+ax.set_title("(b) position error")
+ax.legend(loc="upper left", fontsize=8)
+ax.grid(True, alpha=0.25)
+
+ax = axes[2]
+ax.spy(H, markersize=1.5, color="C0")
+for r, c in [(3 * 40 + 1, 1), (1, 3 * 40 + 1)]:
+    ax.plot(c, r, "o", markersize=14, markerfacecolor="none", markeredgecolor="C3")
+ax.xaxis.set_ticks_position("bottom")
+ax.set_title("(c) sparsity of H")
+ax.set_xlabel("column")
+ax.set_ylabel("row")
+
+plt.tight_layout()
+plt.show()
+```
+
+Three things in @fig-loop-closure-pose-graph are worth a second look. First,
+the correction is not dumped at the end of the loop. The optimizer bends every
+odometry edge a little, in proportion to how uncertain the noise model says it
+is, so all the poses move, and the error left after optimization is spread
+around the loop rather than piled up at pose 40. Second, the poses of the
+second lap are pulled along even though no loop closure touches them: they hang
+off pose 40 through odometry, so they inherit its correction. Third, the
+checks: the analytic Jacobians agree with finite differences, and at the
+solution the simple residual $[\boldsymbol{\tau};\ \phi]$ differs from the
+exact $\operatorname{Log}$ by an amount far below the noise, as promised.
+
+Panel (c) is the reason graph SLAM scales. Odometry links consecutive poses, so
+$\mathbf{H}$ is block-tridiagonal, and each loop closure adds exactly one pair of
+off-diagonal blocks. Here about 6% of the entries are nonzero; for a city-scale
+graph with $10^5$ poses, a dense $\mathbf{H}$ would have $10^{11}$ entries and
+the sparse one a few million. Production solvers factor $\mathbf{H}$ with a
+sparse Cholesky decomposition after reordering the variables to limit fill-in.
+Dellaert and Kaess's square-root SAM [@dellaert2006] showed that factoring the
+sparse square-root information matrix makes full smoothing practical, and
+contrasted it with the dense covariance a filter must carry. Compare panel (c)
+with @fig-information-fill-in, which is what marginalizing the past poses does
+to this same structure.
 
 ## Robustness Concerns {#sec-loop-closure-robustness-concerns}
 
@@ -84,17 +621,322 @@ Loop closure failure cases:
 
 - **False negative:** the robot revisits a place but fails to recognize it.
 - **False positive:** the robot incorrectly matches two different places.
-- **Perceptual aliasing:** different places look geometrically or visually similar.
+- **Perceptual aliasing:** different places look geometrically or visually
+  similar.
 - **Map duplication:** the same physical landmarks are initialized twice.
 - **Particle depletion:** the correct revisited-place hypothesis is gone.
 
-The right response is conservative verification. In navigation, a missed correction is usually less damaging than a confident false correction.
+The right first response is conservative verification. In navigation, a missed
+correction is usually less damaging than a confident false correction. But no
+front end is perfect, so the back end needs a second line of defense.
+
+## Robust Kernels for False Loop Closures {#sec-loop-closure-robust-kernels}
+
+Now break the pose graph. On the second pass along the bottom edge the robot
+drives past a repetitive stretch (evenly spaced trees, a fence, a corridor of
+identical doors), and the front end matches pose 48 with pose 2. They are 6 m
+apart. The match says they are the same place, and it says so with exactly the
+confidence of the true closure, because the verification step saw a perfectly
+good geometric fit: the scenery really does look the same. This is perceptual
+aliasing, and front-end verification cannot fully remove it, because each wrong
+match is internally consistent. It is inconsistent only with the rest of the
+graph.
+
+Least squares has no defense. The squared cost grows quadratically with the
+residual, so the most wrong measurement gets the loudest voice. A **robust
+kernel** replaces the quadratic with a function $\rho$ that grows more slowly
+for large residuals. With $s_k = \mathbf{e}_k^T\boldsymbol{\Omega}_k\mathbf{e}_k$
+the squared Mahalanobis distance of edge $k$, the cost becomes
+$\sum_k \rho(s_k)$. Two classic choices are
+
+$$
+\begin{aligned}
+\rho_\text{Huber}(s) &=
+\begin{cases}
+s, & s \le k^2, \\
+2k\sqrt{s} - k^2, & s > k^2,
+\end{cases} \\
+\rho_\text{Cauchy}(s) &= c^2 \ln\left(1 + s / c^2\right).
+\end{aligned}
+$$ {#eq-loop-closure-robust-kernels}
+
+The easiest way to minimize a robust cost is **iteratively reweighted least
+squares** (IRLS). Setting the gradient of $\sum_k \rho(s_k)$ to zero gives
+$\sum_k \rho'(s_k)\,\mathbf{J}_k^T\boldsymbol{\Omega}_k\mathbf{e}_k = \mathbf{0}$,
+which is the ordinary weighted least-squares condition with each information
+matrix scaled by $w_k = \rho'(s_k)$. So at each Gauss-Newton iteration we
+compute the weights from the current residuals and solve the weighted problem:
+
+$$
+w_\text{Huber} = \min\left(1, \frac{k}{\sqrt{s}}\right),
+\qquad
+w_\text{Cauchy} = \frac{1}{1 + s / c^2}.
+$$
+
+Huber is quadratic near zero and linear in the Mahalanobis distance beyond $k$:
+a bad measurement's pull is capped but never vanishes. Cauchy's influence peaks
+and then decays toward zero, so a measurement that is wrong by a lot is all but
+ignored. Both use the width $k = c = \sqrt{7.81} = 2.80$, the square root of the
+95% chi-square value for three degrees of freedom, the same kind of gate as in
+@sec-slam-association-innovation-mahalanobis-distance. Only the loop closures
+are robustified; odometry stays quadratic. That is common practice: odometry
+edges are trustworthy by construction, and loop closures are the guesses.
+
+```{python}
+#| label: loop-closure-robust
+# Perceptual aliasing: the front end matches pose 48 with pose 2 (really 6 m
+# apart) and reports "same place" with the confidence of a true loop closure.
+z_false = rng.normal(0.0, sigma_loop)
+edges_false = edges + [(48, 2, z_false, Omega_loop)]
+loop_edges = [len(edges) - 1, len(edges)]            # the true and the false closure
+
+
+def huber_weight(s, k):
+    """IRLS weight rho'(s) for the Huber kernel on the Mahalanobis distance sqrt(s)."""
+    return min(1.0, k / np.sqrt(s))
+
+
+def cauchy_weight(s, c):
+    """IRLS weight rho'(s) for the Cauchy kernel."""
+    return 1.0 / (1.0 + s / c**2)
+
+
+def robust_weights(kernel, width):
+    """Weight function for gauss_newton: robustify the loop closures, trust odometry."""
+    def weight_fn(poses, edges):
+        w = np.ones(len(edges))
+        for k in loop_edges:
+            i, j, z, Omega = edges[k]
+            e, _, _ = edge_residual_and_jacobians(poses[i], poses[j], z)
+            w[k] = kernel(e @ Omega @ e, width)
+        return w
+    return weight_fn
+
+
+width = np.sqrt(7.81)        # 95% chi-square gate for 3 degrees of freedom
+plain, _ = gauss_newton(dead_reckoning, edges_false)
+huber, _ = gauss_newton(dead_reckoning, edges_false, robust_weights(huber_weight, width))
+cauchy, _ = gauss_newton(dead_reckoning, edges_false, robust_weights(cauchy_weight, width))
+
+for name, poses in [("dead reckoning", dead_reckoning), ("no false closure", optimized),
+                    ("plain least squares", plain), ("Huber", huber), ("Cauchy", cauchy)]:
+    print(f"{name:>20}: position RMSE {position_rmse(poses):.2f} m")
+for name, kernel, poses in [("Huber", huber_weight, huber), ("Cauchy", cauchy_weight, cauchy)]:
+    w = robust_weights(kernel, width)(poses, edges_false)[loop_edges]
+    print(f"{name:>6} final weights: true closure {w[0]:.3f}, false closure {w[1]:.1e}")
+```
+
+```{python}
+#| label: fig-loop-closure-robust
+#| fig-cap: "One false loop closure. (a) The dotted segment joins the true positions of poses 48 and 2, which the false closure claims are the same place; the dots show where each method put pose 48. Plain least squares drags pose 48 most of the way to pose 2 and squeezes the map to do it; Huber and Cauchy kernels, solved by IRLS, mostly ignore the false closure. (b) Position error along the trajectory, with the solution of the graph that never saw the false closure (dashed) for reference."
+#| code-fold: true
+fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.4), gridspec_kw={"width_ratios": [1, 1.25]})
+results = [(plain, "C3", "plain least squares"), (huber, "C2", "Huber"), (cauchy, "C0", "Cauchy")]
+
+ax = axes[0]
+ax.plot(truth[:, 0], truth[:, 1], color="black", linewidth=1.2, label="truth")
+for poses, color, label in results:
+    ax.plot(poses[:, 0], poses[:, 1], color=color, linewidth=1.4, label=label)
+for poses, color, label in results:                  # where each method put pose 48
+    ax.plot(poses[48, 0], poses[48, 1], "o", color=color, markersize=8)
+ax.plot(truth[[48, 2], 0], truth[[48, 2], 1], ":x", color="C4", linewidth=2.5, markersize=9,
+        label="false closure (48, 2)")
+for k, dy in [(48, 0.8), (2, 0.8)]:
+    ax.annotate(f"pose {k}", truth[k, :2], xytext=(truth[k, 0], truth[k, 1] + dy), ha="center",
+                fontsize=8, color="C4")
+ax.set_aspect("equal")
+ax.set_xlabel("x [m]")
+ax.set_ylabel("y [m]")
+ax.set_title("(a) trajectories")
+ax.legend(loc="center", fontsize=8)
+ax.grid(True, alpha=0.25)
+
+ax = axes[1]
+ax.plot(pose_index, np.linalg.norm(optimized[:, :2] - truth[:, :2], axis=1), "--", color="black",
+        linewidth=1.2, label="no false closure")
+for poses, color, label in results:
+    ax.plot(pose_index, np.linalg.norm(poses[:, :2] - truth[:, :2], axis=1), color=color,
+            linewidth=1.4, label=label)
+ax.set_xlabel("pose index")
+ax.set_ylabel("position error [m]")
+ax.set_title("(b) position error")
+ax.legend(loc="upper left", fontsize=8)
+ax.grid(True, alpha=0.25)
+
+plt.tight_layout()
+plt.show()
+```
+
+Plain least squares is a disaster. To bring pose 48 onto pose 2 it squeezes the
+bottom edge and spreads the damage around the loop, and the result is worse than
+not closing the loop at all: compare its error with dead reckoning in the
+printout. "A false loop closure can be worse than no loop closure" is not a
+figure of speech. Huber recovers most of the map by driving the false closure's
+weight down, but because Huber caps the influence rather than removing it, some
+distortion remains. Cauchy all but deletes the false closure and returns
+essentially the trajectory of the graph that never saw it.
+
+Robust kernels are not magic. The Cauchy cost is not convex, and IRLS finds only
+the minimum nearest its starting point. In this example the true closure also
+starts with a large residual, since dead reckoning has drifted by a couple of
+meters, so at the first iteration both closures look like outliers. It works
+because the true closure is much less wrong than the false one, and its weight
+recovers as the map straightens. Make the drift larger or the kernel narrower,
+and the true closure is rejected too (Exercise 4). That fragility motivates the
+literature's more careful answers.
+
+**Switchable constraints** [@sunderhauf2012switchable] give each loop closure a
+switch variable between 0 and 1 that the optimizer estimates along with the
+poses, with a prior that prefers the switch on; turning a closure off costs
+something, but less than keeping a wrong one. **Dynamic covariance scaling**
+(DCS) [@agarwal2013dcs] is a closed-form relative of the same idea: it scales
+each closure's information by a factor computed from its current residual, which
+makes it behave like a redescending robust kernel without extra variables.
+**Graduated non-convexity** (GNC) [@yang2020gnc] attacks the initialization
+problem directly: it starts from a convex surrogate of the robust cost
+(essentially least squares) and morphs it gradually into the nonconvex one, so
+the solver never has to find a nonconvex minimum from a bad start, and it
+tolerates large fractions of outliers. **Pairwise consistent measurement set
+maximization** (PCM) [@mangelson2018pcm] works before optimization: two loop
+closures are consistent if composing them with the odometry between them gives a
+loop close to the identity, and PCM keeps the largest set of mutually consistent
+closures, a maximum-clique problem. It is the loop-closure cousin of joint
+compatibility (@sec-slam-association-joint-compatibility).
+
+## Incremental Smoothing in Practice {#sec-loop-closure-incremental-smoothing}
+
+Our optimizer rebuilds and re-solves the whole problem from scratch. That is fine
+for 51 poses and for offline mapping, but a robot running for hours adds a pose
+every fraction of a second and needs an up-to-date estimate now. A new odometry
+edge changes only the newest corner of $\mathbf{H}$, so re-solving the full batch
+each time throws away almost all of the previous work. iSAM2 [@kaess2012isam2]
+keeps the factorization instead. It represents the factored problem as a
+**Bayes tree**, a tree of cliques that is the graphical form of the sparse
+square-root information matrix, and when new factors arrive it re-eliminates
+only the cliques they touch. It also relinearizes only the variables whose
+estimates have moved more than a threshold since they were last linearized. A
+new odometry edge then costs almost nothing, while a loop closure touches every
+clique on the path from the old pose to the root and costs more, which matches
+intuition: a loop closure changes a lot of the past, so it should cost a lot.
+
+iSAM2 is the core of the GTSAM library; g2o and Ceres Solver are the other
+common open-source back ends. A typical production architecture runs a filter or
+odometry front end at sensor rate and a pose-graph or factor-graph back end in a
+separate thread, the division of labor in ORB-SLAM (@sec-visual-nav-orb-slam-as).
+@sec-advanced-slam-factor-graphs-smoothing returns to factor graphs with IMU,
+GNSS, and camera factors.
+
+## Loop Closure in the Project Report {#sec-loop-closure-project-report}
+
+Project 2 does not ask you to implement pose-graph optimization; the pose graph in
+this chapter is for understanding. It asks you to analyze loop closure using your
+FastSLAM results (@sec-project2). Questions worth answering in the report:
+
+- Where does the trajectory revisit previously mapped areas, and does it return
+  near previously mapped structure where you expect it to?
+- Do revisited tree clusters line up in the final map, or does the map show
+  duplicate clusters near revisited locations?
+- Do candidate old and new landmark sets have compatible geometry (inter-tree
+  distances, trunk diameters)?
+- How did particle count affect long-term consistency, and did particle
+  diversity survive long enough to represent the loop-closing hypothesis?
+- How did the resampling threshold affect particle diversity?
+- Would a graph-based smoother help? Why?
+- What additional front-end information would be needed to add reliable loop
+  closures, and how would you protect the back end from a false one?
+
+This is a compare-and-contrast analysis, not another coding assignment.
 
 ## Summary {#sec-loop-closure-summary}
 
-Loop closure is essential for long-term consistency, but it is a large topic. In this module:
+Loop closure is essential for long-term consistency, and it is a large topic.
+In this module:
 
-1. FastSLAM is the required implementation.
-2. Loop closure is analyzed through the behavior of that implementation.
-3. GraphSLAM is introduced as the natural backend for global loop corrections.
-4. Students should explain the tradeoff rather than build every possible solution.
+1. Place recognition proposes revisits from appearance or geometry, and
+   geometric verification turns a candidate into a relative-pose measurement
+   with a covariance.
+2. Filters can correct the whole map at a loop closure through their
+   correlations, but cannot relinearize the past, and particle filters can lose
+   the right hypothesis to resampling.
+3. A pose graph keeps the past poses, uses the relative-pose residual
+   $\operatorname{Log}(\mathbf{Z}_{ij}^{-1}\mathbf{X}_i^{-1}\mathbf{X}_j)$, and
+   is solved with sparse Gauss-Newton once the gauge is fixed.
+4. A single false loop closure can wreck a least-squares map; robust kernels,
+   switchable constraints, GNC, and consistency checks such as PCM are the
+   defenses.
+5. FastSLAM is the required Project 2 implementation; loop closure is analyzed
+   through the behavior of that implementation.
+
+## Exercises {#sec-loop-closure-exercises}
+
+1. **Pose-graph Jacobians.** (a) Derive $\mathbf{A}_{ij}$ and $\mathbf{B}_{ij}$
+   in @eq-loop-closure-jacobians from @eq-loop-closure-se2-error-parts.
+   (b) Extend the chapter's finite-difference check to 1000 random pose pairs,
+   including headings near $\pm\pi$, and report the worst disagreement.
+   (c) Show that
+   $\mathbf{V}(\phi) = \mathbf{I} + \tfrac{\phi}{2}\begin{bmatrix} 0 & -1 \\ 1 & 0 \end{bmatrix} + O(\phi^2)$,
+   and hence that $\operatorname{Log}(\mathbf{E}_{ij})$ and
+   $[\boldsymbol{\tau}_{ij};\ \phi_{ij}]$ differ only at second order in the
+   error. Is the printed gap at the solution consistent with that?
+
+2. **Gauge freedom.** Take $\mathbf{H}$ as returned by `gauss_newton` (all
+   poses, nothing deleted). (a) Compute its three smallest eigenvalues and show
+   that they are zero to numerical precision. (b) Show analytically that the
+   null space is spanned by a global $x$ translation, a global $y$ translation,
+   and a global rotation whose component for pose $i$ is $[-y_i, x_i, 1]^T$, and
+   verify this numerically. (c) Why does the rotation direction depend on the
+   current estimate while the translations do not? (d) What happens if you
+   anchor only the position of pose 0 and not its heading?
+
+3. **What a loop closure buys.** With pose 0 held fixed, the inverse of the
+   reduced $\mathbf{H}$ at the solution approximates the covariance of the other
+   poses. Plot the one-sigma position uncertainty,
+   $\sqrt{\sigma_x^2 + \sigma_y^2}$, along the trajectory with and without the
+   loop-closure edge. Where is the uncertainty largest after the loop closes,
+   and why is it not at pose 40? What happens to the second-lap poses?
+
+4. **Breaking the robust kernel.** (a) Rerun the false-closure experiment with
+   Cauchy widths $c \in \{0.5, 1, 2.8, 10\}$. For which widths is the true
+   closure rejected too? For each failure, compare the robust cost at the IRLS
+   answer with its value at the clean solution: is the problem the cost function
+   or the starting point? (b) Keep $c = 2.8$ and raise the heading bias to
+   $1.5^\circ$ per step. Explain the failure from the IRLS weights at the first
+   iteration. (c) Implement a simple graduated schedule: start with $c = 100$
+   and halve $c$ at each iteration until it reaches 2.8. Does it fix (b)? Does
+   it still work at $2^\circ$ per step, and what does real GNC do differently?
+   (d) Add five false closures between random pose pairs at least 10 poses
+   apart and compare plain least squares, Huber, and Cauchy.
+
+5. **Constellation place recognition for Victoria Park.** Build a tree
+   constellation matcher on synthetic data. Scatter 60 trees uniformly over a
+   $60 \times 60$ m area with trunk diameters between 0.2 and 0.8 m. The "old
+   map" is the trees within 15 m of a point $A$. The "new scan" is the trees
+   within 15 m of a point $B$ that is 3 m from $A$, expressed in a frame rotated
+   by an unknown angle and shifted by an unknown offset, with 0.1 m position
+   noise, 0.05 m diameter noise, 20% missed detections, and two spurious trees.
+   (a) Use RANSAC on pairs of trees (two correspondences determine a planar
+   transform; prefilter candidate pairs whose inter-tree distance and diameters
+   agree) to recover the transform, and report the inlier count. (b) Repeat with
+   a "new scan" from a different patch of the forest and compare inlier counts;
+   propose an acceptance threshold. (c) Which properties of the real Victoria
+   Park detections (@sec-mapping) would make this harder?
+
+6. **The surveyor's compass rule.** A 1D robot starts at $x_0 = 0$ (known) and
+   makes $N$ odometry steps, $x_k = x_{k-1} + u_k + w_k$ with
+   $w_k \sim \mathcal{N}(0, q)$, then measures a loop closure
+   $z = x_N + v$ with $v \sim \mathcal{N}(0, r)$. (a) Show that the
+   least-squares (smoothed) estimate is
+   $\hat{x}_k = x_k^\text{DR} + \frac{kq}{Nq + r}\left(z - x_N^\text{DR}\right)$,
+   where $x_k^\text{DR}$ is dead reckoning: the misclosure is distributed in
+   proportion to the number of steps, which is distance traveled when the steps
+   are equal. Land surveyors have adjusted traverses this way since Nathaniel
+   Bowditch proposed the "compass rule" in the early 1800s, the same Bowditch
+   whose *American Practical Navigator* is still carried on US ships
+   [@bowditch2019]. (b) Show that the posterior variance is
+   $\sigma_k^2 = kq - (kq)^2 / (Nq + r)$ and find where it peaks when $r \to 0$.
+   (c) Because $x_0$ is known, $z$ acts here like an absolute fix. Show that a
+   Kalman filter carrying only the current pose gets $\hat{x}_N$ exactly right
+   but leaves $\hat{x}_k$, $k < N$, at dead reckoning, and name the algorithm
+   from @sec-kf-smoothing that recovers the rest. Why would the filter's
+   $\hat{x}_N$ no longer match the smoother's for a planar robot with an
+   uncertain heading?

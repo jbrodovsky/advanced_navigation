@@ -385,7 +385,7 @@ def low_variance_resample_unpatched(particles, weights, u):
 weights = np.full(10, 0.1)
 particles = np.arange(10.0)
 u_max = np.nextafter(1.0, 0.0)                 # largest value rng.random() can return
-print(f"cumsum[-1] = {np.cumsum(weights)[-1]!r}, last position = {(u_max + 9) / 10!r}")
+print(f"cumsum[-1] = {float(np.cumsum(weights)[-1])!r}, last position = {float((u_max + 9) / 10)!r}")
 try:
     low_variance_resample_unpatched(particles, weights, u_max)
     print("unpatched: no error")

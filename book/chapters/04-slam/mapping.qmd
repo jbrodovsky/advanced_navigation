@@ -2,147 +2,328 @@
 
 Mapping is the part of navigation where sensor measurements become a representation of the world. In localization, the map is assumed known and the question is "where am I?" In mapping, the trajectory is assumed known well enough and the question is "what is around me?" In SLAM, both questions are asked at the same time, which is exactly why life gets interesting.
 
-This chapter keeps two map representations in view:
+This chapter keeps two map representations in view. **Occupancy grids** carve the world into cells and are what a planner wants for obstacle avoidance. **Landmark maps** keep a short list of distinctive features and are what the Victoria Park FastSLAM project uses (@sec-project2). The second half of the chapter is about that dataset: how its laser is decoded, where its sensors sit on the vehicle, and how a scan becomes a list of tree trunks. None of that is glamorous, and all of it decides whether the SLAM back end in @sec-slam has a chance.
 
-- **Occupancy grids**, which are useful for planning and obstacle avoidance.
-- **Landmark maps**, which are the representation we will use for the Victoria Park FastSLAM project.
+```{python}
+#| label: mapping-setup
+#| echo: true
+import math
+import os
+from pathlib import Path
 
-The project does not require students to build a dense lidar map. It requires them to turn laser scans into tree landmarks, associate those landmarks over time, and use them inside FastSLAM.
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.io import loadmat
+from scipy.spatial import cKDTree
+
+
+def wrap_angle(angle):
+    """Wrap angles to [-pi, pi)."""
+    return (np.asarray(angle) + np.pi) % (2.0 * np.pi) - np.pi
+```
 
 ## Mapping as a Bayesian Problem {#sec-mapping-as-bayesian-problem}
 
-Let $x_{1:t}$ be a known trajectory, $z_{1:t}$ be measurements, and $m$ be the map. The mapping posterior is
+Let $\mathbf{x}_{1:t}$ be a known trajectory, $\mathbf{z}_{1:t}$ the measurements, and $\mathbf{m}$ the map. The mapping posterior is
 
 $$
-p(m \mid z_{1:t}, x_{1:t}).
+p(\mathbf{m} \mid \mathbf{z}_{1:t}, \mathbf{x}_{1:t}).
 $$
 
-This is easier than SLAM because the robot trajectory is given. If the trajectory is wrong, the map will be wrong in a very specific way: every landmark will be painted into the world from the wrong pose. That is why dead reckoning alone produces maps that look locally plausible and globally warped.
+This is easier than SLAM because the trajectory is given. If the trajectory is wrong, the map will be wrong in a very specific way: every measurement is painted into the world from the wrong pose. That is why dead reckoning alone produces maps that look locally plausible and globally warped, and why a sensor mounted somewhere other than where you think it is produces maps that smear every time the vehicle turns (@sec-mapping-vehicle-model).
 
-For independent measurements,
+For measurements that are independent given the map and the poses,
 
 $$
-p(m \mid z_{1:t}, x_{1:t}) \propto p(m) \prod_{k=1}^{t} p(z_k \mid m, x_k).
+p(\mathbf{m} \mid \mathbf{z}_{1:t}, \mathbf{x}_{1:t}) \propto p(\mathbf{m}) \prod_{k=1}^{t} p(\mathbf{z}_k \mid \mathbf{m}, \mathbf{x}_k).
 $$
 
-The choice of map representation determines what $m$ means and what an update looks like.
+The choice of map representation determines what $\mathbf{m}$ means and what an update looks like.
 
 ## Occupancy Grid Maps {#sec-mapping-occupancy-grid-maps}
 
-An occupancy grid divides the world into cells. Each cell stores the probability that the corresponding patch of space is occupied:
+An occupancy grid divides the world into cells. Each cell $m_i$ is either occupied or free, and the map stores the probability that it is occupied:
 
 $$
 m_i \in \{0, 1\}, \qquad p(m_i = 1) \in [0, 1].
 $$
 
-Occupancy grids are attractive because they connect directly to obstacle avoidance. A planner can ask whether a cell is free without caring whether the obstacle is a tree, wall, parked car, or regrettably placed traffic cone.
+Occupancy grids are attractive because they connect directly to obstacle avoidance. A planner can ask whether a cell is free without caring whether the obstacle is a tree, a wall, a parked car, or a regrettably placed traffic cone.
 
-The usual simplification is cell independence:
+The usual simplification is cell independence,
 
 $$
-p(m \mid z_{1:t}, x_{1:t}) \approx \prod_i p(m_i \mid z_{1:t}, x_{1:t}).
+p(\mathbf{m} \mid \mathbf{z}_{1:t}, \mathbf{x}_{1:t}) \approx \prod_i p(m_i \mid \mathbf{z}_{1:t}, \mathbf{x}_{1:t}).
 $$
 
-This is not physically exact. Nearby cells are obviously correlated. It is useful anyway.
+This is not physically exact; a wall is a wall over many neighboring cells. It is useful anyway, because it turns one enormous estimation problem into millions of tiny binary ones.
 
 ### Log-Odds Updates
 
-Direct probabilities are awkward because repeated multiplication can underflow. Occupancy mapping usually stores log-odds:
+Each cell is a static binary state observed many times, so the Bayes filter for it is a single multiplication per measurement. Written in odds, $o = p/(1-p)$, the multiplications become explicit, and taking the logarithm turns them into additions. Occupancy mapping therefore stores the log-odds [@ProbRob]
 
 $$
-L(m_i) = \log \frac{p(m_i)}{1 - p(m_i)}.
+\begin{aligned}
+l(m_i) &= \log \frac{p(m_i)}{1 - p(m_i)},\\
+p(m_i) &= \frac{1}{1 + \exp(-l(m_i))},
+\end{aligned}
 $$
 
-The inverse transform is
+and updates each observed cell with
 
 $$
-p(m_i) = \frac{1}{1 + \exp(-L(m_i))}.
-$$
+l_t(m_i) = l_{t-1}(m_i) + \log\frac{p(m_i \mid \mathbf{z}_t, \mathbf{x}_t)}{1 - p(m_i \mid \mathbf{z}_t, \mathbf{x}_t)} - l_0,
+$$ {#eq-mapping-log-odds-update}
 
-For a measurement $z_t$, the log-odds update is
+where $l_0$ is the prior log-odds (zero for $p = 0.5$). The term $p(m_i \mid \mathbf{z}_t, \mathbf{x}_t)$ comes from an **inverse sensor model**: instead of asking "what measurement would this map produce?", it asks "what does this measurement say about this cell?" For a 2D lidar beam that returned range $r$, the cells the beam crossed before $r$ become more likely free, the cell at $r$ becomes more likely occupied, and the cells beyond $r$ are untouched, because the beam never got there.
 
-$$
-L_t(m_i) = L_{t-1}(m_i) + L(m_i \mid z_t, x_t) - L_0(m_i).
-$$
+Log-odds are not used to avoid underflow; a single cell's probability is never a long product of small numbers. They are used for two better reasons. First, the update is a sum, which is cheap, order-independent, and easy to reason about: every "occupied" reading adds the same constant, every "free" reading subtracts one. Second, they are numerically honest near 0 and 1. A probability of 0.9999999999999999 and one of exactly 1.0 are one rounding step apart, and once a cell reaches exactly 1.0, Bayes' rule can never move it again; in log-odds the same cell sits comfortably at 37 and one "free" reading moves it. Practical maps also clamp the log-odds to $[l_{\min}, l_{\max}]$ so that a cell seen occupied a thousand times can still be cleared by a few dozen free readings when the parked car drives away.
 
-The term $L(m_i \mid z_t, x_t)$ comes from an **inverse sensor model**: instead of asking "what measurement would this map produce?", it asks "what does this measurement say about this cell?"
+This representation is excellent for "where can I drive?" It is not the representation used in the Victoria Park project, because FastSLAM's classic factorization is easiest with a finite set of landmarks.
 
-For a 2D lidar beam:
+## A Runnable Occupancy Grid {#sec-mapping-occupancy-demo}
 
-- cells before the measured return become more likely free;
-- cells near the return become more likely occupied;
-- cells beyond the return are usually unchanged.
+Here is the whole pipeline on a small synthetic world: a walled yard with a few round "trees" and a shed, a robot driving a loop, and a 2D lidar with 2-degree beam spacing and an 8 m range. First the world and the sensor, ray-cast analytically against line segments and circles.
 
-This representation is excellent for "where can I drive?" It is not the representation used in the Victoria Park FastSLAM project because FastSLAM's classic factorization is easiest with a finite set of landmarks.
+```{python}
+#| label: occupancy-world
+#| echo: true
+WALLS = [  # line segments (x0, y0, x1, y1) in meters
+    (0.0, 0.0, 20.0, 0.0), (20.0, 0.0, 20.0, 14.0), (20.0, 14.0, 0.0, 14.0), (0.0, 14.0, 0.0, 0.0),
+    (13.0, 9.0, 16.0, 9.0), (16.0, 9.0, 16.0, 11.5), (16.0, 11.5, 13.0, 11.5), (13.0, 11.5, 13.0, 9.0),
+]
+TREES = [(5.0, 4.0, 0.3), (8.0, 10.0, 0.25), (11.0, 5.0, 0.35), (15.5, 4.0, 0.3), (4.0, 10.5, 0.2)]
+
+
+def cast_ray(origin, angle, max_range):
+    """Range from `origin` along `angle` to the first wall or trunk (inf if none)."""
+    d = np.array([math.cos(angle), math.sin(angle)])
+    best = math.inf
+    for x0, y0, x1, y1 in WALLS:
+        edge = np.array([x1 - x0, y1 - y0])
+        det = d[0] * (-edge[1]) - d[1] * (-edge[0])
+        if abs(det) < 1e-12:
+            continue
+        rel = np.array([x0, y0]) - origin
+        t = (rel[0] * (-edge[1]) - rel[1] * (-edge[0])) / det   # Cramer's rule
+        s = (d[0] * rel[1] - d[1] * rel[0]) / det
+        if t > 0.0 and 0.0 <= s <= 1.0:
+            best = min(best, t)
+    for cx, cy, radius in TREES:
+        rel = np.array([cx, cy]) - origin
+        along = rel @ d
+        disc = along**2 - (rel @ rel - radius**2)
+        if disc >= 0.0 and along > 0.0:
+            best = min(best, along - math.sqrt(disc))
+    return best if best <= max_range else math.inf
+
+
+def simulate_scan(pose, beam_angles, max_range, rng, range_std=0.03):
+    """Noisy ranges for one scan; inf means no return within max_range."""
+    origin = np.asarray(pose[:2], dtype=float)
+    ranges = np.array([cast_ray(origin, pose[2] + a, max_range) for a in beam_angles])
+    hit = np.isfinite(ranges)
+    ranges[hit] += rng.normal(0.0, range_std, np.count_nonzero(hit))
+    return ranges
+```
+
+Now the map. Each beam is traced through the grid with Bresenham's line algorithm, which visits exactly the cells a straight line passes through using only integer arithmetic [@Bresenham1965]. The inverse sensor model is the simplest useful one: $p = 0.3$ ("probably free") for every cell the beam crossed before the return, $p = 0.7$ ("probably occupied") for the cell holding the return. A beam with no return marks its cells free out to the maximum range: it saw nothing, so nothing was there. Each cell is updated at most once per scan, so the cells near the robot, which every beam crosses, do not collect a hundred votes from one glance.
+
+```{python}
+#| label: occupancy-grid-functions
+#| echo: true
+L_FREE = math.log(0.3 / 0.7)   # inverse sensor model, crossed cells
+L_OCC = math.log(0.7 / 0.3)    # inverse sensor model, cell with the return
+L_MIN, L_MAX = -2.0, 3.5       # clamp: p in [0.12, 0.97]
+
+
+def bresenham(i0, j0, i1, j1):
+    """Integer cells on the line from (i0, j0) to (i1, j1), both ends included."""
+    cells = []
+    di, dj = abs(i1 - i0), -abs(j1 - j0)
+    si, sj = (1 if i1 > i0 else -1), (1 if j1 > j0 else -1)
+    error = di + dj
+    while True:
+        cells.append((i0, j0))
+        if i0 == i1 and j0 == j1:
+            return cells
+        twice = 2 * error
+        if twice >= dj:
+            error += dj
+            i0 += si
+        if twice <= di:
+            error += di
+            j0 += sj
+
+
+class OccupancyGrid:
+    """Log-odds occupancy grid; cell (i, j) covers x in [i, i+1)*res, y in [j, j+1)*res."""
+
+    def __init__(self, origin_xy, size_xy, resolution):
+        self.origin = np.asarray(origin_xy, dtype=float)
+        self.resolution = float(resolution)
+        self.shape = tuple(int(math.ceil(s / resolution)) for s in size_xy)
+        self.log_odds = np.zeros(self.shape)  # prior p = 0.5
+
+    def cell(self, xy):
+        return tuple(int(v) for v in np.floor((np.asarray(xy) - self.origin) / self.resolution))
+
+    def inside(self, ij):
+        return 0 <= ij[0] < self.shape[0] and 0 <= ij[1] < self.shape[1]
+
+    def integrate_scan(self, pose, ranges, beam_angles, max_range):
+        """One log-odds update from one scan taken at `pose` (clamped to [L_MIN, L_MAX])."""
+        start = self.cell(pose[:2])
+        free, occupied = set(), set()
+        for r, angle in zip(ranges, beam_angles):
+            hit = np.isfinite(r)
+            reach = r if hit else max_range
+            end_xy = np.asarray(pose[:2]) + reach * np.array([math.cos(pose[2] + angle), math.sin(pose[2] + angle)])
+            ray = bresenham(*start, *self.cell(end_xy))
+            free.update(c for c in (ray[:-1] if hit else ray) if self.inside(c))
+            if hit and self.inside(ray[-1]):
+                occupied.add(ray[-1])
+        free -= occupied  # one vote per cell per scan; a return wins over a pass-through
+        for cells, delta in ((free, L_FREE), (occupied, L_OCC)):
+            if cells:
+                i, j = np.array(list(cells)).T
+                self.log_odds[i, j] = np.clip(self.log_odds[i, j] + delta, L_MIN, L_MAX)
+
+    def probability(self):
+        return 1.0 / (1.0 + np.exp(-self.log_odds))
+```
+
+Drive a loop around the yard and integrate one scan every half meter or so:
+
+```{python}
+#| label: occupancy-run
+#| echo: true
+rng = np.random.default_rng(7)
+beam_angles = np.deg2rad(np.arange(-180.0, 180.0, 2.0))
+max_range = 8.0
+waypoints = np.array([[2.5, 2.0], [17.5, 2.0], [17.5, 7.0], [10.0, 7.5], [10.0, 12.5], [2.0, 12.5], [2.0, 2.0]])
+
+poses = []
+for (xa, ya), (xb, yb) in zip(waypoints[:-1], waypoints[1:]):
+    heading = math.atan2(yb - ya, xb - xa)
+    for s in np.arange(0.0, math.hypot(xb - xa, yb - ya), 0.6):
+        poses.append(np.array([xa + s * math.cos(heading), ya + s * math.sin(heading), heading]))
+
+grid = OccupancyGrid(origin_xy=(-1.0, -1.0), size_xy=(22.0, 16.0), resolution=0.1)
+snapshots = {}
+for k, pose in enumerate(poses):
+    grid.integrate_scan(pose, simulate_scan(pose, beam_angles, max_range, rng), beam_angles, max_range)
+    if k == 2:
+        snapshots["after 3 scans"] = grid.probability().copy()
+snapshots[f"after {len(poses)} scans"] = grid.probability()
+
+p = grid.probability()
+print(f"{len(poses)} scans, grid {grid.shape[0]} x {grid.shape[1]} cells")
+print(f"cells believed occupied (p > 0.9): {np.count_nonzero(p > 0.9)}, free (p < 0.2): {np.count_nonzero(p < 0.2)}, "
+      f"never observed: {np.count_nonzero(grid.log_odds == 0.0)}")
+```
+
+```{python}
+#| label: fig-mapping-occupancy-demo
+#| fig-cap: "Occupancy grid on a synthetic yard. (a) The true walls, trunks, and shed with the robot's loop. (b) The probability map after three scans: grey is unknown, white free, black occupied. (c) After the whole loop the walls, the shed, and the five trunks stand out; cells behind obstacles that no beam reached stay unknown, and the clamped log-odds keep the map ready to change its mind."
+#| code-fold: true
+fig, axes = plt.subplots(1, 3, figsize=(13, 3.8), constrained_layout=True)
+extent = (grid.origin[0], grid.origin[0] + grid.shape[0] * grid.resolution,
+          grid.origin[1], grid.origin[1] + grid.shape[1] * grid.resolution)
+ax = axes[0]
+for x0, y0, x1, y1 in WALLS:
+    ax.plot([x0, x1], [y0, y1], color="black", lw=2)
+for cx, cy, radius in TREES:
+    ax.add_patch(plt.Circle((cx, cy), radius, color="tab:green"))
+path = np.array(poses)
+ax.plot(path[:, 0], path[:, 1], ".-", color="tab:blue", ms=3, lw=0.8, label="robot path")
+ax.set_title("(a) world and path")
+ax.legend(loc="upper right", fontsize="small")
+for ax, (title, prob), letter in zip(axes[1:], snapshots.items(), "bc"):
+    ax.imshow(1.0 - prob.T, origin="lower", extent=extent, cmap="gray", vmin=0.0, vmax=1.0)
+    ax.set_title(f"({letter}) {title}")
+for ax in axes:
+    ax.set_aspect("equal")
+    ax.set_xlim(extent[0], extent[1])
+    ax.set_ylim(extent[2], extent[3])
+    ax.set_xlabel("x [m]")
+axes[0].set_ylabel("y [m]")
+plt.show()
+```
+
+The argument for log-odds over raw probabilities is easy to check numerically. Feed one cell "occupied" readings until its probability, in double precision, stops changing, then give it one "free" reading:
+
+```{python}
+#| label: log-odds-saturation
+#| echo: true
+def update_probability(p, p_meas):
+    """Bayes' rule for a binary cell with prior 0.5, in probability form."""
+    odds = (p / (1.0 - p)) * (p_meas / (1.0 - p_meas))
+    return odds / (1.0 + odds)
+
+
+p_cell, l_cell, hits = np.float64(0.5), 0.0, 0
+while p_cell < 1.0:
+    p_cell = update_probability(p_cell, 0.7)
+    l_cell += L_OCC
+    hits += 1
+print(f"after {hits} hits:   p = {float(p_cell)!r} exactly, l = {l_cell:.2f}")
+with np.errstate(divide="ignore", invalid="ignore"):
+    p_after = update_probability(p_cell, 0.3)
+print(f"one free reading: p = {float(p_after)!r}, l = {l_cell + L_FREE:.2f}")
+```
+
+After 44 consistent readings the probability has rounded to exactly 1.0, the odds are infinite, and the next update produces `nan`: the cell is dead. The log-odds cell sits at about 37 and moves by the same 0.85 as always. A clamped map would have stopped at $l_{\max} = 3.5$ and could be cleared by a handful of free readings.
 
 ## Landmark Maps {#sec-mapping-landmark-maps}
 
-A landmark map stores discrete features:
+A landmark map stores discrete features, $\mathbf{m} = \{\boldsymbol{\ell}_1, \ldots, \boldsymbol{\ell}_N\}$. For the Victoria Park dataset the landmarks are tree trunks detected in 2D laser scans, each a point $\boldsymbol{\ell}_j = [\ell_{x,j}, \ell_{y,j}]^T$. A range-bearing observation of landmark $j$ from the sensor pose $\mathbf{x} = [x, y, \theta]^T$ is
 
 $$
-m = \{\ell_1, \ell_2, \ldots, \ell_N\}.
-$$
-
-For the Victoria Park dataset, the landmarks are tree trunks detected from 2D laser scans. A simple 2D landmark state is
-
-$$
-\ell_i =
-\begin{bmatrix}
-x_i \\
-y_i
-\end{bmatrix}.
-$$
-
-A range-bearing observation from robot pose $x_t = [x, y, \theta]^T$ is
-
-$$
-z =
+\mathbf{z} =
 \begin{bmatrix}
 r \\
 \beta
 \end{bmatrix}
 =
 \begin{bmatrix}
-\sqrt{(x_i - x)^2 + (y_i - y)^2} \\
-\operatorname{atan2}(y_i-y, x_i-x) - \theta
+\sqrt{(\ell_{x,j} - x)^2 + (\ell_{y,j} - y)^2} \\
+\operatorname{wrap}\!\left(\operatorname{atan2}(\ell_{y,j} - y,\; \ell_{x,j} - x) - \theta\right)
 \end{bmatrix}
-+ v.
++ \mathbf{v},
 $$
 
-The inverse observation initializes a landmark:
+and the inverse observation initializes a landmark:
 
 $$
-\ell =
+\boldsymbol{\ell} =
 \begin{bmatrix}
 x + r \cos(\theta + \beta) \\
 y + r \sin(\theta + \beta)
 \end{bmatrix}.
 $$
 
-That one equation is the bridge from laser features to a map.
+That one equation is the bridge from laser features to a map. It also hides two assumptions that the rest of this chapter makes explicit: that $(x, y)$ is the position of the *sensor*, not of some other point on the vehicle, and that $\beta$ is measured from the vehicle's forward axis, counter-clockwise.
 
 ## Victoria Park Dataset Primer {#sec-mapping-victoria-park-dataset}
 
-The course provides the original Victoria Park MATLAB data [@VictoriaParkDataset]. Download it into `data/victoria-park` from the repository root with `uv run python scripts/fetch_data.py victoria-park`. The important files are:
+The course provides the original Victoria Park MATLAB data, recorded by the Australian Centre for Field Robotics with a utility vehicle driven for 26 minutes through a park in Sydney [@VictoriaParkDataset; @GuivantNebot2001CompressedEKFSLAM]. Download it into `data/victoria-park` from the repository root with `uv run python scripts/fetch_data.py victoria-park`. The important files are:
 
 | File | Variables | Meaning |
 |---|---|---|
-| `aa3_lsr2.mat` | `LASER`, `TLsr` | 2D laser scans and laser timestamps |
-| `aa3_dr.mat` | `speed`, `steering`, `time` | vehicle dead-reckoning inputs |
-| `aa3_gpsx.mat` | `Lo_m`, `La_m`, `timeGps` | GPS reference data, with dropouts and jumps |
+| `aa3_lsr2.mat` | `LASER`, `TLsr` | 7249 laser scans of 361 beams, and their timestamps (ms) |
+| `aa3_dr.mat` | `speed`, `steering`, `time` | 40 Hz rear-wheel encoder speed (m/s), steering angle (rad), timestamps (ms) |
+| `aa3_gpsx.mat` | `Lo_m`, `La_m`, `timeGps` | GPS east and north (m) and timestamps, with dropouts and jumps |
+| `info.txt`, `car.bmp` | | the vehicle drawing and its dimensions |
+| `detectTreesI16.m`, `viewLsr.m` | | the original tree detector and scan viewer |
 
-The laser matrix has 361 columns. Each row is a scan. Ranges are stored as unsigned integers in centimeters. Values above roughly 8000 cm should be treated as no return.
+The loader below keeps both the raw laser words and the decoded ranges visible, so the unit and bit handling is explicit (@sec-mapping-laser-conventions explains the decoding).
 
 ```{python}
 #| label: victoria-park-loader
 #| echo: true
-from pathlib import Path
-
-import numpy as np
-from scipy.io import loadmat
-
-
-import os
+LASER_RANGE_MASK = 0x1FFF   # low 13 bits: range in cm; the top 3 bits are flags
+LASER_NO_RETURN_CM = 8000   # decoded values at or above this mean "no return"
 
 
 def find_victoria_park_root(root=None):
@@ -166,29 +347,28 @@ def find_victoria_park_root(root=None):
     )
 
 
+def decode_laser(raw):
+    """Raw LASER words -> ranges in meters, NaN where the scanner saw nothing."""
+    centimeters = (np.asarray(raw, dtype=np.int64) & LASER_RANGE_MASK).astype(float)
+    ranges = centimeters / 100.0
+    ranges[centimeters >= LASER_NO_RETURN_CM] = np.nan
+    return ranges
+
+
 def load_victoria_park_data(root=None):
-    """Load the local Victoria Park MATLAB files.
-
-    The original files use centimeters for laser ranges and milliseconds for
-    timestamps. This loader keeps both raw and converted values visible so
-    students can make their unit handling explicit.
-    """
+    """Load the local Victoria Park MATLAB files with explicit unit conversions."""
     root = find_victoria_park_root(root)
-
     laser_data = loadmat(root / "aa3_lsr2.mat", squeeze_me=True)
     odom_data = loadmat(root / "aa3_dr.mat", squeeze_me=True)
     gps_data = loadmat(root / "aa3_gpsx.mat", squeeze_me=True)
-
-    laser_cm = np.asarray(laser_data["LASER"], dtype=float)
-    laser_m = laser_cm / 100.0
-
     return {
-        "laser_m": laser_m,
+        "laser_raw": np.asarray(laser_data["LASER"]),
+        "laser_m": decode_laser(laser_data["LASER"]),
         "laser_time_s": np.asarray(laser_data["TLsr"], dtype=float) / 1000.0,
         "speed_mps": np.asarray(odom_data["speed"], dtype=float),
         "steering_rad": np.asarray(odom_data["steering"], dtype=float),
         "odom_time_s": np.asarray(odom_data["time"], dtype=float) / 1000.0,
-        "gps_xy_m": np.column_stack([gps_data["Lo_m"], gps_data["La_m"]]),
+        "gps_xy_m": np.column_stack([gps_data["Lo_m"], gps_data["La_m"]]).astype(float),
         "gps_time_s": np.asarray(gps_data["timeGps"], dtype=float) / 1000.0,
     }
 
@@ -200,100 +380,461 @@ except FileNotFoundError as error:
     print(error)
 
 if vp is not None:
-    print(vp["laser_m"].shape, vp["speed_mps"].shape, vp["gps_xy_m"].shape)
+    print("laser", vp["laser_m"].shape, "odometry", vp["speed_mps"].shape, "GPS", vp["gps_xy_m"].shape)
+    print(f"first scan {vp['laser_time_s'][0]:.3f} s, first odometry sample {vp['odom_time_s'][0]:.3f} s")
 ```
 
-The GPS is useful for sanity checking, plotting, and rough performance context. It should not be treated as perfect truth. The original papers explicitly note GPS degradation in the park environment; this is part of why the dataset is useful.
+The GPS is useful for sanity checks, plots, and evaluation after an SE(2) alignment, since its local frame is not the filter's. It is not truth: the receiver was failing, and the log has gaps of up to a minute and dozens of jumps. That is part of why the dataset is useful.
+
+## Laser Conventions {#sec-mapping-laser-conventions}
+
+**Decoding.** Each `LASER` entry is a 16-bit word. The low 13 bits are the range in centimeters, so the largest representable range is 8191 cm; the top three bits are flags. `info.txt` says only that ranges above 8000 cm mean "no reflection"; the original viewer, `viewLsr.m`, shows the mask, `bitand(2^13 - 1, LASER)`. Skipping the mask is harmless for almost every word, because flags are rare, and that is exactly what makes the bug hard to find.
+
+```{python}
+#| label: laser-decoding
+#| echo: true
+raw_examples = np.array([1234, 7999, 8000, 8191, 8192 + 1457], dtype=np.uint16)
+print("raw words:     ", raw_examples)
+print("decoded ranges:", decode_laser(raw_examples), "m")
+
+if vp is not None:
+    flagged = vp["laser_raw"] > LASER_RANGE_MASK
+    print(f"no-return beams: {np.mean(np.isnan(vp['laser_m'])):.1%} of all beams")
+    print(f"words with flag bits set: {np.count_nonzero(flagged)}; "
+          f"decoded: {np.sort(vp['laser_m'][flagged])} m")
+```
+
+Five words in the whole log carry a flag, and their low bits are ordinary ranges of 15 to 17 m. Without the mask they would decode as 96 to 99 m, beyond the no-return threshold, and five perfectly good returns would vanish. About five beams in six see nothing within 80 m: the park is mostly open grass, so a "no return" is information about space, not a fault.
+
+**Bearings.** Beam $k$ points at scanner angle $A_k = k \times 0.5°$, $k = 0, \ldots, 360$. The scanner is mounted at the front of the vehicle looking forward, with $A = 0$ pointing to the vehicle's **right**, $A = 90°$ straight ahead, and $A = 180°$ to the left. Navigation code wants bearings measured from the vehicle's forward axis, counter-clockwise positive, so
+
+$$
+\beta = A - \frac{\pi}{2}, \qquad \beta \in \left[-\frac{\pi}{2}, \frac{\pi}{2}\right].
+$$ {#eq-mapping-bearing}
+
+A trunk on the left of the vehicle has a positive bearing. The MATLAB tools plot $(R\cos A, R\sin A)$, which puts $x$ to the right and $y$ forward; that picture looks fine whether or not you know which way $A$ runs, and a mirrored scan looks just as plausible as a correct one. The data settles it: projecting tree detections along dead reckoning (@sec-mapping-vehicle-model) gives tight clusters in turns with @eq-mapping-bearing and smeared ones with the mirror image $\beta = \pi/2 - A$.
+
+```{python}
+#| label: fig-mapping-bearing-convention
+#| fig-cap: "Scanner angle $A$ and vehicle-frame bearing $\\beta = A - \\pi/2$, seen from above with the vehicle driving to the right. Beam 0 points to the vehicle's right, beam 180 straight ahead, beam 360 to the left. The trunk on the left is at $\\beta = +30°$."
+#| code-fold: true
+fig, ax = plt.subplots(figsize=(6.5, 4.6), constrained_layout=True)
+ax.add_patch(plt.Rectangle((-4.6, -1.0), 4.7, 2.0, fill=False, lw=1.5))
+ax.plot(0.0, 0.0, "s", color="black", ms=9)
+for A_deg, label in [(0, "beam 0: $A=0°$, $\\beta=-90°$ (right)"), (90, "beam 180: $A=90°$, $\\beta=0$ (ahead)"),
+                     (180, "beam 360: $A=180°$, $\\beta=+90°$ (left)"), (45, "$A=45°$, $\\beta=-45°$"), (135, "$A=135°$, $\\beta=+45°$")]:
+    beta = math.radians(A_deg) - math.pi / 2
+    end = 4.0 * np.array([math.cos(beta), math.sin(beta)])
+    ax.annotate("", xy=end, xytext=(0, 0), arrowprops=dict(arrowstyle="->", color="tab:blue"))
+    ax.text(*(1.08 * end), label, fontsize=8, ha="left" if A_deg <= 90 else "right", va="center")
+tree = 3.0 * np.array([math.cos(math.radians(30)), math.sin(math.radians(30))])
+ax.add_patch(plt.Circle(tree, 0.25, color="tab:green"))
+ax.plot([0, tree[0]], [0, tree[1]], ":", color="tab:green")
+ax.text(tree[0] + 0.3, tree[1] + 0.1, "trunk, $\\beta=+30°$", fontsize=8, color="tab:green")
+ax.annotate("", xy=(1.5, 0), xytext=(0.2, 0), arrowprops=dict(arrowstyle="-|>", color="black", lw=1.5))
+ax.text(-2.4, 0.0, "vehicle\n(drives to the right)", ha="center", va="center", fontsize=8)
+ax.set_xlim(-5.0, 6.5)
+ax.set_ylim(-4.6, 4.6)
+ax.set_aspect("equal")
+ax.axis("off")
+plt.show()
+```
 
 ## From Laser Scan to Tree Candidates {#sec-mapping-from-laser-scan}
 
-The original dataset includes a MATLAB tree detector. For the course project, students should implement their own Python feature extractor, but the original detector is a useful guide:
+The dataset ships with the original ACFR tree detector, `detectTreesI16.m`. It is worth reading because every threshold in it encodes something about trees and lasers:
 
-1. reject invalid or very long ranges;
-2. segment the scan at range discontinuities;
-3. keep compact segments whose apparent width is consistent with a tree trunk;
-4. represent each accepted segment as a range-bearing landmark observation.
+1. Keep returns closer than 75 m.
+2. Split the remaining returns into segments wherever consecutive ranges jump by more than 1.5 m **or** consecutive valid beams are more than 5 degrees apart (a run of missing returns means "something else, or nothing, was there").
+3. *Isolation:* drop both segments of any pair whose facing ends are within 3 m (checking the next three segments). Trunks stand alone; hedges, fences, and parked cars come in pieces.
+4. *Occlusion:* when two segments are less than 1 degree apart, drop the farther one, because its visible edge is the near object's edge and its width and center are wrong.
+5. Keep segments whose chord (first to last point) is shorter than 1 m, whose first point is farther than 1 m, and which stay about 3 degrees away from either edge of the scan.
+6. Estimate the diameter as $d = (\Delta A + 0.5°)\,(R_\text{first} + R_\text{last})/2$. The extra half degree is the beam width: a trunk hit by $n$ beams subtends roughly $n$ beam spacings, not $n - 1$, which matters a great deal for a trunk that only two or three beams hit.
+7. Keep only compact segments, $|R_\text{first} - R_\text{last}| < d/3$: a trunk is round, while a wall seen obliquely recedes along the segment.
+8. Report the bearing of the segment's middle and a range of the middle beam's range plus $d/2$: the laser hits the near surface, and the landmark is the center of the trunk.
 
-The following function is intentionally simple. It is a starting point, not a sacred text.
+The function below implements the core of that recipe (steps 1, 2, 5, 6, 7, and 8), in the vehicle frame of @eq-mapping-bearing. It leaves out the isolation and occlusion tests, which is one reason it finds more candidates than the original; @sec-mapping-exercises asks you to add them. It is a starting point, not a sacred text.
 
 ```{python}
 #| label: tree-feature-extraction
 #| echo: true
-def wrap_angle(angle):
-    """Wrap an angle to [-pi, pi)."""
-    return (angle + np.pi) % (2.0 * np.pi) - np.pi
+BEAM_STEP = math.radians(0.5)
 
 
 def extract_tree_landmarks(
     scan_m,
     pose_guess=(0.0, 0.0, 0.0),
     *,
-    angle_min=0.0,
-    angle_max=np.pi,
     max_range_m=75.0,
-    range_jump_m=1.0,
-    min_points=3,
-    max_diameter_m=1.5,
+    min_range_m=1.0,
+    range_jump_m=1.5,
+    max_gap_beams=10,
+    edge_beams=6,
+    min_points=2,
+    max_chord_m=1.0,
 ):
-    """Convert one 2D laser scan into range-bearing tree candidates.
+    """Convert one decoded 361-beam scan into range-bearing trunk candidates.
 
-    Returns observations in the scanner/vehicle frame. Each observation has
-    `range`, `bearing`, `diameter`, and an approximate `center_world` using
-    the supplied pose guess.
+    Bearings are in the vehicle frame (beta = A - pi/2, positive to the left).
+    Each candidate has `range` (to the trunk center), `bearing`, `diameter`,
+    `num_points`, and `center_world`, the center seen from `pose_guess`
+    (useful for plots only).
     """
     scan_m = np.asarray(scan_m, dtype=float)
-    angles = np.linspace(angle_min, angle_max, scan_m.size)
-
-    valid = np.isfinite(scan_m) & (scan_m > 0.5) & (scan_m < max_range_m)
-    valid_ranges = scan_m[valid]
-    valid_angles = angles[valid]
-
-    if valid_ranges.size < min_points:
+    beams = np.arange(scan_m.size)
+    with np.errstate(invalid="ignore"):
+        valid = np.isfinite(scan_m) & (scan_m < max_range_m)
+    index, ranges = beams[valid], scan_m[valid]
+    if index.size < min_points:
         return []
+    bearings = index * BEAM_STEP - math.pi / 2
 
-    breaks = np.flatnonzero(np.abs(np.diff(valid_ranges)) > range_jump_m) + 1
-    segments = np.split(np.arange(valid_ranges.size), breaks)
+    # Split at range jumps or at gaps of missing beams. Comparing beam indices
+    # (integers) avoids a floating-point coin flip for gaps of exactly 5 deg.
+    breaks = np.flatnonzero((np.abs(np.diff(ranges)) > range_jump_m) | (np.diff(index) > max_gap_beams)) + 1
 
     x, y, theta = pose_guess
     observations = []
-
-    for segment in segments:
+    for segment in np.split(np.arange(index.size), breaks):
         if segment.size < min_points:
             continue
-
-        r_seg = valid_ranges[segment]
-        a_seg = valid_angles[segment]
-        width = np.mean(r_seg) * (a_seg[-1] - a_seg[0])
-
-        if not (0.05 <= width <= max_diameter_m):
+        first, last = segment[0], segment[-1]
+        if index[first] < edge_beams or index[last] > beams[-1] - edge_beams:
+            continue  # touches the edge of the scan: the trunk may be cut off
+        r0, r1 = ranges[first], ranges[last]
+        b0, b1 = bearings[first], bearings[last]
+        chord = math.hypot(r1 * math.cos(b1) - r0 * math.cos(b0), r1 * math.sin(b1) - r0 * math.sin(b0))
+        if chord >= max_chord_m or r0 <= min_range_m:
             continue
-
-        bearing = wrap_angle(0.5 * (a_seg[0] + a_seg[-1]))
-        range_to_center = float(np.mean(r_seg) + 0.5 * width)
-
-        global_bearing = theta + bearing
-        center_world = np.array([
-            x + range_to_center * np.cos(global_bearing),
-            y + range_to_center * np.sin(global_bearing),
-        ])
-
+        diameter = (b1 - b0 + BEAM_STEP) * 0.5 * (r0 + r1)  # beam width included
+        if abs(r0 - r1) >= diameter / 3.0:
+            continue  # not compact: an oblique wall or a bush edge
+        middle = 0.5 * (first + last)
+        r_middle = 0.5 * (ranges[int(math.floor(middle))] + ranges[int(math.ceil(middle))])
+        range_to_center = float(r_middle + 0.5 * diameter)
+        bearing = float(0.5 * (b0 + b1))
         observations.append({
             "range": range_to_center,
             "bearing": bearing,
-            "diameter": float(width),
-            "center_world": center_world,
+            "diameter": float(diameter),
             "num_points": int(segment.size),
+            "center_world": np.array([x + range_to_center * math.cos(theta + bearing),
+                                      y + range_to_center * math.sin(theta + bearing)]),
         })
-
     return observations
 
 
 if vp is not None:
-    sample_features = extract_tree_landmarks(vp["laser_m"][0])
-    print(len(sample_features), sample_features[:2])
+    sample = extract_tree_landmarks(vp["laser_m"][1])
+    print(f"scan 1: {len(sample)} candidates")
+    for obs in sample[:4]:
+        print(f"  r = {obs['range']:6.2f} m, beta = {math.degrees(obs['bearing']):+6.1f} deg, "
+              f"d = {obs['diameter']:.2f} m, {obs['num_points']} beams")
 ```
 
-In a real implementation, students should tune the segmentation thresholds, reject tiny segments, reject suspiciously wide objects, and track how many new landmarks are born per distance traveled. A detector that creates thousands of false trees will make any SLAM backend look worse than it really is.
+```{python}
+#| label: fig-mapping-tree-detections
+#| fig-cap: "One of the busier Victoria Park scans (scan 760) in the vehicle frame, forward up the page and the vehicle's left on the left, with the extracted trunk candidates. Even here most beams return nothing: the park is mostly open grass."
+#| code-fold: true
+fig, ax = plt.subplots(figsize=(7, 5.2), constrained_layout=True)
+if vp is None:
+    ax.text(0.5, 0.5, "Victoria Park data not downloaded:\nuv run python scripts/fetch_data.py victoria-park",
+            ha="center", va="center", transform=ax.transAxes)
+    ax.axis("off")
+else:
+    scan_index = 760
+    scan = vp["laser_m"][scan_index]
+    beta = np.arange(scan.size) * BEAM_STEP - math.pi / 2
+    ok = np.isfinite(scan) & (scan < 75.0)
+    forward, left = scan[ok] * np.cos(beta[ok]), scan[ok] * np.sin(beta[ok])
+    ax.scatter(-left, forward, s=3, color="0.4", label="laser returns")
+    for obs in extract_tree_landmarks(scan):
+        fx, lx = obs["range"] * math.cos(obs["bearing"]), obs["range"] * math.sin(obs["bearing"])
+        ax.add_patch(plt.Circle((-lx, fx), max(obs["diameter"] / 2, 0.3), fill=False, color="tab:red", lw=1.2))
+    ax.plot([], [], "o", mfc="none", color="tab:red", label="trunk candidates")
+    ax.plot(0, 0, "^", color="black", ms=9, label="laser")
+    ax.set_xlabel("to the right of the vehicle [m]")
+    ax.set_ylabel("ahead of the vehicle [m]")
+    ax.set_title(f"scan {scan_index}")
+    ax.set_aspect("equal")
+    ax.legend(loc="upper right", fontsize="small")
+    ax.grid(alpha=0.3)
+plt.show()
+```
+
+In a real implementation you should tune the thresholds, look at detections across the whole log rather than one pretty scan, and track how many new landmarks are born per meter travelled. A detector that creates thousands of false trees will make any SLAM back end look worse than it really is.
+
+## The Victoria Park Vehicle {#sec-mapping-vehicle-model}
+
+A navigation solution is a statement about one point on the vehicle. On this vehicle the obvious point, the center of the rear axle where the bicycle model lives, is not where any sensor is. @fig-mapping-vehicle-geometry is a redrawing of `car.bmp` with the numbers from `info.txt`.
+
+```{python}
+#| label: fig-mapping-vehicle-geometry
+#| fig-cap: "Victoria Park vehicle geometry, seen from above with the vehicle driving to the right (vehicle frame: origin at the rear-axle center, $x$ forward, $y$ left). The speed encoder is on the rear-left wheel, $H = 0.76$ m left of the centerline; the laser and GPS antenna are $a = L + 0.95 = 3.78$ m ahead of the rear axle and $b = 0.50$ m to the left. In a left turn with steering angle $\\delta$ the vehicle rotates about the point $(0, L/\\tan\\delta)$ on the rear-axle line, so the encoder wheel rolls on a tighter circle than the axle center, and the laser moves sideways as well as forward."
+#| code-fold: true
+L_WB, H_ENC, A_LAS, B_LAS = 2.83, 0.76, 3.78, 0.50
+delta = math.radians(18.0)
+fig, ax = plt.subplots(figsize=(8.5, 5.0), constrained_layout=True)
+ax.add_patch(plt.Rectangle((-0.9, -0.95), 4.75, 1.9, fill=False, lw=1.5))
+
+
+def wheel(cx, cy, angle, color="0.3"):
+    c, s = math.cos(angle), math.sin(angle)
+    ends = np.array([[-0.35, 0.0], [0.35, 0.0]]) @ np.array([[c, s], [-s, c]]) + [cx, cy]
+    ax.plot(ends[:, 0], ends[:, 1], color=color, lw=6, solid_capstyle="butt")
+
+
+wheel(0.0, H_ENC, 0.0, color="tab:orange")
+wheel(0.0, -H_ENC, 0.0)
+wheel(L_WB, H_ENC, delta)
+wheel(L_WB, -H_ENC, delta)
+ax.plot([0, 0], [-1.3, 1.3], ":", color="0.5", lw=0.8)
+ax.plot([L_WB, L_WB], [-1.3, 1.3], ":", color="0.5", lw=0.8)
+ax.plot([-1.2, 4.4], [0, 0], ":", color="0.5", lw=0.8)
+ax.plot(0, 0, "o", color="black")
+ax.text(-0.15, -0.25, "rear-axle center", fontsize=8, ha="right")
+ax.plot(A_LAS, B_LAS, "s", color="tab:blue", ms=9)
+ax.text(A_LAS + 0.12, B_LAS + 0.15, "laser + GPS", fontsize=8, color="tab:blue")
+ax.text(0.1, H_ENC + 0.3, "encoder\n(rear-left wheel)", fontsize=8, color="tab:orange")
+
+
+def dimension(p, q, label, offset):
+    p, q = np.asarray(p, dtype=float), np.asarray(q, dtype=float)
+    ax.annotate("", xy=q, xytext=p, arrowprops=dict(arrowstyle="<->", lw=1))
+    ax.text(*(0.5 * (p + q) + offset), label, ha="center", va="center", fontsize=9)
+
+
+dimension((0, -1.55), (L_WB, -1.55), "$L = 2.83$ m", (0, -0.2))
+dimension((0, -2.1), (A_LAS, -2.1), "$a = 3.78$ m", (0, -0.2))
+dimension((4.25, 0), (4.25, B_LAS), "$b$", (0.22, 0))
+dimension((-1.1, 0), (-1.1, H_ENC), "$H$", (-0.22, 0))
+ax.annotate("", xy=(0.0, 2.55), xytext=(0.0, 1.45), arrowprops=dict(arrowstyle="-|>", color="0.4", ls="--"))
+ax.text(0.1, 2.3, f"to the instantaneous center of rotation, $L/\\tan\\delta$ = {L_WB / math.tan(delta):.1f} m", fontsize=8, color="0.3")
+ax.text(L_WB + 0.45, H_ENC + 0.25, "$\\delta$", fontsize=10)
+ax.annotate("", xy=(1.3, 0), xytext=(0.05, 0), arrowprops=dict(arrowstyle="-|>", color="tab:red", lw=1.5))
+ax.text(0.7, 0.12, "$v_c$", color="tab:red", fontsize=10)
+ax.set_xlim(-1.8, 5.2)
+ax.set_ylim(-2.6, 2.8)
+ax.set_aspect("equal")
+ax.axis("off")
+plt.show()
+```
+
+**The encoder sees one wheel.** With front-wheel steering angle $\delta$ (positive left), the vehicle rotates about a point on the rear-axle line at distance $R = L/\tan\delta$ from the axle center, with yaw rate $\omega = v_c/R = (v_c/L)\tan\delta$, where $v_c$ is the speed of the axle center. The left rear wheel is $H$ closer to that point, so it rolls at $v_e = \omega(R - H) = v_c\,(1 - H\tan\delta/L)$. Inverting,
+
+$$
+v_c = \frac{v_e}{1 - \dfrac{H}{L}\tan\delta}.
+$$ {#eq-mapping-encoder-correction}
+
+At $\delta = 20°$ the encoder reads 10% slow, and in right turns it reads fast. A 10% speed error during every left turn is the kind of thing that turns a loop into a spiral.
+
+**The laser is on a lever arm.** The laser sits at $(a, b)$ in the vehicle frame, so its world position is $\mathbf{p}_L = \mathbf{p}_r + \mathbf{C}(\theta)\,[a,\; b]^T$, where $\mathbf{p}_r$ is the rear-axle center and $\mathbf{C}(\theta)$ the 2D rotation by the heading. Differentiating, with $\dot{\mathbf{p}}_r = v_c[\cos\theta, \sin\theta]^T$ and $\dot\theta = \omega$, gives Guivant and Nebot's laser-centered model [@GuivantNebot2001CompressedEKFSLAM]:
+
+$$
+\begin{aligned}
+\dot x_L &= v_c\cos\theta - \omega\,(a\sin\theta + b\cos\theta),\\
+\dot y_L &= v_c\sin\theta + \omega\,(a\cos\theta - b\sin\theta),\\
+\dot\theta &= \omega = \frac{v_c}{L}\tan\delta.
+\end{aligned}
+$$ {#eq-mapping-laser-kinematics}
+
+The extra terms are $\omega\,\mathbf{C}(\theta)[-b,\; a]^T$, the velocity of a point on a rotating body. In a brisk turn ($\omega = 0.3$ rad/s) the laser moves sideways at more than 1 m/s while the rear axle moves only forward. Ship navigators know this effect well: a GNSS antenna mounted far forward on the bow swings sideways when the ship turns about its pivot point, and a careless track plot shows the bow "skidding".
+
+Writing the filter state at the laser, $\mathbf{x} = [x_L, y_L, \theta]^T$, keeps the observation model a plain range-bearing model from the sensor, and the GPS antenna is at the laser too, so the estimate is directly comparable to GPS. The exact discrete version for controls held constant over a step is simple: move back along the lever arm to the rear axle, follow the bicycle arc, move out again.
+
+```{python}
+#| label: vehicle-model-code
+#| echo: true
+def encoder_to_centerline_speed(v_e, steering, H=0.76, L=2.83):
+    """Rear-left encoder speed -> rear-axle centerline speed."""
+    return np.asarray(v_e) / (1.0 - (H / L) * np.tan(steering))
+
+
+def laser_pose_from_rear_axle(rear_pose, a=3.78, b=0.50):
+    """[x, y, theta] of the rear axle -> [x_L, y_L, theta] of the laser. Works on (..., 3)."""
+    pose = np.array(rear_pose, dtype=float, copy=True)
+    c, s = np.cos(pose[..., 2]), np.sin(pose[..., 2])
+    pose[..., 0] += a * c - b * s
+    pose[..., 1] += a * s + b * c
+    return pose
+
+
+def rear_axle_pose_from_laser(laser_pose, a=3.78, b=0.50):
+    pose = np.array(laser_pose, dtype=float, copy=True)
+    c, s = np.cos(pose[..., 2]), np.sin(pose[..., 2])
+    pose[..., 0] -= a * c - b * s
+    pose[..., 1] -= a * s + b * c
+    return pose
+
+
+def predict_rear_axle(pose, v_c, steering, dt, L=2.83):
+    """Exact bicycle arc for constant controls (chord at the mid-step heading)."""
+    dtheta = v_c / L * math.tan(steering) * dt
+    chord = v_c * dt * np.sinc(dtheta / (2.0 * math.pi))   # np.sinc(x) = sin(pi x)/(pi x)
+    mid = pose[2] + 0.5 * dtheta
+    return np.array([pose[0] + chord * math.cos(mid), pose[1] + chord * math.sin(mid), pose[2] + dtheta])
+
+
+def predict_laser_pose(laser_pose, v_c, steering, dt):
+    """Exact laser-pose propagation: lever arm in, bicycle arc, lever arm out."""
+    rear = rear_axle_pose_from_laser(laser_pose)
+    return laser_pose_from_rear_axle(predict_rear_axle(rear, v_c, steering, dt))
+
+
+def laser_pose_rates(pose, v_c, steering, a=3.78, b=0.50, L=2.83):
+    """Guivant and Nebot's laser-centered kinematics: [x_L_dot, y_L_dot, theta_dot]."""
+    omega = v_c / L * math.tan(steering)
+    c, s = math.cos(pose[2]), math.sin(pose[2])
+    return np.array([v_c * c - omega * (a * s + b * c), v_c * s + omega * (a * c - b * s), omega])
+
+
+# Check: two seconds of a 25-degree left turn at 5 m/s, exact vs. fine Euler.
+start = np.array([0.0, 0.0, 0.3])
+v_c = encoder_to_centerline_speed(5.0, math.radians(25.0))
+exact = predict_laser_pose(start, v_c, math.radians(25.0), 2.0)
+euler = start.copy()
+for _ in range(20000):
+    euler = euler + laser_pose_rates(euler, v_c, math.radians(25.0)) * 1e-4
+print(f"centerline speed {v_c:.3f} m/s from an encoder reading of 5.000 m/s")
+print("exact:", np.round(exact, 4), " Euler:", np.round(euler, 4))
+print(f"laser speed {np.hypot(*laser_pose_rates(start, v_c, math.radians(25.0))[:2]):.2f} m/s "
+      f"vs rear-axle speed {v_c:.2f} m/s")
+```
+
+**Checking against the data.** Dead reckoning from the odometry alone, compared with GPS after a rigid SE(2) alignment (Kabsch, no scale), shows what each correction is worth. The odometry is integrated sample by sample, each sample held over its 25 ms interval; poses at laser or GPS timestamps come from interpolating that 40 Hz track, which is the event-driven time synchronization the project asks for (@sec-project2-time-synchronization) in its simplest form.
+
+```{python}
+#| label: dead-reckoning-check
+#| echo: true
+def dead_reckon(t, v_e, steering, *, encoder_correction=True, lever_arm=True, L=2.83):
+    """Odometry-only track at the odometry timestamps, starting at (0, 0, 0).
+
+    Returns laser poses (or rear-axle poses without the lever arm) with the
+    heading unwrapped, ready for interpolation.
+    """
+    v = encoder_to_centerline_speed(v_e, steering) if encoder_correction else np.asarray(v_e)
+    dt = np.diff(t)
+    dtheta = v[:-1] / L * np.tan(steering[:-1]) * dt
+    theta = np.concatenate([[0.0], np.cumsum(dtheta)])
+    chord = v[:-1] * dt * np.sinc(dtheta / (2.0 * math.pi))
+    mid = theta[:-1] + 0.5 * dtheta
+    rear = np.column_stack([np.concatenate([[0.0], np.cumsum(chord * np.cos(mid))]),
+                            np.concatenate([[0.0], np.cumsum(chord * np.sin(mid))]), theta])
+    return laser_pose_from_rear_axle(rear) if lever_arm else rear
+
+
+def align_se2(source, target):
+    """Rotation C and translation t minimizing sum ||target - (C source + t)||^2."""
+    mu_s, mu_t = source.mean(axis=0), target.mean(axis=0)
+    U, _, Vt = np.linalg.svd((source - mu_s).T @ (target - mu_t))
+    C = Vt.T @ np.diag([1.0, np.sign(np.linalg.det(Vt.T @ U.T))]) @ U.T
+    return C, mu_t - C @ mu_s
+
+
+def aligned_rmse(track_t, track_xy, gps_t, gps_xy):
+    est = np.column_stack([np.interp(gps_t, track_t, track_xy[:, 0]), np.interp(gps_t, track_t, track_xy[:, 1])])
+    C, t = align_se2(est, gps_xy)
+    return float(np.sqrt(np.mean(np.sum((gps_xy - (est @ C.T + t)) ** 2, axis=1))))
+
+
+if vp is not None:
+    t_odo = vp["odom_time_s"]
+    window = (vp["gps_time_s"] >= t_odo[0]) & (vp["gps_time_s"] <= t_odo[0] + 200.0)
+    gps_t, gps_xy = vp["gps_time_s"][window], vp["gps_xy_m"][window]
+    print(f"dead reckoning vs {np.count_nonzero(window)} GPS fixes in the first 200 s (SE(2)-aligned RMSE):")
+    for encoder_correction in (False, True):
+        for lever_arm in (False, True):
+            track = dead_reckon(t_odo, vp["speed_mps"], vp["steering_rad"],
+                                encoder_correction=encoder_correction, lever_arm=lever_arm)
+            rmse = aligned_rmse(t_odo, track[:, :2], gps_t, gps_xy)
+            print(f"  encoder correction {'on ' if encoder_correction else 'off'}, "
+                  f"lever arm {'on ' if lever_arm else 'off'}: {rmse:5.1f} m")
+```
+
+The encoder correction halves the error, from about 28 m to about 13 m. The lever arm barely moves the GPS number, which is not evidence that it does not matter: GPS noise and the residual heading drift are much larger than a half-meter offset. To see the lever arm, look where it acts, in the turns, and use the trees themselves as the reference. If the poses and the sensor model are right, a tree seen from many poses projects to the same world point every time. The next cell projects detections along dead reckoning through the sharpest turns in the log and measures, for each detection, the distance to the nearest detection from a scan at least 2 s away.
+
+```{python}
+#| label: convention-check
+#| echo: true
+def map_sharpness(track, laser_t, scans, t_odo, *, mirror=False, window=60, num_windows=12):
+    """Median distance between re-observed trees (m) over the sharpest turns; lower is sharper."""
+    theta_at_scan = np.interp(laser_t, t_odo, track[:, 2])
+    starts = np.arange(20, laser_t.size - window, window)
+    turns = np.abs(theta_at_scan[starts + window] - theta_at_scan[starts])
+    medians = []
+    for s in starts[np.argsort(turns)[-num_windows:]]:
+        points, times = [], []
+        for k in range(s, s + window):
+            pose = [np.interp(laser_t[k], t_odo, track[:, i]) for i in range(3)]
+            for obs in extract_tree_landmarks(scans[k]):
+                bearing = -obs["bearing"] if mirror else obs["bearing"]
+                points.append([pose[0] + obs["range"] * math.cos(pose[2] + bearing),
+                               pose[1] + obs["range"] * math.sin(pose[2] + bearing)])
+                times.append(laser_t[k])
+        points, times = np.array(points), np.array(times)
+        tree = cKDTree(points)
+        nearest = []
+        for p, t in zip(points, times):
+            others = [j for j in tree.query_ball_point(p, 3.0) if abs(times[j] - t) > 2.0]
+            if others:
+                nearest.append(np.min(np.linalg.norm(points[others] - p, axis=1)))
+        medians.append(np.median(nearest))
+    return float(np.mean(medians))
+
+
+if vp is not None:
+    t_odo, laser_t, scans = vp["odom_time_s"], vp["laser_time_s"], vp["laser_m"]
+    rear = dead_reckon(t_odo, vp["speed_mps"], vp["steering_rad"], lever_arm=False)
+    cases = {
+        "beta = A - pi/2, laser at (3.78, +0.50)": (laser_pose_from_rear_axle(rear), False),
+        "beta = pi/2 - A (mirrored scan)": (laser_pose_from_rear_axle(rear), True),
+        "laser at (3.78, -0.50) (wrong side)": (laser_pose_from_rear_axle(rear, b=-0.50), False),
+        "laser at (0.95, +0.50) (drawing's a)": (laser_pose_from_rear_axle(rear, a=0.95), False),
+        "no lever arm (laser on the rear axle)": (rear, False),
+    }
+    for name, (track, mirror) in cases.items():
+        print(f"{name:42s} {map_sharpness(track, laser_t, scans, t_odo, mirror=mirror):.2f} m")
+```
+
+The convention of @eq-mapping-bearing with the laser at $(3.78, +0.50)$ m gives the sharpest map; a mirrored scan smears trees over meters, and putting the laser on the wrong side, at the drawing's 0.95 m, or on the rear axle all blur the turns. The drawing is read as a top view with the front on the left, which puts both the encoder wheel and the laser on the vehicle's left side, and the encoder correction (which only improves dead reckoning with the encoder on the left) and this test both agree. Conventions are hypotheses, and the data can test them.
+
+## Occupancy Grid From Real Scans {#sec-mapping-occupancy-real-scans}
+
+The occupancy grid of @sec-mapping-occupancy-demo works on Victoria Park too, given poses. Over a short stretch dead reckoning is good enough, so here are about 25 seconds of scans placed along the corrected dead-reckoning track. Beams with no return are skipped rather than marked free out to 80 m: in a park, "nothing within 80 m" along one beam would also erase every trunk the neighboring beams just found behind a gap.
+
+```{python}
+#| label: fig-mapping-occupancy-victoria-park
+#| fig-cap: "Occupancy grid built from 120 Victoria Park scans (about 25 s) placed along the corrected dead-reckoning track, 0.25 m cells, returns closer than 30 m. Trunks show up as small dark blobs with a light shadow of free space in front of them; the vehicle path is in blue."
+#| code-fold: true
+fig, ax = plt.subplots(figsize=(7.5, 6.0), constrained_layout=True)
+if vp is None:
+    ax.text(0.5, 0.5, "Victoria Park data not downloaded:\nuv run python scripts/fetch_data.py victoria-park",
+            ha="center", va="center", transform=ax.transAxes)
+    ax.axis("off")
+else:
+    t_odo, laser_t = vp["odom_time_s"], vp["laser_time_s"]
+    track = dead_reckon(t_odo, vp["speed_mps"], vp["steering_rad"])
+    scan_ids = np.arange(400, 520)
+    poses_vp = np.array([[np.interp(laser_t[k], t_odo, track[:, i]) for i in range(3)] for k in scan_ids])
+    vp_angles = np.arange(361) * BEAM_STEP - math.pi / 2
+    lo = poses_vp[:, :2].min(axis=0) - 32.0
+    vp_grid = OccupancyGrid(origin_xy=lo, size_xy=poses_vp[:, :2].max(axis=0) + 32.0 - lo, resolution=0.25)
+    for k, pose in zip(scan_ids, poses_vp):
+        ranges = vp["laser_m"][k]
+        keep = np.isfinite(ranges) & (ranges < 30.0)
+        vp_grid.integrate_scan(pose, ranges[keep], vp_angles[keep], 30.0)
+    extent = (vp_grid.origin[0], vp_grid.origin[0] + vp_grid.shape[0] * vp_grid.resolution,
+              vp_grid.origin[1], vp_grid.origin[1] + vp_grid.shape[1] * vp_grid.resolution)
+    ax.imshow(1.0 - vp_grid.probability().T, origin="lower", extent=extent, cmap="gray", vmin=0, vmax=1)
+    ax.plot(poses_vp[:, 0], poses_vp[:, 1], color="tab:blue", lw=1.5, label="laser track (dead reckoning)")
+    ax.set_xlabel("x [m] (dead-reckoning frame)")
+    ax.set_ylabel("y [m]")
+    ax.legend(loc="upper right", fontsize="small")
+    ax.set_aspect("equal")
+plt.show()
+```
+
+The grid shows why the project uses landmarks instead. A trunk is a handful of cells among tens of thousands, the grid has no notion that the dark blob at one place is the same object it saw ten seconds ago, and a pose error simply paints the trunk twice. A landmark map turns that blob into one estimated point with a covariance, which is what a filter can correct.
 
 ## Landmark Map Quality Checks {#sec-mapping-landmark-map-quality}
 
@@ -304,7 +845,7 @@ A useful landmark map should pass several practical checks:
 - **Bounded growth:** the number of landmarks should grow with explored area, not with every scan.
 - **Measurement uncertainty:** tree observations should carry a covariance or at least a defensible noise model.
 
-For Victoria Park, the map is not judged by photorealism. It is judged by whether the tree landmark structure and vehicle path are mutually consistent.
+For Victoria Park, the map is not judged by photorealism. It is judged by whether the tree landmark structure and vehicle path are mutually consistent, which is exactly what the sharpness test of @sec-mapping-vehicle-model measures.
 
 ## Occupancy Grids vs. Landmark Maps {#sec-mapping-occupancy-grids-landmark}
 
@@ -320,13 +861,18 @@ Occupancy grids answer "where is space free?" Landmark maps answer "where are re
 
 ## Summary {#sec-mapping-summary}
 
-Mapping is not one algorithm. It is the design choice that decides what the robot remembers about the world.
+Mapping is not one algorithm. It is the design choice that decides what the robot remembers about the world. Occupancy grids store evidence per cell with an additive log-odds update and an inverse sensor model; landmark maps store a few features with uncertainty. For Victoria Park, the path from raw data to landmarks runs through three pieces of unglamorous engineering: decoding the laser (13-bit ranges, a no-return threshold, bearings $\beta = A - \pi/2$), modeling the vehicle (an encoder on one wheel and a laser on a 3.8 m lever arm), and extracting trunks with thresholds that each encode a physical fact. @sec-slam-association decides which trunk is which, and @sec-slam combines the landmark map with the unknown vehicle trajectory.
 
-For this module:
+## Exercises {#sec-mapping-exercises}
 
-1. occupancy grids provide context for range-sensor mapping;
-2. landmark maps provide the representation used by FastSLAM;
-3. Victoria Park turns raw laser scans into tree observations;
-4. data association determines whether those observations improve the map or corrupt it.
+1. **The encoder correction.** (a) Derive @eq-mapping-encoder-correction from the instantaneous center of rotation, and repeat the derivation for an encoder on the rear-*right* wheel. (b) For $H = 0.76$ m and $L = 2.83$ m, compute the speed error of the uncorrected encoder at $\delta = \pm 10°$, $\pm 20°$, and $\pm 30°$. (c) A vehicle drives a full circle at constant $\delta = 15°$ to the left. Using the uncorrected encoder speed, by how much is the dead-reckoned circle's radius wrong, and does the circle still close?
 
-@sec-slam combines the landmark map with the unknown vehicle trajectory.
+2. **Lever-arm kinematics.** (a) Derive @eq-mapping-laser-kinematics by differentiating $\mathbf{p}_L = \mathbf{p}_r + \mathbf{C}(\theta)[a, b]^T$. (b) Show that the laser's speed is $\sqrt{(v_c - \omega b)^2 + (\omega a)^2}$ and find the laser's velocity direction relative to the vehicle's heading at $v_c = 5$ m/s, $\delta = 25°$. (c) A survey ship turns at 30 degrees per minute about a pivot point 20 m behind its bow-mounted GNSS antenna. What sideways velocity does the antenna report, and what goes wrong if a dead-reckoning plot treats the antenna velocity as the ship's velocity through the water?
+
+3. **Log-odds bookkeeping.** (a) Show that @eq-mapping-log-odds-update is the binary Bayes filter, and that the final log-odds do not depend on the order of the measurements. (b) With the inverse sensor model of @sec-mapping-occupancy-demo, how many consecutive "occupied" readings drive a cell to exactly 1.0 in double-precision probability form? (c) With clamping at $l_{\max} = 3.5$, how many "free" readings bring a long-occupied cell back below $p = 0.5$, and how many would it take after 1000 occupied readings without clamping?
+
+4. **Complete the extractor.** Add the isolation test (step 3) and the occlusion test (step 4) of `detectTreesI16.m` to `extract_tree_landmarks`. On scans 1000 to 1999, report the detections per scan before and after, and rerun the `map_sharpness` check. Which test removes more candidates, and which one sharpens the map more?
+
+5. **Thresholds on a grid.** The MATLAB detector splits where `diff(A1) > 10*pi/360`, with `A1` computed as `[0:360]*pi/360`. Show numerically that for gaps of exactly 10 beams the comparison comes out differently at different beam indices. Explain why, and why comparing integer beam indices (as the chapter's extractor does) or putting the threshold between beam multiples is the robust fix. Where else in navigation code does a threshold land exactly on a quantization step?
+
+6. **Calibrating a time offset.** Real systems rarely timestamp every sensor at the moment of measurement. Shift the laser timestamps by $\Delta t \in \{-150, -100, \ldots, +150\}$ ms before interpolating the dead-reckoning poses, and plot the `map_sharpness` value against $\Delta t$. Is the minimum at zero? Estimate the laser-to-odometry latency and its uncertainty, and explain why turns, not straight stretches, carry the information.
