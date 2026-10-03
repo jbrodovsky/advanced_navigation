@@ -1,4 +1,20 @@
-"""Observation-model helpers and starter interfaces."""
+"""Part B: the AprilTag perception and measurement model.
+
+The three functions here are Part B deliverables. They raise
+``NotImplementedError`` until you write them; the tests that depend on them
+skip with a message until then. Keep the signatures: Part C, ``run_all`` and
+the tests call them exactly as written.
+
+Conventions (see the Project 1 handout and the PnP chapter):
+
+* World frame ``w``: the tag mat, ``x`` down the mat, ``y`` to the right,
+  ``z`` up. The origin is the top-left corner of tag 0 (row 0, column 0).
+* Corner order in the packets: ``p1`` bottom-left, ``p2`` bottom-right,
+  ``p3`` top-right, ``p4`` top-left, where "top" and "bottom" refer to the mat
+  drawing (bottom corners have the larger ``x``).
+* Attitude: Z-X-Y roll, pitch, yaw, ``C_world_body = Rz(yaw) @ Rx(roll) @ Ry(pitch)``
+  (``utils.rpy_to_rotation_matrix`` / ``utils.rotation_matrix_to_rpy``).
+"""
 
 from __future__ import annotations
 
@@ -6,69 +22,107 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from .config import NORMAL_GAP_M, TAG_IDS, TAG_SIZE_M, WIDE_GAP_M
-from .types import PoseObservation, TruthSample
-from .utils import wrap_angles
-
-
-def _column_origin_m(column_index: int) -> float:
-    position_m = 0.0
-    for col in range(column_index):
-        position_m += TAG_SIZE_M
-        position_m += WIDE_GAP_M if col in {2, 5} else NORMAL_GAP_M
-    return position_m
+from .types import DronePacket, PoseObservation, TruthSample
 
 
 def build_apriltag_corner_map() -> dict[int, np.ndarray]:
-    """Construct the deterministic world-frame corner map for the AprilTag mat."""
-    tag_map: dict[int, np.ndarray] = {}
-    for row_idx in range(TAG_IDS.shape[0]):
-        x0 = row_idx * (TAG_SIZE_M + NORMAL_GAP_M)
-        x1 = x0 + TAG_SIZE_M
-        for col_idx in range(TAG_IDS.shape[1]):
-            y0 = _column_origin_m(col_idx)
-            y1 = y0 + TAG_SIZE_M
-            tag_map[int(TAG_IDS[row_idx, col_idx])] = np.array(
-                [
-                    [x1, y0, 0.0],
-                    [x1, y1, 0.0],
-                    [x0, y1, 0.0],
-                    [x0, y0, 0.0],
-                ],
-                dtype=np.float64,
-            )
-    return tag_map
+    """Return the world-frame corners of every tag on the mat.
 
+    Returns
+    -------
+    dict[int, np.ndarray]
+        Maps each tag ID (0-107) to a ``(4, 3)`` array of corner coordinates
+        in metres, rows in the packet order ``p1, p2, p3, p4`` (bottom-left,
+        bottom-right, top-right, top-left) and ``z = 0``.
 
-def estimate_pose(packet, camera_matrix, dist_coeffs, tag_map, T_camera_body):
-    """Starter interface for the AprilTag PnP solver."""
+    Notes
+    -----
+    The mat is a 12 x 9 grid (``config.TAG_IDS``; row index along +x, column
+    index along +y). Each tag is ``config.TAG_SIZE_M`` on a side. Neighbouring
+    tags are separated by ``config.NORMAL_GAP_M``, except between columns 3-4
+    and 6-7 (one-based), where the gap is ``config.WIDE_GAP_M``.
+    """
     raise NotImplementedError(
-        "students should implement estimate_pose(...) using build_apriltag_corner_map(), "
-        "OpenCV solvePnP, and the provided camera/body transform."
+        "Part B: implement build_apriltag_corner_map() from config.TAG_IDS, "
+        "TAG_SIZE_M, NORMAL_GAP_M and WIDE_GAP_M (see the Part B handout)."
+    )
+
+
+def estimate_pose(
+    packet: DronePacket,
+    camera_matrix: np.ndarray,
+    dist_coeffs: np.ndarray,
+    tag_map: dict[int, np.ndarray],
+    T_camera_body: np.ndarray,
+) -> PoseObservation | None:
+    """Estimate the body pose in the world frame from one packet's detections.
+
+    Parameters
+    ----------
+    packet:
+        A :class:`~drone_pipeline.types.DronePacket`. Read ``packet.id`` and the
+        corner arrays ``packet.p1`` .. ``packet.p4`` (each ``(2, n_tags)``,
+        rows ``u`` and ``v``), plus ``packet.t`` for the timestamp.
+    camera_matrix:
+        3 x 3 intrinsic matrix ``K`` (``DroneParameters.camera_matrix``).
+    dist_coeffs:
+        Distortion coefficients handed to ``cv2.solvePnP``. The corner
+        detections are already undistorted, so pass ``np.zeros(5)``; the
+        Part B handout asks you to check this claim via reprojection error.
+    tag_map:
+        Output of :func:`build_apriltag_corner_map`.
+    T_camera_body:
+        4 x 4 transform mapping body coordinates into camera coordinates
+        (``DroneParameters.T_camera_body``). With OpenCV's world-to-camera
+        result ``T_camera_world``, the body pose is
+        ``T_world_body = inv(T_camera_world) @ T_camera_body``.
+
+    Returns
+    -------
+    PoseObservation or None
+        ``position`` (body origin in the world frame, m), ``rpy`` (Z-X-Y,
+        rad), the RMS reprojection error in pixels, and the number of corner
+        correspondences used. Return ``None`` when fewer than 4
+        correspondences are available (for example, no tag in view) or when
+        the solver fails.
+    """
+    raise NotImplementedError(
+        "Part B: implement estimate_pose(...) with build_apriltag_corner_map(), "
+        "cv2.solvePnP (zero distortion), and T_camera_body (see the Part B handout)."
     )
 
 
 def estimate_measurement_covariance(
-    observations: Sequence[PoseObservation | dict[str, object]],
+    observations: Sequence[PoseObservation],
     truth_samples: Sequence[TruthSample],
 ) -> np.ndarray:
-    """Estimate a 6x6 covariance matrix from pose residuals."""
-    if len(observations) != len(truth_samples):
-        raise ValueError("observations and truth_samples must have the same length")
-    if len(observations) < 2:
-        raise ValueError("at least two matched samples are required to estimate covariance")
+    """Estimate the 6 x 6 PnP measurement covariance from truth residuals.
 
-    residual_rows = []
-    for observation, truth in zip(observations, truth_samples, strict=True):
-        if isinstance(observation, dict):
-            position = np.asarray(observation["position"], dtype=np.float64)
-            rpy = np.asarray(observation["rpy"], dtype=np.float64)
-        else:
-            position = np.asarray(observation.position, dtype=np.float64)
-            rpy = np.asarray(observation.rpy, dtype=np.float64)
-        residual = np.concatenate([position - truth.position, wrap_angles(rpy - truth.rpy)])
-        residual_rows.append(residual)
+    Parameters
+    ----------
+    observations:
+        PnP pose observations.
+    truth_samples:
+        Vicon truth at the same timestamps, one per observation (use
+        :func:`~drone_pipeline.datasets.interpolate_vicon_truth` with the
+        observation times). Drop pairs whose truth sample has
+        ``valid == False`` before calling.
 
-    residual_matrix = np.vstack(residual_rows)
-    return np.cov(residual_matrix, rowvar=False)
+    Returns
+    -------
+    np.ndarray
+        The sample covariance (about the mean) of the residuals
+        ``z_pnp - z_truth`` with ``z = [px, py, pz, roll, pitch, yaw]``; angle
+        residuals wrapped into [-pi, pi). Report the residual mean (the bias)
+        separately: a covariance estimate says nothing about bias.
 
+    Raises
+    ------
+    ValueError
+        If the two sequences differ in length, contain fewer than two pairs,
+        or contain an invalid truth sample.
+    """
+    raise NotImplementedError(
+        "Part B: implement estimate_measurement_covariance(...) from wrapped "
+        "pose residuals against Vicon (see the Part B handout)."
+    )

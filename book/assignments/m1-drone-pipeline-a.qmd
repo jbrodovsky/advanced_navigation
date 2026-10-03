@@ -1,142 +1,168 @@
 # Visual-Inertial Navigation Part A: IMU Dead Reckoning {#sec-project1a}
 
-![IMU mounting reference](../images/imu.png)
+![The drone body frame: $z$ up, gyro rates and specific force resolved on body axes.](../images/imu.png){#fig-project1a-imu width=60%}
 
 ## Overview {#sec-project1a-overview}
 
-Part A focuses on inertial forward propagation. You will use the `drpy` and `acc` signals in the drone packets to build a 15-state flat-earth mechanization model and study how fast dead reckoning drifts away from truth.
+Part A builds the inertial backbone of the pipeline. You will characterize the drone's IMU, use the `omg` and `acc` signals in the packets to drive a 15-state flat-earth mechanization, propagate the state's covariance alongside it, and measure how quickly pure dead reckoning walks away from truth.
 
-This part is intentionally incomplete as a navigation system. That is the point. Before you can fuse measurements, you need to understand what the IMU-only solution does well, where it fails, and how its errors grow.
+As a navigation system this part is intentionally incomplete, and that is the point. Before you can fuse measurements you need to know what the IMU-only solution does well, where it fails, and how its errors grow, because the filter in Part C is essentially this propagation plus a correction, and the process-noise model you build here is what tells the filter how much to trust it. Part A stands on its own: it does not need Part B.
 
 ## Learning Outcomes {#sec-project1a-learning-outcomes}
 
-By the end of Part A, you should be able to:
+By the end of Part A you should be able to:
 
-- implement a 15-state inertial propagation model
-- propagate the recorded IMU packets forward in time
-- analyze drift from bias, gravity, integration error, and frame mistakes
-- produce dead-reckoning diagnostics that will be reused in Part C
+- estimate gyro and accelerometer noise and bias from flight data and turn them into a process-noise model;
+- implement a 15-state inertial propagation model in the project's Z-X-Y attitude convention;
+- propagate the state covariance and compare its envelope with the actual error;
+- analyze drift from bias, gravity handling, integration error, and frame mistakes, with diagnostics you will reuse in Part C.
 
 ## Required State Convention {#sec-project1a-required-state-convention}
 
-Use this state vector throughout the project:
+Use the shared 15-state vector and frames of @sec-project1-shared-state-measurement:
 
 ``` python
 x = [
-    px, py, pz,
-    roll, pitch, yaw,
-    vx, vy, vz,
-    bgx, bgy, bgz,
-    bax, bay, baz,
+    px, py, pz,          # world frame (m)
+    roll, pitch, yaw,    # Z-X-Y Euler angles (rad)
+    vx, vy, vz,          # world frame (m/s)
+    bgx, bgy, bgz,       # gyro bias (rad/s)
+    bax, bay, baz,       # accelerometer bias (m/s^2)
 ]
+C_world_body = Rz(yaw) @ Rx(roll) @ Ry(pitch)   # utils.rpy_to_rotation_matrix
+gravity_world = np.array([0.0, 0.0, -9.81])     # PropagationParams().gravity_world
 ```
 
-Use:
+The world $z$ axis points up, so a hovering accelerometer reads about $+9.81$ m/s$^2$ on its $z$ axis: it measures specific force, not acceleration.
 
-``` python
-R_world_body = Rz(yaw) @ Ry(pitch) @ Rx(roll)
-gravity_world = np.array([0.0, 0.0, -9.81])
-```
+A gyro measures body angular rate, not Euler-angle rates. For the Z-X-Y sequence $\mathbf{C}_b^w = \mathbf{R}_z(\psi)\mathbf{R}_x(\phi)\mathbf{R}_y(\theta)$, with roll $\phi$, pitch $\theta$, yaw $\psi$, the two are related by
 
-Angles must be wrapped into `[-pi, pi)` after propagation.
+$$
+\boldsymbol{\omega}_{wb}^b =
+\mathbf{W}(\phi, \theta)
+\begin{bmatrix} \dot\phi \\ \dot\theta \\ \dot\psi \end{bmatrix},
+\qquad
+\mathbf{W} =
+\begin{bmatrix}
+\cos\theta & 0 & -\cos\phi\sin\theta \\
+0 & 1 & \sin\phi \\
+\sin\theta & 0 & \cos\phi\cos\theta
+\end{bmatrix},
+$$ {#eq-project1a-euler-rates}
+
+which follows from $[\boldsymbol{\omega}_{wb}^b]_\times = (\mathbf{C}_b^w)^T\dot{\mathbf{C}}_b^w$ (@sec-pnp-euler-angles-project derives it and checks it numerically). Part A needs the inverse,
+
+$$
+\begin{bmatrix} \dot\phi \\ \dot\theta \\ \dot\psi \end{bmatrix}
+=
+\mathbf{W}^{-1}\left(\boldsymbol{\omega}_{wb}^b - \mathbf{b}_g\right),
+\qquad
+\mathbf{W}^{-1} =
+\begin{bmatrix}
+\cos\theta & 0 & \sin\theta \\
+\sin\theta\tan\phi & 1 & -\cos\theta\tan\phi \\
+-\sin\theta/\cos\phi & 0 & \cos\theta/\cos\phi
+\end{bmatrix},
+$$ {#eq-project1a-euler-rates-inverse}
+
+which is singular at $\phi = \pm 90°$, the gimbal lock of this sequence. The drone never banks that far. Earth's rotation (about $7 \times 10^{-5}$ rad/s) is three orders of magnitude below the gyro noise, so the mat frame is treated as inertial. Wrap all three angles into $[-\pi, \pi)$ after every step.
 
 ## Starter Interfaces {#sec-project1a-starter-interfaces}
 
-Work from the starter package:
-
 ``` python
-from pathlib import Path
-
-from drone_pipeline.datasets import load_drone_dataset
-from drone_pipeline.mechanization import propagate_state
+from drone_pipeline.datasets import interpolate_vicon_truth, load_drone_dataset
+from drone_pipeline.mechanization import PropagationParams, propagate_state
+from drone_pipeline.utils import rpy_to_rotation_matrix, wrap_angles
 ```
 
-Your final implementation may add helpers, but the public propagation entrypoint should remain:
+Your implementation may add helpers, but the public entry point stays:
 
 ``` python
-propagate_state(x, acc, drpy, dt, params)
+propagate_state(x, acc, omg, dt, params)   # -> propagated (15,) state
 ```
 
-## Goal {#sec-project1a-goal}
+where `acc` and `omg` are one packet's `packet.acc` and `packet.omg`, `dt` is the actual time step in seconds, and `params` is a `PropagationParams` (or `None` for the defaults). Supporting an `(N, 15)` array of states as well is optional, but your Part C particle filter will thank you.
 
-Implement deterministic inertial propagation using the packet IMU inputs.
+## Process Model {#sec-project1a-goal}
 
-Use the process model:
+Implement deterministic inertial propagation from the packet IMU inputs with the continuous-time model
 
 ``` python
-p_dot = v
-rpy_dot = E(rpy) @ (drpy - gyro_bias)
-v_dot = R_world_body(rpy) @ (acc - accel_bias) + gravity_world
-gyro_bias_dot = 0
+p_dot          = v
+rpy_dot        = W_inv(roll, pitch) @ (omg - gyro_bias)
+v_dot          = C_world_body(rpy) @ (acc - accel_bias) + gravity_world
+gyro_bias_dot  = 0
 accel_bias_dot = 0
 ```
 
-The deterministic propagation function may hold biases constant between samples. In Part C, the stochastic filters should model bias drift through process noise.
+The deterministic propagation holds the biases constant between samples; in Part C the stochastic filters let them drift through process noise.
 
 ## Requirements {#sec-project1a-requirements}
 
-Implement:
+`propagate_state(x, acc, omg, dt, params)` must:
 
-``` python
-propagate_state(x, acc, drpy, dt, params)
-```
+1.  accept the 15-state vector above;
+2.  subtract the gyro and accelerometer biases;
+3.  convert body angular rate into Euler-angle rates with @eq-project1a-euler-rates-inverse;
+4.  rotate the specific force into the world frame and add gravity;
+5.  integrate position, attitude, and velocity over `dt`, holding the biases constant;
+6.  wrap roll, pitch, and yaw after propagation.
 
-It must:
+Forward Euler is acceptable for the base submission. If you choose a better integrator, keep the interface stable and explain the trade-off. Process packets in time order, use the timestamp difference as `dt` (it is not constant), and propagate from packet $k-1$ to packet $k$ with the IMU sample of packet $k-1$ held constant over the interval. Use the same rule in Part C.
 
-1.  accept the 15-state vector above
-2.  subtract gyro and accelerometer biases
-3.  convert body angular rates into Euler-angle rates
-4.  rotate body acceleration into the world frame
-5.  add gravity
-6.  integrate position, attitude, velocity, and biases over `dt`
-7.  wrap roll, pitch, and yaw after propagation
+## IMU Characterization {#sec-project1a-imu-characterization}
 
-Forward Euler integration is acceptable for the base submission. If you choose a better integrator, keep the interface stable and explain the tradeoff.
+Before propagating anything, estimate the gyro and accelerometer noise and bias. This is a required step, and it is where your process-noise covariance $\mathbf{Q}$ comes from.
+
+The textbook method is to leave the IMU still for a while and look at what it reports. None of these flights offers that: `studentdata1`-`4` start in mid-air and `studentdata5`-`7` sit nearly still for only about a third of a second. That is realistic (plenty of real flight logs start after takeoff), so use truth to remove the motion instead. At each packet time $t_k$ form the residuals
+
+$$
+\delta\boldsymbol{\omega}_k = \tilde{\boldsymbol{\omega}}_k - \boldsymbol{\omega}_{\text{vicon}}(t_k),
+\qquad
+\delta\mathbf{f}_k = \tilde{\mathbf{f}}_k - (\mathbf{C}_{b,k}^w)^T\left(\mathbf{a}_{\text{vicon}}(t_k) - \mathbf{g}^w\right),
+$$
+
+where $\tilde{\boldsymbol{\omega}}_k$ and $\tilde{\mathbf{f}}_k$ are `omg` and `acc`, $\boldsymbol{\omega}_{\text{vicon}}$ is Vicon rows `9:12` (body rates), $\mathbf{C}_{b,k}^w$ comes from the Vicon attitude, and $\mathbf{a}_{\text{vicon}}$ is the numerically differentiated Vicon velocity. Differentiation amplifies noise, so smooth before (or after) differentiating and say how. The per-axis mean of each residual estimates the bias, and the per-axis standard deviation estimates the white-noise standard deviation $\sigma$ at the IMU sample interval $\Delta t \approx 0.02$ s. Convert each $\sigma$ to a spectral density $q = \sigma^2 \Delta t$, so that the discrete process-noise covariance over a step of length $dt$ is $q\,dt$ (@sec-kf-process-noise). Gyro noise drives the attitude states and accelerometer noise drives the velocity states.
+
+Do this over a quiet stretch first. The gentle flights `studentdata5`-`7` contain hover segments of one to two seconds around $t \approx 7$-$11$ s, and noise is a property of the sensor rather than the flight, so you may use them even though they belong to the validation split. Then repeat the estimate over a whole aggressive development flight and explain why the numbers differ. If you want a longer view, an Allan deviation (@sec-ins-errors-allan-deviation) is welcome, but these records are short, so be honest about what they can and cannot resolve.
+
+Report a table with the per-axis bias and standard deviation for both sensors, the window you used, and the resulting diagonal of $\mathbf{Q}$. Treat that $\mathbf{Q}$ as a starting point that Part C will put on trial.
+
+## Covariance Propagation {#sec-project1a-covariance-propagation}
+
+Propagate the covariance alongside the deterministic state,
+
+$$
+\mathbf{P}_{k|k-1} = \mathbf{F}_{k-1}\mathbf{P}_{k-1|k-1}\mathbf{F}_{k-1}^T + \mathbf{Q}\,dt_k,
+$$
+
+with $\mathbf{F} = \partial f / \partial \mathbf{x}$ evaluated at the current state. An analytic Jacobian or a central finite difference of `propagate_state` is fine (wrap the attitude differences); this is exactly the prediction step your EKF will reuse in Part C. Plot the dead-reckoning position and attitude errors against the $\pm 3\sigma$ envelope from $\mathbf{P}$. An error that leaves the envelope within seconds means $\mathbf{Q}$, $\mathbf{P}_0$, or the bias model is missing something; say which.
 
 ## Initialization {#sec-project1a-initialization}
 
-For your reported dead-reckoning runs, initialize from the first valid visual pose estimate produced in Part B. Before Part B is finished, you may use a temporary oracle initialization for debugging, but you must label it clearly and you may not treat it as your primary reported result.
+So that Part A stands on its own, initialize your reported runs from the Vicon state (position, attitude, velocity) at the first packet with valid truth. This is the one oracle use of truth the project allows; label it clearly in plots and tables. Initialize the biases either at zero or at your characterization estimates, and compare the two: the difference is one of the most instructive plots in the project.
 
-You may initialize velocity as:
-
-- zero, or
-- a finite-difference estimate derived from early visual poses
-
-Be explicit about which choice you made.
+Once Part B works, add a run initialized from PnP alone (the first pose seen by two or more tags, with zero velocity or a velocity fitted to the first few poses) and discuss how much the initialization changes the drift. Part C filters must use a PnP initialization.
 
 ## Evaluation {#sec-project1a-evaluation}
 
-Use Vicon only for evaluation. Interpolate truth onto the packet timestamps.
+Evaluate against Vicon interpolated onto the packet timestamps with `interpolate_vicon_truth`, keeping only samples with `valid == True`. `drone_pipeline.evaluation` provides `truth_matrix`, `state_errors` (true minus estimate, angles wrapped), and `rmse` so that everyone computes errors the same way. Required analysis, on the development flights and at least one validation flight:
 
-Required analysis:
-
-- position trajectory versus Vicon truth
-- roll, pitch, and yaw versus Vicon truth
-- position RMSE over time
-- drift rate in meters per second or meters per minute
-- short discussion of dominant error sources
-
-At minimum, discuss:
-
-- gyro bias
-- accelerometer bias
-- gravity handling
-- frame convention mistakes
-- integration error
-- initialization sensitivity
+- position trajectory and roll, pitch, yaw against Vicon truth;
+- position error over time with the $\pm 3\sigma$ envelope;
+- a drift rate (meters after 1, 5, and 10 s, or meters per second), and whether growth looks linear or quadratic in time, which hints at whether velocity or acceleration errors dominate;
+- a discussion of the dominant error sources: gyro bias, accelerometer bias, gravity handling, frame-convention mistakes, integration error, and initialization sensitivity.
 
 ## Deliverables {#sec-project1a-deliverables}
 
-This is the first checkpoint of three that should go into the complete project. Ultimately you will turn in all deliverables across all three parts in one cohesive project.
+Part A is the first of three checkpoints that end up in one cohesive report. For this checkpoint you should have:
 
-For the checkpoint, you should have completed:
-
-- `propagate_state(...)`
-- a dead-reckoning trajectory for each dataset
-- position and attitude comparison plots against Vicon truth
-- position RMSE over time
-- a short technical discussion of dominant error sources
+- `propagate_state(...)`, passing the Part A tests in `projects/drone_pipeline/tests`;
+- the IMU characterization table and the resulting $\mathbf{Q}$;
+- a dead-reckoning trajectory for each dataset you report on, with the covariance envelope;
+- position and attitude comparison plots against Vicon truth and position RMSE over time;
+- a short technical discussion of the dominant error sources.
 
 ## Notes {#sec-project1a-notes}
 
-This part is supposed to drift. If your IMU-only trajectory looks suspiciously perfect, the first thing to check is whether truth leaked into the propagation path.
+This part is supposed to drift, and a MEMS-class IMU drifts fast: expect meters within seconds. If your IMU-only trajectory looks suspiciously perfect, the first thing to check is whether truth leaked into the propagation path.
