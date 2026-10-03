@@ -511,7 +511,7 @@ Solving for the corrected measurement gives
 
 $$\hat{\mathbf{y}} = (\mathbf{I} + \mathbf{M})^{-1}(\tilde{\mathbf{y}} - \mathbf{b}).$$
 
-This form applies to both accelerometers and gyroscopes. In a high-quality system, $\mathbf{M}$ and $\mathbf{b}$ are estimated through calibration. In a student project, some parameters may be supplied and others may be absorbed into process noise or estimated as part of the filter state. @sec-ins-errors treats the full error budget, including temperature effects and how IMU grades differ.
+This form applies to both accelerometers and gyroscopes. In a high-quality system, $\mathbf{M}$ and $\mathbf{b}$ are estimated through calibration. In a student project, some parameters may be supplied and others may be absorbed into process noise or estimated as part of the filter state. @sec-ins-errors treats the full error budget, including temperature effects, and @sec-ins-errors-imu-grades compares IMU grades.
 
 ```{python}
 #| label: motion-models-imu-calibration

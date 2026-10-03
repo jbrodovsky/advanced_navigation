@@ -1,663 +1,382 @@
 # Project 3: INS/GNSS Integration {#sec-project3}
 
+When the Boeing 747 entered service in 1970 it carried three Delco Carousel inertial navigators, each drifting on the order of a nautical mile per hour, and crossing an ocean meant comparing the three with each other and with whatever radio fix the crew could get. Today a receiver the size of a fingernail hands you a fix every second, and the inertial sensor in your pocket drifts about a kilometer per minute. The engineering problem has not changed, only its time constants: an inertial system that is smooth, fast, and wrong in slowly growing ways, a radio position that is noisy, slow, and right on average, and a filter that makes each cover for the other.
+
+``` text
+phone IMU (1 Hz) --> mount rotation (given) --> mechanization (Part A) --> L, lambda, h, v, q
+                                                       |
+GNSS fix (1 Hz) --> residual, lever arm (Part B) --> ESKF: F, Q_d, update, reset (Part B)
+                                                       |
+x_hat, P every second --> outages, NIS, errors (Part C) --> map matching, guidance, control
+```
+
+Project 3 builds that system for a smartphone riding in a car. The consumer at the bottom of the stack (a route-guidance engine snapping you to a lane, a vehicle controller, the perception stack of Project 1 that needs a pose to project its detections) does not want the GNSS fix. It wants a continuous position, velocity, and attitude with a covariance it can believe, including in the tunnel, the parking garage, and the urban canyon where the fix is gone or wrong. Your filter is judged on exactly that: how it behaves when GNSS is withheld, and whether its covariance tells the truth about it.
+
 ## Overview {#sec-project3-overview}
 
-In this project, you will implement a complete Inertial Navigation System (INS) with Global Navigation Satellite System (GNSS) integration for a vehicle traveling over long distances where the Earth's curvature cannot be ignored.
+You will mechanize a strapdown INS on the curved, rotating Earth from smartphone MEMS data and aid it with loosely coupled GNSS position fixes through a 15-state error-state Kalman filter, following the model of @sec-ins-gnss exactly. The project is worth **25% of the course grade**.
 
-You will implement the strapdown mechanization equations in a WGS84 geodetic frame, build an Error-State Kalman Filter (ESKF) to fuse IMU and GNSS measurements, and analyze real-world performance metrics.
+**Learning outcomes.** By the end of the project you should be able to
 
-**Learning outcomes:**
+- implement the local-navigation-frame mechanization of @sec-ins-gnss-navigation-equations-local, with Earth rate, transport rate, Coriolis, and normal gravity, and verify it with tests that a wrong sign cannot pass;
+- align an IMU you cannot gyrocompass: level from the accelerometers, take heading from somewhere else;
+- derive and implement the error-state model `F`, a process noise `Q_d` traced to an IMU specification, the lever-arm measurement Jacobian `H`, the Joseph-form update, injection, and the reset;
+- read a real dataset critically, including a reference solution that is neither truth nor always right;
+- evaluate a navigation filter honestly: against withheld measurements during outages, against its own covariance, and with innovation statistics.
 
-- Implement strapdown mechanization on curved Earth
+## Logistics {#sec-project3-logistics}
 
-- Understand IMU error models and characterization
+**Pace and deadline.** The recommended pace is weeks 12-13, alongside @sec-global-nav, @sec-ins-errors, and @sec-ins-gnss. That is a recommendation, not a deadline: everything is due by the **end of week 16** (@sec-syllabus-course-policies). Early submissions for feedback are welcome.
 
-- Design and implement ESKF with proper error-state dynamics
+**Submission.** Submit Project 3 once, on Canvas: a single-column **report PDF** (structure and expectations in @sec-intro-project-guidance), the **source files** of your `ins_gnss` package that you implemented or changed plus any scripts or notebooks you used, and a short `README` listing the exact commands that regenerate every figure and table in the report. Following the course policy (@sec-intro-code-style-guide), upload each file individually rather than as a compressed archive.
 
-- Analyze INS drift and GNSS aiding effectiveness
+**Environment.** From the repository root:
 
-- Work with real-world high-rate sensor data
-
-------------------------------------------------------------------------
-
-## Project Architecture {#sec-project3-project-architecture}
-
-```         
-Raw IMU → Strapdown Mechanization → Dead Reckoning Navigation
-                          ↓
-                    ESKF Prediction (error-state propagation)
-                          ↓
-GNSS Position/Velocity (1-10 Hz) → ESKF Update (measurement fusion)
-                          ↓
-                    Error Injection & Reset
-                          ↓
-            Optimal Fused Navigation Solution
+``` bash
+uv sync                                                   # install Python and the packages
+uv run python scripts/fetch_data.py mems-nav-dataset      # download the data (about 150 MB)
+uv run pytest projects/ins_gnss                           # starter tests: support code passes, your stubs skip
+uv run ins-gnss                                           # every trial and its status
+uv run python -m ins_gnss.run_all                         # run every stage you have implemented so far
 ```
 
-------------------------------------------------------------------------
+**AI tools and libraries.** The course policy is in @sec-intro-ai-policy-and-dependencies.
 
-## Part A: Curved-Earth Strapdown Mechanization {#sec-project3-part-curved-earth}
+**Reusing book code.** @sec-ins-gnss contains a complete mechanization, error model, and loosely coupled filter running on a simulated drive, and @sec-ins-errors-from-imu-specs turns a datasheet into `Q_d`. You may adapt any of it, with attribution: cite the section in a code comment and in the report. Grading puts its weight on what the book cannot do for you: the evidence that your signs and Jacobians are right, the noise model you can defend, the behavior on real data, and an honest account of consistency. A copied filter that runs earns little; one you can test, tune, and break on purpose earns a lot.
 
-### Learning Objectives
+## Dataset {#sec-project3-data}
 
-- Implement the complete strapdown mechanization equations
-- Account for Earth rotation rate and transport rate
-- Handle gravity variation with altitude and latitude
-- Transform between reference frames correctly
-
-### Background
-
-Unlike flat-earth small-scale navigation, when traveling long distances the Earth's curvature and rotation become significant. The mechanization equations in the NED (North-East-Down) frame must account for:
-
-1.  **Gravity variation:** Depends on latitude and altitude (WGS84 model)
-2.  **Earth rotation rate** $\omega_{ie}$: Creates Coriolis effect on accelerometers
-3.  **Transport rate** $\omega_{en}$: Local frame rotates as vehicle moves over curved surface
-
-**Relevant chapters:**
-
-- @sec-ins-gnss: complete mechanization with curved Earth
-- @sec-ins-errors: IMU characteristics and biases
-- @sec-math-reference: quaternion kinematics and frame transformations
-
-### Specification
-
-Implement a `StrapdownNavigator` class for curved-earth navigation:
-
-``` python
-class StrapdownNavigator:
-    def __init__(self, initial_state_geodetic, imu_params):
-        """
-        initial_state_geodetic: dict with keys:
-            - 'latitude': radians
-            - 'longitude': radians
-            - 'altitude': meters above WGS84 ellipsoid
-            - 'velocity_ned': [v_n, v_e, v_d] in NED frame (m/s)
-            - 'attitude': quaternion [qw, qx, qy, qz]
-
-        imu_params: calibration parameters
-            - 'accel_bias': [ba_x, ba_y, ba_z]
-            - 'gyro_bias': [bg_x, bg_y, bg_z]
-            - 'accel_scale': scale factor matrix
-            - 'gyro_scale': scale factor matrix
-        """
-        self.lat = initial_state_geodetic['latitude']
-        self.lon = initial_state_geodetic['longitude']
-        self.alt = initial_state_geodetic['altitude']
-        self.v_ned = initial_state_geodetic['velocity_ned']
-        self.q = initial_state_geodetic['attitude']  # Body to NED
-        self.imu_params = imu_params
-
-        # WGS84 parameters
-        self.a = 6378137.0  # Semi-major axis (meters)
-        self.e2 = 6.69437999014132e-3  # First eccentricity squared
-        self.omega_ie = 7.2921150e-5  # Earth rotation rate (rad/s)
-
-        self.trajectory = []
-        self.covariance_nominal = None
-
-    def integrate_imu(self, accel_raw, gyro_raw, dt):
-        """
-        Integrate IMU measurements for one time step.
-
-        Args:
-            accel_raw: [ax, ay, az] in body frame (m/s²)
-            gyro_raw: [wx, wy, wz] in body frame (rad/s)
-            dt: time step (seconds)
-        """
-        # Step 1: Apply IMU calibration
-        accel = accel_raw - self.imu_params['accel_bias']
-        gyro = gyro_raw - self.imu_params['gyro_bias']
-
-        # Scale factors (if needed)
-        accel = self.imu_params['accel_scale'] @ accel
-        gyro = self.imu_params['gyro_scale'] @ gyro
-
-        # Step 2: Update attitude (quaternion integration)
-        self.q = self._update_attitude(self.q, gyro, dt)
-
-        # Step 3: Rotate acceleration to NED frame
-        R_b2n = self._quat_to_rotation_matrix(self.q)
-        accel_ned = R_b2n @ accel
-
-        # Step 4: Compute Coriolis and centrifugal effects
-        omega_ie_n = np.array([
-            self.omega_ie * np.cos(self.lat),
-            0,
-            -self.omega_ie * np.sin(self.lat)
-        ])
-
-        omega_en_n = np.array([
-            self.v_ned[1] / (self.get_meridian_radius() + self.alt),
-            -self.v_ned[0] / (self.get_prime_vertical_radius() + self.alt),
-            -self.v_ned[1] * np.tan(self.lat) / \
-            (self.get_prime_vertical_radius() + self.alt)
-        ])
-
-        # Total rotation rate in NED frame
-        omega_n = omega_ie_n + omega_en_n
-
-        # Coriolis acceleration: -2 * omega_ie × v
-        f_coriolis = -2 * self._skew_symmetric(omega_ie_n) @ self.v_ned
-
-        # Step 5: Gravity at current location (WGS84 model)
-        g_n = self._compute_gravity(self.lat, self.alt)
-
-        # Step 6: Update velocity
-        f_total = accel_ned + f_coriolis + np.array([0, 0, g_n])
-        self.v_ned = self.v_ned + f_total * dt
-
-        # Step 7: Update position
-        self._update_position(self.v_ned, dt)
-
-        # Step 8: Normalize quaternion
-        self.q = self.q / np.linalg.norm(self.q)
-
-        # Record state
-        self.trajectory.append({
-            'timestamp': time.time(),
-            'lat': self.lat,
-            'lon': self.lon,
-            'alt': self.alt,
-            'v_ned': self.v_ned.copy(),
-            'q': self.q.copy()
-        })
-
-    def _update_attitude(self, q, gyro, dt):
-        """
-        Update quaternion using integrated rotation.
-        q_new = q_old * exp(0.5 * integrated_rotation_vector)
-        """
-        rotation_vec = gyro * dt
-        rotation_angle = np.linalg.norm(rotation_vec)
-
-        if rotation_angle < 1e-10:
-            # Small angle approximation
-            dq = np.array([1, 0.5*gyro[0]*dt, 0.5*gyro[1]*dt, 0.5*gyro[2]*dt])
-        else:
-            # Full rotation
-            axis = rotation_vec / rotation_angle
-            half_angle = rotation_angle / 2
-            dq = np.concatenate([
-                [np.cos(half_angle)],
-                np.sin(half_angle) * axis
-            ])
-
-        # Quaternion multiplication: q_new = dq * q
-        return self._quat_multiply(dq, q)
-
-    def _update_position(self, v_ned, dt):
-        """Update latitude, longitude, altitude from velocity."""
-        # Radii of curvature
-        R_m = self.get_meridian_radius()
-        R_p = self.get_prime_vertical_radius()
-
-        # Rate of change of geodetic position
-        dLat = v_ned[0] / (R_m + self.alt)
-        dLon = v_ned[1] / ((R_p + self.alt) * np.cos(self.lat))
-        dAlt = -v_ned[2]
-
-        self.lat += dLat * dt
-        self.lon += dLon * dt
-        self.alt += dAlt * dt
-
-    def get_meridian_radius(self):
-        """Radius of curvature in meridian (north-south)."""
-        denom = 1 - self.e2 * np.sin(self.lat)**2
-        return self.a * (1 - self.e2) / denom**1.5
-
-    def get_prime_vertical_radius(self):
-        """Radius of curvature in prime vertical (east-west)."""
-        denom = 1 - self.e2 * np.sin(self.lat)**2
-        return self.a / np.sqrt(denom)
-
-    def _compute_gravity(self, lat, alt):
-        """
-        WGS84 gravity model.
-        Returns: magnitude of gravity (positive downward)
-        """
-        sin_lat = np.sin(lat)
-        sin2_lat = sin_lat**2
-
-        # Closed-form WGS84 gravity
-        g_0 = 9.7803253359
-        g_a = 0.0053024 * sin2_lat
-        g_b = 0.0000058 * sin2_lat**2
-        g_surface = g_0 * (1 + g_a - g_b)
-
-        # Altitude correction
-        g = g_surface - 3.087e-6 * alt
-
-        return g
-
-    def _skew_symmetric(self, v):
-        """Create skew-symmetric (cross-product) matrix."""
-        return np.array([
-            [0, -v[2], v[1]],
-            [v[2], 0, -v[0]],
-            [-v[1], v[0], 0]
-        ])
-
-    def _quat_multiply(self, q1, q2):
-        """Multiply two quaternions."""
-        w1, x1, y1, z1 = q1
-        w2, x2, y2, z2 = q2
-
-        return np.array([
-            w1*w2 - x1*x2 - y1*y2 - z1*z2,
-            w1*x2 + x1*w2 + y1*z2 - z1*y2,
-            w1*y2 - x1*z2 + y1*w2 + z1*x2,
-            w1*z2 + x1*y2 - y1*x2 + z1*w2
-        ])
-
-    def _quat_to_rotation_matrix(self, q):
-        """Convert quaternion to rotation matrix (body to NED)."""
-        w, x, y, z = q
-        return np.array([
-            [1 - 2*(y**2 + z**2), 2*(x*y - w*z), 2*(x*z + w*y)],
-            [2*(x*y + w*z), 1 - 2*(x**2 + z**2), 2*(y*z - w*x)],
-            [2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x**2 + y**2)]
-        ])
-
-    def get_state(self):
-        """Return current navigation state."""
-        return {
-            'latitude': self.lat,
-            'longitude': self.lon,
-            'altitude': self.alt,
-            'velocity_ned': self.v_ned,
-            'attitude': self.q
-        }
-```
-
-### Deliverables for Part A
-
-1.  **Mechanization Implementation:**
-    - Complete `StrapdownNavigator` class above
-    - Verify quaternion integration (check norm stays 1.0)
-    - Test gravity model at various latitudes/altitudes
-2.  **Dead Reckoning Results:**
-    - Integrate IMU from start to end of trajectory
-    - Plot trajectory in geodetic coordinates (lat/lon map)
-    - Compare against the baseline reference solution
-    - Quantify drift rate (position error vs. time)
-3.  **Analysis:**
-    - Show effect of not removing Coriolis (vs. with removal)
-    - Show effect of gravity variation
-    - Estimate how long INS can run without GNSS before drift exceeds threshold (e.g., 1 km)
-
-------------------------------------------------------------------------
-
-## Part B: Error-State Kalman Filter (ESKF) {#sec-project3-part-b-error}
-
-### Learning Objectives
-
-- Understand error-state dynamics vs. nominal-state dynamics
-- Implement ESKF prediction with linearized error models
-- Design measurement updates for GNSS aiding
-
-### Background
-
-Rather than filtering the full 15-dimensional state (position, velocity, attitude, gyro bias, accel bias), the ESKF filters a much smaller error state while the nominal state is propagated nonlinearly. This dramatically improves numerical stability and computational efficiency.
-
-**Relevant chapters:**
-
-- @sec-ekf-error-state-filtering: error-state filtering theory
-- @sec-ins-gnss-error-state-formulation: the ESKF for INS
-- @sec-math-reference: Jacobian derivations
-- @sec-practical: numerical stability
-
-### Error State Definition
-
-Define error state as perturbations around nominal state:
-
-$$\delta\mathbf{x} = \begin{bmatrix}
-\delta\mathbf{p} \\
-\delta\mathbf{v} \\
-\delta\boldsymbol{\theta} \\
-\delta\mathbf{b}_a \\
-\delta\mathbf{b}_g
-\end{bmatrix}$$
-
-where: - $\delta\mathbf{p}$: position error \[3×1\] - $\delta\mathbf{v}$: velocity error \[3×1\] - $\delta\boldsymbol{\theta}$: attitude error (small rotation vector) \[3×1\] - $\delta\mathbf{b}_a$: accelerometer bias error \[3×1\] - $\delta\mathbf{b}_g$: gyroscope bias error \[3×1\]
-
-Total error state dimension: 15.
-
-### Specification
-
-Implement an `INSGNSSFilter` class:
-
-``` python
-class INSGNSSFilter:
-    def __init__(self, navigator, initial_covariance, Q, R):
-        """
-        navigator: StrapdownNavigator instance
-        initial_covariance: 15×15 initial covariance of error state
-        Q: 15×15 process noise covariance
-        R: 3×3 GNSS position measurement noise
-        """
-        self.nav = navigator
-        self.P = initial_covariance  # Error-state covariance
-        self.Q = Q
-        self.R = R
-
-        # Error state (initialized to zero, meaning no error)
-        self.delta_x = np.zeros(15)
-
-        self.innovations = []
-        self.chi2_sequence = []
-
-    def predict_with_imu(self, accel, gyro, dt):
-        """
-        Prediction step: propagate error-state covariance.
-        The nominal state is updated by StrapdownNavigator.integrate_imu().
-        """
-        # Step 1: Propagate nominal state
-        self.nav.integrate_imu(accel, gyro, dt)
-
-        # Step 2: Compute error-state Jacobian F at current nominal state
-        F = self._compute_error_state_jacobian(accel, gyro, dt)
-
-        # Step 3: Propagate covariance
-        # P_k = F * P_{k-1} * F^T + Q
-        self.P = F @ self.P @ F.T + self.Q
-
-        # Ensure symmetry (numerical stability)
-        self.P = 0.5 * (self.P + self.P.T)
-
-    def update_with_gnss(self, gnss_position, gnss_velocity=None):
-        """
-        Update step: fuse GNSS measurements.
-
-        Args:
-            gnss_position: [lat, lon, alt] or LLA vector
-            gnss_velocity: [v_n, v_e, v_d] in NED (optional)
-        """
-        # Measurement: GNSS position
-        z = np.array(gnss_position)
-
-        # Measurement function: h(x) = position (in ECEF or similar)
-        # For simplicity, use position directly
-        z_pred = np.array([self.nav.lat, self.nav.lon, self.nav.alt])
-
-        # Measurement Jacobian (only depends on position)
-        H = np.zeros((3, 15))
-        H[0:3, 0:3] = np.eye(3)  # Gradient w.r.t. position
-
-        # Innovation
-        nu = z - z_pred
-        self.innovations.append(nu)
-
-        # Innovation covariance
-        S = H @ self.P @ H.T + self.R
-
-        # Kalman gain
-        K = self.P @ H.T @ np.linalg.inv(S)
-
-        # Update error state
-        self.delta_x = self.delta_x + K @ nu
-
-        # Update covariance (Joseph form for stability)
-        I_KH = np.eye(15) - K @ H
-        self.P = I_KH @ self.P @ I_KH.T + K @ self.R @ K.T
-
-        # Normalize (ensure symmetry)
-        self.P = 0.5 * (self.P + self.P.T)
-
-        # Diagnostic: compute normalized innovation
-        chi2 = nu.T @ np.linalg.inv(S) @ nu
-        self.chi2_sequence.append(chi2)
-
-        # Step 4: Error injection (correct nominal state by error state)
-        self._inject_error_state()
-
-    def _compute_error_state_jacobian(self, accel, gyro, dt):
-        """
-        Compute Jacobian F of error-state dynamics.
-        This is complex; use numerical differentiation if needed.
-        """
-        eps = 1e-7
-        F = np.zeros((15, 15))
-
-        # [Simplified] Approximate Jacobian structure
-        # For a complete implementation, see the Mathematical Reference chapter
-
-        # Position ← velocity
-        F[0:3, 3:6] = np.eye(3) * dt
-
-        # Velocity ← attitude error (acceleration depends on orientation)
-        R = self.nav._quat_to_rotation_matrix(self.nav.q)
-        accel_corrected = accel - self.nav.imu_params['accel_bias']
-        accel_ned = R @ accel_corrected
-
-        F[3:6, 6:9] = -self.nav._skew_symmetric(accel_ned) * dt
-
-        # Velocity ← accel bias
-        F[3:6, 9:12] = -R * dt
-
-        # Attitude ← gyro bias
-        F[6:9, 12:15] = -np.eye(3) * dt
-
-        # Biases evolve as random walk
-        # (diagonal elements already 1, off-diagonals are 0)
-
-        return F
-
-    def _inject_error_state(self):
-        """
-        Correct nominal state with error state, then reset error to zero.
-        """
-        # Position correction
-        dlat, dlon, dalt = self.delta_x[0:3]
-        self.nav.lat += dlat
-        self.nav.lon += dlon
-        self.nav.alt += dalt
-
-        # Velocity correction
-        self.nav.v_ned += self.delta_x[3:6]
-
-        # Attitude correction (small angle rotation)
-        dtheta = self.delta_x[6:9]
-        dq = np.array([1, dtheta[0]/2, dtheta[1]/2, dtheta[2]/2])
-        self.nav.q = self.nav._quat_multiply(dq, self.nav.q)
-        self.nav.q /= np.linalg.norm(self.nav.q)
-
-        # Bias corrections
-        self.nav.imu_params['accel_bias'] += self.delta_x[9:12]
-        self.nav.imu_params['gyro_bias'] += self.delta_x[12:15]
-
-        # Reset error state
-        self.delta_x = np.zeros(15)
-
-    def get_state(self):
-        """Return navigation state and uncertainty."""
-        return {
-            'position': self.nav.get_state(),
-            'covariance': self.P,
-            'error_state': self.delta_x
-        }
-
-    def diagnose_filter(self):
-        """
-        Consistency check using normalized innovations.
-        """
-        chi2_mean = np.mean(self.chi2_sequence)
-        print(f"Mean χ²: {chi2_mean:.2f} (expected: 3.0)")
-
-        if chi2_mean > 6:
-            print("⚠ UNDERCONFIDENT: GNSS measurement noise too low")
-        elif chi2_mean < 1.5:
-            print("⚠ OVERCONFIDENT: GNSS measurement noise too high")
-        else:
-            print("✓ CONSISTENT: Filter tuned correctly")
-```
-
-### Deliverables for Part B
-
-1.  **ESKF Implementation:**
-    - Implement `INSGNSSFilter` class with prediction and update steps
-    - Test state propagation accuracy
-    - Verify Jacobian computation (numerical vs. analytical)
-2.  **Covariance Evolution:**
-    - Plot diagonal elements of P vs. time
-    - Show growth during prediction, decrease during updates
-    - Discuss physical meaning of each covariance component
-3.  **Consistency Testing:**
-    - Compute χ² sequence from innovations
-    - Plot histogram of χ² values
-    - Verify mean ≈ 3 (3-dimensional measurement)
-    - If inconsistent, adjust Q and R
-
-------------------------------------------------------------------------
-
-## Part C: Performance Analysis {#sec-project3-part-c-performance}
-
-### Learning Objectives
-
-- Evaluate filter performance against a reference trajectory
-- Characterize IMU drift and GNSS aiding effectiveness
-- Compute standard navigation error metrics
-
-### Specification
-
-Implement performance evaluation:
-
-``` python
-class NavigationEvaluator:
-    def __init__(self, estimated_trajectory, reference_trajectory):
-        """
-        estimated_trajectory: list of (lat, lon, alt) estimates
-        reference_trajectory: list of (lat, lon, alt) reference states
-        """
-        self.est = np.array(estimated_trajectory)
-        self.gt = np.array(reference_trajectory)
-
-    def compute_absolute_pose_error(self):
-        """APE: RMS position error."""
-        errors = self._geodetic_distance(self.est, self.gt)
-        return np.sqrt(np.mean(errors**2))
-
-    def compute_relative_pose_error(self, window_size=100):
-        """RPE: error in relative motion over windows."""
-        errors = []
-        for i in range(0, len(self.est) - window_size):
-            est_displacement = self._geodetic_distance(
-                self.est[i+window_size], self.est[i]
-            )
-            gt_displacement = self._geodetic_distance(
-                self.gt[i+window_size], self.gt[i]
-            )
-            errors.append(abs(est_displacement - gt_displacement))
-
-        return np.sqrt(np.mean(np.array(errors)**2))
-
-    def compute_drift_rate(self):
-        """Position error growth rate (m/min)."""
-        errors = self._geodetic_distance(self.est, self.gt)
-        time_minutes = np.arange(len(errors)) * (1/60)  # Assuming 60 Hz
-
-        # Fit linear drift
-        z = np.polyfit(time_minutes, errors, 1)
-        return z[0]  # Slope in m/min
-
-    def _geodetic_distance(self, pos1, pos2):
-        """Haversine distance between two geodetic points."""
-        lat1, lon1 = pos1[:2]
-        lat2, lon2 = pos2[:2]
-
-        R = 6371000  # Earth radius in meters
-
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-
-        a = np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
-        c = 2 * np.arcsin(np.sqrt(a))
-
-        return R * c
-```
-
-### Deliverables for Part C
-
-1.  **Metric Computation:**
-    - Compute APE (Absolute Pose Error)
-    - Compute RPE (Relative Pose Error) over 1-minute windows
-    - Compute drift rate
-2.  **Comparison Results:**
-    - Create table comparing:
-      - Dead Reckoning (Part A) only
-      - GNSS only
-      - Fused INS/GNSS (full filter)
-    - Show APE, RPE, drift rate for each
-3.  **Visualization:**
-    - Plot trajectory map (lat/lon): estimated vs. reference
-    - Plot position error vs. time
-    - Plot GNSS outage behavior (how long filter can coast)
-4.  **Report:**
-    - Discuss when INS is most valuable (e.g., GNSS denial, high dynamics)
-    - Identify failure modes (if any)
-    - Recommend improvements
-
-------------------------------------------------------------------------
-
-## Provided Data {#sec-project3-provided-data}
-
-### INS/GNSS Dataset
-
-This project uses the MEMS Navigation Dataset:
-
-https://github.com/jbrodovsky/mems-nav-dataset
-
-The data files are not checked into this course repository. Fetch the synchronized measurement data and baseline reference solution with:
+The project uses the MEMS navigation dataset [@MemsNavDataset]: an Android phone in a car, logging its IMU and GNSS receiver on drives around Philadelphia, to the New Jersey shore, and to Long Island, plus a `baseline/` reference solution for every trial. It is the instructor's own dataset. Download it once:
 
 ``` bash
 uv run python scripts/fetch_data.py mems-nav-dataset
 ```
 
-This writes:
+This places 17 trials in `data/mems-nav-dataset/` (`input/`, `baseline/`, `manifest.json`). The starter tools find it automatically; set `ADVNAV_DATA_DIR` to the folder containing `mems-nav-dataset/` if you keep it elsewhere. The facts below were each checked on the files, and several of them are not what you would assume.
 
-```         
-data/mems-nav-dataset/
-├── input/
-├── baseline/
-└── manifest.json
-```
+| Quantity | What the files contain | What to do |
+|---|---|---|
+| Rate | Every row is one second apart, **the IMU included**; timestamps are whole UTC seconds | Propagate each 1 s interval with the average of its two bounding IMU samples (`run_all` does) |
+| IMU axes | The phone's Android sensor axes: $x$ right, $y$ toward the top of the screen, $z$ out of the screen. The accelerometer reads specific force ($+9.8$ m/s$^2$ on the axis pointing up at rest); the gyro output looks bias-compensated by the phone (parked, it averages a few to 60 deg/h per axis, with 0.01-0.09 deg/s of noise per sample) | Rotate to vehicle forward-right-down axes with `estimate_mount_rotation` and `rotate_imu_samples` |
+| Mounting | In the recommended trials the phone stands upright in a mount facing the driver, so vehicle forward $\approx -z$, right $\approx +x$, down $\approx -y$, with yaw offsets up to 17 degrees. In four 2025 trials (June 18, June 27, July 4) the phone lies flat or nearly so | The estimated mount rotation handles each trial; check it with `uv run ins-gnss --trial NAME` |
+| GNSS | One position fix per second (latitude and longitude in degrees, altitude), plus speed, course over ground (`bearing`, clockwise from north), and the receiver's accuracy estimates | `GNSSSample` carries all of them; `gnss_position_covariance` builds a starting $\mathbf{R}$ from the accuracies |
+| Height | Height above the **WGS-84 ellipsoid**: at the shore on the Long Island and Jersey Shore trips the lowest fixes read $-33$ to $-49$ m, where the geoid lies about 33 m below the ellipsoid (@sec-frames-earth-frames) | Use it as $h$ directly |
+| Baseline | A GNSS-aided strapdown solution, **not truth**. Its rows are labelled 1 s early relative to the fixes they follow (GitHub issue #5); it has a start-up transient, it diverges by kilometers in some GNSS gaps, its height sits 2-14 m off the GNSS height, and its attitude columns are not in the book's convention | The loader adds `BASELINE_TIME_OFFSET_S` (1 s); compare horizontal position only, where `reference_valid_mask` says the baseline agrees with GNSS. Never fuse it |
+| Phone orientation | The phone's own orientation (`qw`...`qz`): gravity is right, heading is not (tens of degrees off, often more) | Sanity checks only, never a measurement; it is in `trial.auxiliary` with the barometer and magnetometer |
 
-The `input` directory contains the time-synchronized measurements students use as estimator inputs: accelerometer, gyroscope, GNSS position fields when available, barometer, gravity, magnetometer, and orientation fields from the device. The `baseline` directory contains the no-degradation strapdown/GNSS reference solution generated from the same trials. Use it for comparison and reporting; do not treat it as an estimator input.
+Two of these deserve a sentence more. **Time.** The old loader measured the input and the baseline from their own first rows, which are one second apart, and the baseline is labelled a further second early; together that put the "truth" 2 s (about 45 m at highway speed) away from the fixes it was computed from. The loader now uses one epoch, the first input timestamp, and `load_mems_nav_trial(..., baseline_time_offset_s=...)` exposes the correction; with it, the baseline agrees with GNSS to a median of 0.4-0.8 m. **Attitude.** In phone axes the upright phone has a Z-Y-X pitch near $-90°$, gimbal lock, which is one reason to work in vehicle axes. Compare attitudes with `attitude_error` (the rotation vector of $\mathbf{C}_\text{true}\hat{\mathbf{C}}^T$), never by subtracting Euler angles. The one attitude yardstick this dataset offers is the GNSS course: driving straight at speed, the vehicle's yaw should equal it (`heading_error_vs_course`).
 
-Load one paired trial with the starter package:
+Not every trial is usable. `recommended_trials()` returns the five vetted ones, and `TRIAL_NOTES` explains every trial's status:
+
+| Status | Trials | Why |
+|---|---|---|
+| Recommended | `2023-08-06_144805`, `2023-08-09_163741`, `2025-03-01_164639`, `2025-07-31_23-36-03`, `2025-08-03_18-15-59` | 0.7-4.1 h each, at most two GNSS gaps of 7 s or less, the phone stays in its mount while driving, the baseline agrees with GNSS |
+| Caution | the nine others | GNSS gaps after which the baseline jumps up to 6.5 km, a phone moved mid-trial, stale fixes, a flat mount |
+| Excluded | `2024-06-20_165550`, `2025-06-11_20-34-24`, `2025-06-14_21-17-02` | a 145 km baseline jump; 443 IMU samples in 27 minutes; fixes every 5 s with 2 km jumps and a baseline 7 km off |
+
+Repeated fixes exist too: most are a parked receiver holding its position, which is fine, but a few dozen in `2025-06-27_11-54-35` repeat while the car moves. `repeated_fix_mask` flags those and `run_all` skips them.
+
+Load a trial with:
 
 ``` python
-from ins_gnss.datasets import list_mems_nav_trials, load_mems_nav_trial
+from ins_gnss.datasets import estimate_mount_rotation, load_mems_nav_trial, recommended_trials, rotate_imu_samples
 
-trial_name = list_mems_nav_trials()[0]  # finds data/mems-nav-dataset
-trial = load_mems_nav_trial(None, trial_name)
-
-imu_samples = trial.imu_samples
-gnss_samples = trial.gnss_samples
-reference_states = trial.reference_states
+name = recommended_trials()[1]                      # 2023-08-09_163741, the short one
+trial = load_mems_nav_trial(None, name)             # finds data/mems-nav-dataset
+C_pv = estimate_mount_rotation(trial.imu_samples, trial.gnss_samples)
+imu = rotate_imu_samples(trial.imu_samples, C_pv)   # vehicle forward-right-down axes
+fix = trial.gnss_samples[0]
+print(fix.horizontal_accuracy_m, fix.velocity_ne_mps(), trial.reference_states[0].time_s)
 ```
 
-The starter loader converts latitude and longitude to radians, normalizes timestamps to seconds from the beginning of each file, and keeps the baseline reference states separate from the input measurements.
+## Starter Package {#sec-project3-project-architecture}
 
-------------------------------------------------------------------------
+Work in `projects/ins_gnss/`:
+
+``` text
+src/ins_gnss/
+  datasets.py     loaders, trial notes, mount rotation, stale-fix mask (provided)
+  types.py        IMUSample, GNSSSample, NavState, IMUNoise, MEMSNavTrial (provided)
+  earth.py        WGS-84 radii, Earth and transport rate, Somigliana gravity, NED <-> geodetic (provided)
+  rotations.py    quaternions, rotation vectors, skew, Euler (display), attitude_error (provided)
+  evaluation.py   time-aligned errors, reference mask, outages, chi-square bounds (provided)
+  strapdown.py    Part A: mechanize, coarse_alignment (yours); free_inertial (provided)
+  eskf.py         Part B: F, Q_d, residual, Joseph update, injection, reset (yours);
+                  INSGNSSFilter bookkeeping and R from receiver accuracy (provided)
+  run_all.py      runs every stage on the recommended trials and writes tables and plots
+  cli.py, plotting.py
+tests/
+  test_ins_gnss.py       support-code tests plus tests of your deliverables
+  test_handout_api.py    checks that this handout and the code agree
+```
+
+The public interfaces are:
+
+``` python
+from ins_gnss.datasets import (
+    BASELINE_TIME_OFFSET_S,
+    TRIAL_NOTES,
+    estimate_mount_rotation,
+    gnss_arrays,
+    imu_arrays,
+    load_mems_nav_trial,
+    recommended_trials,
+    reference_arrays,
+    repeated_fix_mask,
+    rotate_imu_samples,
+)
+from ins_gnss.earth import (
+    compute_gravity,
+    earth_rate_ned,
+    geodetic_to_ned_delta,
+    gravity_ned,
+    ned_to_geodetic_delta,
+    radii_of_curvature,
+    transport_rate_ned,
+)
+from ins_gnss.rotations import (
+    attitude_error,
+    euler_to_quat,
+    quat_multiply,
+    quat_normalize,
+    quat_to_dcm,
+    rotvec_to_quat,
+    skew,
+)
+from ins_gnss.types import GNSSSample, IMUNoise, IMUSample, NavState
+from ins_gnss.strapdown import coarse_alignment, free_inertial, mechanize
+from ins_gnss.eskf import INSGNSSFilter, gnss_position_covariance
+from ins_gnss.evaluation import (
+    chi2_interval,
+    constant_velocity_outage_errors,
+    error_summary,
+    heading_error_vs_course,
+    outage_errors,
+    position_error_ned,
+    reference_valid_mask,
+    schedule_outages,
+)
+```
+
+What you write, with the signatures the tests and `run_all` call:
+
+``` python
+mechanize(state, accel_mps2, gyro_rps, dt_s)               # -> NavState            (Part A)
+coarse_alignment(mean_specific_force_b, yaw_rad)            # -> q_b^n               (Part A)
+error_state_jacobian(state, specific_force_b)               # -> F, 15 x 15          (Part B)
+discrete_process_noise(state, noise, dt_s)                  # -> Q_d, 15 x 15        (Part B)
+gnss_position_residual(state, gnss, lever_arm_b)            # -> (nu, H)             (Part B)
+joseph_update(P, nu, H, R)                                  # -> (delta_x, P_plus, nis)
+inject_error_state(state, delta_x)                          # -> NavState
+reset_covariance(P, delta_theta)                            # -> P
+gnss_velocity_residual(state, gnss, lever_arm_b, gyro_rps)  # -> (nu, H), only for the velocity extension
+```
+
+Their docstrings are the detailed contract. Keep those signatures stable; add helpers, keyword-only options, and modules freely. `INSGNSSFilter` strings them together: `flt.predict(accel_mps2, gyro_rps, dt_s)` mechanizes the nominal state and propagates `flt.P` with `F_d = I + F dt` and your `Q_d`; `flt.update_gnss_position(gnss, R=None, *, gate=None)` computes your residual, runs your update, injects, resets, and appends an `InnovationRecord` (with the NIS) to `flt.innovations`. It is a plain dataclass, so give it whatever extra attributes you need.
+
+The tests of your deliverables skip with a "not implemented yet" message until you write the corresponding function, then start checking it, so `uv run pytest projects/ins_gnss` is a quick sanity check as you go. They are strict about signs: a perfect IMU at rest at 42° N must stay at rest for a minute, a perfect IMU driving east must hold its velocity (Coriolis and transport rate), `F` must match a finite-difference Jacobian of *your* `mechanize`, `H` with a lever arm must match finite differences of *your* residual, and the reset must match the exact attitude reset. They do not check whether your filter is any good on the real data. `uv run python -m ins_gnss.run_all` runs whatever you have implemented on the recommended trials and reports the rest as not implemented; its `TUNING` block is where your values go.
+
+## System Model {#sec-project3-system-model}
+
+The model is the one of @sec-ins-gnss, written once more so there is no doubt about what is graded. The nominal state is
+
+$$
+\hat{\mathbf{x}} = \left[\hat L,\ \hat\lambda,\ \hat h,\ \hat{\mathbf{v}}^n,\ \hat{\mathbf{q}}_b^n,\ \hat{\mathbf{b}}_a,\ \hat{\mathbf{b}}_g\right],
+$$
+
+with the NED navigation frame, the vehicle forward-right-down body frame, and corrected measurements $\hat{\mathbf{f}}^b = \tilde{\mathbf{f}}^b - \hat{\mathbf{b}}_a$, $\hat{\boldsymbol{\omega}}_{ib}^b = \tilde{\boldsymbol{\omega}}_{ib}^b - \hat{\mathbf{b}}_g$.
+
+**Mechanization** (@sec-ins-gnss-navigation-equations-local, Groves Section 5.4 [@groves]). Over a step $\tau$: attitude first, $\hat{\mathbf{q}}(+) = \mathbf{q}(-\boldsymbol{\omega}_{in}^n\tau) \otimes \hat{\mathbf{q}}(-) \otimes \mathbf{q}(\hat{\boldsymbol{\omega}}_{ib}^b\tau)$ with exact rotation-vector quaternions and $\boldsymbol{\omega}_{in}^n = \boldsymbol{\omega}_{ie}^n + \boldsymbol{\omega}_{en}^n$; then velocity,
+
+$$
+\begin{aligned}
+\mathbf{f}^n &= \tfrac12\left(\mathbf{C}_b^n(-) + \mathbf{C}_b^n(+)\right)\hat{\mathbf{f}}^b,\\
+\mathbf{v}^n(+) &= \mathbf{v}^n(-) + \left[\mathbf{f}^n + \mathbf{g}^n(L, h) - \left(\boldsymbol{\Omega}_{en}^n + 2\boldsymbol{\Omega}_{ie}^n\right)\mathbf{v}^n(-)\right]\tau;
+\end{aligned}
+$$
+
+then position, trapezoidally, with $R_M$ and $R_N$ the meridian and prime-vertical radii (Groves calls them $R_N$ and $R_E$). Gravity is Somigliana normal gravity with the free-air correction of @sec-ins-gnss-gravity, positive down (`compute_gravity`; 9.7803 m/s$^2$ on the equator, 9.8322 m/s$^2$ at the poles).
+
+**Error state** (@sec-ins-gnss-error-state-formulation), true minus estimate:
+
+$$
+\delta\mathbf{x} = \left[\delta\mathbf{p},\ \delta\mathbf{v},\ \delta\boldsymbol{\theta},\ \delta\mathbf{b}_a,\ \delta\mathbf{b}_g\right],
+$$
+
+with the position error in NED meters,
+
+$$
+\begin{aligned}
+\delta p_N &= (R_M + h)\,\delta L,\\
+\delta p_E &= (R_N + h)\cos L\,\delta\lambda,\\
+\delta p_D &= -\delta h,
+\end{aligned}
+$$
+
+with the attitude error in the navigation frame, $\mathbf{C}_b^n = (\mathbf{I} + [\delta\boldsymbol{\theta}]_\times)\hat{\mathbf{C}}_b^n$. Biases come in the order accelerometer, then gyro, everywhere. The short-horizon MEMS error model neglects the Earth-rate, transport-rate, and gravity-gradient couplings, which matter over tens of minutes of unaided navigation, not over the seconds between fixes or the minutes of an outage, for a sensor whose noise and bias instability swamp Earth rate (@sec-ins-gnss-error-state-formulation):
+
+$$
+\begin{aligned}
+\delta\dot{\mathbf{p}} &= \delta\mathbf{v},\\
+\delta\dot{\mathbf{v}} &= -[\hat{\mathbf{C}}_b^n\hat{\mathbf{f}}^b]_\times\,\delta\boldsymbol{\theta} - \hat{\mathbf{C}}_b^n\,\delta\mathbf{b}_a + \hat{\mathbf{C}}_b^n\mathbf{w}_a,\\
+\delta\dot{\boldsymbol{\theta}} &= -\hat{\mathbf{C}}_b^n\,\delta\mathbf{b}_g + \hat{\mathbf{C}}_b^n\mathbf{w}_g,\\
+\delta\dot{\mathbf{b}}_a &= \mathbf{w}_{ba},\\
+\delta\dot{\mathbf{b}}_g &= \mathbf{w}_{bg}.
+\end{aligned}
+$$
+
+Discretize with $\mathbf{F}_d \approx \mathbf{I} + \mathbf{F}\tau$ and $\mathbf{Q}_d \approx \mathbf{G}\mathbf{Q}_c\mathbf{G}^T\tau$ (or Van Loan, @sec-kf-process-noise), $\mathbf{Q}_c$ built from `IMUNoise`: velocity random walk $N_a$, angle random walk $N_g$, and the bias random walks.
+
+**GNSS position** (@sec-ins-gnss-loose-gnss-measurement, @sec-ins-gnss-lever-arm-timing). The fix, converted to NED meters relative to the nominal IMU position, is predicted as $\hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b$ for an antenna at lever arm $\boldsymbol{\ell}^b$:
+
+$$
+\begin{aligned}
+\boldsymbol{\nu} &= \mathbf{z} - \hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b,\\
+\mathbf{H} &= \left[\mathbf{I}_3,\ \mathbf{0},\ -[\hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b]_\times,\ \mathbf{0},\ \mathbf{0}\right].
+\end{aligned}
+$$
+
+The phone's antenna and IMU are centimeters apart, so the honest lever arm here is zero; your code must still handle a nonzero one (the tests use one). Update with the Joseph form, inject (position back through the radii, $\hat{\mathbf{q}} \leftarrow \delta\mathbf{q}(\delta\hat{\boldsymbol\theta}) \otimes \hat{\mathbf{q}}$), and reset with $\mathbf{G} = \operatorname{blkdiag}(\mathbf{I}, \mathbf{I}, \mathbf{I} + [\tfrac12\delta\hat{\boldsymbol\theta}]_\times, \mathbf{I}, \mathbf{I})$ (@eq-ekf-reset-jacobian).
+
+## Part A: Mechanization and Alignment {#sec-project3-part-curved-earth}
+
+**Goal.** A strapdown INS you can trust before any filter touches it.
+
+1.  Implement `mechanize`. Pass the provided tests, then add one of your own that exercises something they do not (a north-going drive, a climb, a constant turn) and explain what bug it would catch.
+2.  Implement `coarse_alignment` (@sec-ins-gnss-alignment). `run_all` levels from the samples of the minute before the car leaves (or, if a log starts on the move, from the first 10 s with the GNSS-derived acceleration removed) and takes heading from the GNSS course at departure. Explain why heading cannot come from the gyros here, and estimate the tilt error your leveling leaves (an accelerometer bias $b_a$ looks like a tilt of $b_a/g$).
+3.  Real-data sanity checks, all printed by `run_all`: free-inertial navigation for 60 s after departure, scored against GNSS, and the "parked check" (60 s of free inertial on a quiet parked stretch, where any motion is error). Plot the error growth and relate it to the bias and noise sizes of @sec-ins-errors-why-bias-dominates: which term dominates after 10 s, after 60 s?
+4.  Report the mount rotation of each trial and how you checked it. Show, with numbers, what goes wrong if you skip it and run the filter on phone axes.
+
+Expect free-inertial errors to be humbling: up to tens of meters after ten seconds, hundreds of meters to kilometers after a minute. That is what a smartphone IMU is, not a bug, but a velocity that runs away in the first second *is* a bug.
+
+## Part B: The Error-State Filter {#sec-project3-part-b-error}
+
+**Goal.** A loosely coupled ESKF whose every matrix you can defend.
+
+1.  Implement `error_state_jacobian` and `discrete_process_noise`. Show in the report the numerical check of `F` against your mechanization (the test does it; plot or tabulate the largest discrepancies and explain the ones the short-horizon model neglects).
+2.  Build `IMUNoise` from a specification, not from thin air. Start from a consumer MEMS datasheet and the grade table of @sec-ins-errors-imu-grades, convert units as in @sec-ins-errors-from-imu-specs, and then argue how much to inflate it: these samples are 1 Hz, so the process noise must also cover what a once-per-second sample misses (vibration, rate changes within the second, road grade). Inflation is allowed; unexplained inflation is not.
+3.  Implement `gnss_position_residual`, `joseph_update`, `inject_error_state`, and `reset_covariance`. Choose $\mathbf{R}$: `gnss_position_covariance` starts from the receiver's own accuracy estimates (Android reports a 68% horizontal radius), which you may scale; justify the choice with the NIS.
+4.  Decide whether to gate innovations (`gate=` in `update_gnss_position`; the 99.9% point for 3 degrees of freedom is 16.27) and show what it rejects.
+5.  Plot, for at least one trial, the position, velocity, attitude, and bias standard deviations against time, and the estimated biases. Say which states are observable when, with reference to @sec-ins-errors-observability-loose-ins: when does yaw become observable, and what does the yaw sigma do on a long straight?
+
+## Part C: Evaluation {#sec-project3-part-c-performance}
+
+**Goal.** Show what GNSS aiding buys, what the IMU buys when GNSS is gone, and whether the filter knows how well it is doing. Follow @sec-project3-evaluation-protocol on all five recommended trials.
+
+1.  **GNSS only versus loose INS/GNSS.** Compare both against the valid reference. Do not be surprised if GNSS only wins by a few decimeters to a meter: the reference is a GNSS-aided solution that hugs the fixes, so this comparison measures closeness to GNSS more than closeness to truth. Explain that, and say what the comparison *can* show (smoothness, velocity, attitude, behavior at stops).
+2.  **Scheduled outages** of 10, 30, 60, and 120 s, scored against the withheld fixes: error against time with the filter's 3-sigma envelope, next to the constant-velocity extrapolation a receiver would do on its own. Expect the INS to win by a factor of two to four at 30-60 s, and not always: say when and why it loses.
+3.  **Consistency.** NIS against the chi-square bounds (@sec-kf-consistency), the fraction of outage errors inside 1 and 3 sigma, and a diagnosis. A mean NIS far above 3 means the filter is overconfident; far below means underconfident, or GNSS errors that are correlated in time (they are). Then tune and show the effect.
+4.  **Heading.** The yaw-minus-course statistics on straight driving, and what they say about alignment and the mount rotation.
+
+## Extensions {#sec-project3-extensions}
+
+Pick one or two, and evaluate them with the same protocol as the baseline filter.
+
+- **RTS smoothing through outages.** Run a Rauch-Tung-Striebel smoother over the error-state filter (store the priors, posteriors, and transition matrices) and show how much of each outage error it removes once GNSS returns.
+- **Horizontal velocity aiding.** Implement `gnss_velocity_residual` and turn on `use_velocity_aiding`; use `gnss_velocity_covariance` (speed and course accuracies propagated through @sec-ins-gnss-loose-gnss-measurement) as a starting $\mathbf{R}$. Skip it below a few meters per second, where course is noise.
+- **Vehicle constraints.** Non-holonomic pseudo-measurements (zero lateral and vertical velocity in the vehicle frame) and zero-velocity updates when parked. These need the mount rotation to be right, and they change outage performance more than anything else on this list.
+- **Barometer altitude.** `trial.auxiliary` holds pressure and Android's relative altitude; model the barometer's bias and fuse it in the vertical channel, which is where loosely coupled GNSS is weakest.
+- **Tight coupling.** Pseudoranges and Doppler instead of positions (@sec-adv-gnss-tight-coupling). This dataset has no raw GNSS measurements; Android's GnssLogger app records them, so this extension means collecting your own data. Talk to the instructor first.
+
+## Evaluation Protocol {#sec-project3-evaluation-protocol}
+
+Everyone measures the same way, so results can be compared. `ins_gnss.evaluation` implements each step and `run_all` applies them.
+
+1.  **Trials.** All five of `recommended_trials()`. Others are optional; say which and quote their `TRIAL_NOTES`.
+2.  **Run window.** The filter starts at departure (the first fix after which the speed stays above 5 m/s for 5 s) and stops 30 s after the last fix faster than 5 m/s, as `run_all.prepare_trial` does; justify any change.
+3.  **Errors against the reference.** At the reference timestamps where `reference_valid_mask` holds (a fix within 0.5 s that agrees to 10 m), with the estimate *interpolated* to those times (`position_error_ned`): horizontal RMSE, median, 95th percentile, and maximum (`error_summary`). Do the same for GNSS only (`gnss_only_track`). Vertical errors against the baseline are unreliable; report them with that caveat or not at all.
+4.  **Outages.** Schedule the outage windows with
+
+    ``` python
+    schedule_outages(trial.gnss_samples, (10, 30, 60, 120),
+                     first_start_s=start + 300, spacing_s=400)
+    ```
+
+    The windows begin while moving, at least 90% of their seconds have a fix, and the filter gets 280 s or more to reconverge between them. Withhold those fixes from the filter, score against them (`outage_errors`), and compare with `constant_velocity_outage_errors`. Report the median and maximum error at 10, 30, 60, and 120 s into the outages, and the fraction inside the 3-sigma envelope $3\sqrt{P_{NN} + P_{EE}}$.
+5.  **Consistency.** Every NIS with the single-sample 95% interval for 3 degrees of freedom, $[0.22, 9.35]$ (`chi2_interval(3)`), the fraction inside, and the mean NIS with its averaged bounds (optimistic, because GNSS errors are correlated in time).
+6.  **Heading.** `heading_error_vs_course` above 8 m/s: median and median absolute deviation.
+7.  **Cost.** Runtime per trial on stated hardware.
+
+## Deliverables {#sec-project3-deliverables}
+
+Submit (@sec-project3-logistics):
+
+1.  The code: the source files of your `ins_gnss` package with the deliverables implemented, the extension(s), any scripts or notebooks, and a `README` with the commands that regenerate every figure and table.
+2.  Tests beyond the provided ones: at least the extra mechanization test of Part A and a test for your extension.
+3.  The report PDF, with: the data checks you made and how; the mount rotation and alignment; the mechanization and its verification; `F`, `Q_d` (with the datasheet it came from and every inflation factor), `H`, $\mathbf{R}$, and the gate; the evaluation of @sec-project3-evaluation-protocol with the required figures; the consistency diagnosis and tuning; the extension; and a discussion of failure modes.
+
+Keep the report concise and technical. A covariance plot with an honest sentence under it beats three pages on the history of the gyroscope.
 
 ## Grading Rubric {#sec-project3-grading-rubric}
 
-| Component | Full (10) | Partial (5) | Minimal (2) | Missing (0) |
-|---------------|---------------|---------------|---------------|---------------|
-| **Part A: Mechanization** | Correct gravity model, Coriolis effects, quaternion integration | Mostly correct but numerical issues | Only Euler angle implementation | No implementation |
-| **Part B: ESKF** | Correct Jacobians, error injection, Joseph form covariance | Working but Jacobians numerical only | Oversimplified (linear) | No ESKF |
-| **Part C: Performance** | APE/RPE computed, comparisons made, analysis deep | Metrics present but limited insight | Only final error reported | No evaluation |
-| **Code Quality** | Well-structured classes, clear comments, modular | Functional but tangled | Barely functional | Unrunnable |
-| **Results** | Comprehensive plots, meaningful conclusions | Plots present, shallow analysis | Minimal plots | No results |
+Project 3 is graded out of 100 project points. Most of the weight sits on the filter model and on the evidence that it is right and consistent.
 
-------------------------------------------------------------------------
++----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
+| Component                  | Points   | Excellent (100%)                                     | Acceptable (\~85%)                       | Marginal (\~70%)                         | Unacceptable (0%)              |
++============================+=========:+======================================================+==========================================+==========================================+================================+
+| Data, frames, and          | 10       | Verifies the data conventions on the files (rates,   | Correct data handling, mount rotation,   | Important mistakes or unverified         | Missing, nonfunctional, or     |
+| alignment                  |          | axes, mount rotation, height datum, baseline timing  | and alignment, with only minor gaps in   | assumptions in axes, timing, units, or   | fundamentally incorrect.       |
+|                            |          | and its failures, stale fixes) and says how; levels  | verification or explanation.             | alignment (for example filtering on      |                                |
+|                            |          | and sets heading correctly, with the leveling error  |                                          | phone axes or comparing against the      |                                |
+|                            |          | estimated; keeps the baseline out of the filter.     | ***8 points***                           | unshifted baseline).                     |                                |
+|                            |          |                                                      |                                          |                                          |                                |
+|                            |          | ***10 points***                                      |                                          | ***7 points***                           |                                |
++----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
+| Part A: mechanization and  | 20       | Curved-Earth mechanization with Earth rate,          | Mechanization works and passes the       | Partially working, or with an error the  | Missing, nonfunctional, or     |
+| its verification           |          | transport rate, Coriolis, and Somigliana gravity in  | tests, with minor weaknesses in the      | tests would catch (a missing rate term,  | fundamentally incorrect.       |
+|                            |          | the right places; passes the provided tests plus a   | extra verification or the drift          | a wrong quaternion order, a rad/m mix);  |                                |
+|                            |          | student-written test that targets a distinct bug;    | analysis.                                | drift analysis weak.                     |                                |
+|                            |          | free-inertial and parked checks explained in terms   |                                          |                                          |                                |
+|                            |          | of bias and noise.                                   | ***16 points***                          | ***14 points***                          |                                |
+|                            |          |                                                      |                                          |                                          |                                |
+|                            |          | ***20 points***                                      |                                          |                                          |                                |
++----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
+| Part B: ESKF model and     | 25       | F matches the numerical Jacobian and the report      | A working ESKF with correct F, H,        | Important errors in F, Q_d, H, the       | Missing, nonfunctional, or not |
+| update                     |          | shows it; Q_d is traced from a datasheet with every  | update, injection, and reset; minor      | injection or the reset, or noise values  | an error-state filter.         |
+|                            |          | inflation argued; H with the lever arm, Joseph       | weaknesses in the noise justification or | with no justification.                   |                                |
+|                            |          | update, injection, and reset are correct and tested; | the observability discussion.            |                                          |                                |
+|                            |          | R and any gate are justified; sigma and bias plots   |                                          | ***18 points***                          |                                |
+|                            |          | are interpreted with observability arguments.        | ***21 points***                          |                                          |                                |
+|                            |          |                                                      |                                          |                                          |                                |
+|                            |          | ***25 points***                                      |                                          |                                          |                                |
++----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
+| Part C: evaluation,        | 25       | Follows the evaluation protocol on all five          | The required evaluation is present and   | Shallow, hard to reproduce, missing      | Evaluation missing or          |
+| outages, and consistency   |          | recommended trials; outage errors against withheld   | mostly clear; the consistency diagnosis  | trials or outage lengths, or consistency | unsupported by meaningful      |
+|                            |          | fixes with 3-sigma envelopes and the constant-       | or the interpretation is limited.        | claimed without evidence.                | outputs.                       |
+|                            |          | velocity baseline; NIS against chi-square bounds and |                                          |                                          |                                |
+|                            |          | an outage-sigma check, a diagnosis, and a tuning     | ***21 points***                          | ***18 points***                          |                                |
+|                            |          | change shown to help; the reference's limits         |                                          |                                          |                                |
+|                            |          | explained.                                           |                                          |                                          |                                |
+|                            |          |                                                      |                                          |                                          |                                |
+|                            |          | ***25 points***                                      |                                          |                                          |                                |
++----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
+| Extension                  | 10       | One or two extensions implemented, tested, and       | An extension that works, with a limited  | A partial extension or one evaluated     | No extension.                  |
+|                            |          | evaluated with the same protocol, with a clear       | evaluation.                              | only anecdotally.                        |                                |
+|                            |          | account of what they buy and cost.                   |                                          |                                          |                                |
+|                            |          |                                                      | ***8 points***                           | ***7 points***                           |                                |
+|                            |          | ***10 points***                                      |                                          |                                          |                                |
++----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
+| Technical communication    | 10       | A concise report built around evidence; every figure | Generally clear and reproducible, with   | Hard to follow or only partly            | Missing or not reproducible.   |
+| and reproducibility        |          | and table regenerates from the README's commands;    | some gaps.                               | reproducible.                            |                                |
+|                            |          | failure modes discussed honestly.                    |                                          |                                          |                                |
+|                            |          |                                                      | ***8 points***                           | ***7 points***                           |                                |
+|                            |          | ***10 points***                                      |                                          |                                          |                                |
++----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
+
+## Suggested Milestones {#sec-project3-suggested-milestones}
+
+1.  Load a recommended trial, plot GNSS, run `uv run ins-gnss --trial NAME`, and look at the mount rotation.
+2.  Write `mechanize` and `coarse_alignment`; pass their tests; run the Part A checks in `run_all`.
+3.  Write `F` and `Q_d`; pass the numerical-Jacobian test.
+4.  Write the residual, update, injection, and reset; pass the synthetic-drive consistency test.
+5.  Run `run_all` on one short trial, read the plots, tune, then run all five.
+6.  Run the outage study, diagnose consistency, tune again (and say what you changed).
+7.  Do the extension, then write the report around the evidence.
 
 ## References {#sec-project3-references}
 
-- @sec-ekf: the extended and error-state Kalman filters
-- @sec-ins-gnss: mechanization equations and Earth models
-- @sec-ins-errors: sensor specifications and biases
-- @sec-math-reference: Jacobian computation and quaternions
-- @sec-practical: debugging and validation
-- Farrell, J. A. (2008). Aided Navigation: GPS with High-Rate Sensors
-- Grewal, M. S., Weill, L. R., & Andrews, A. P. (2007). Global Positioning Systems, Inertial Navigation, and Integration
+- Mechanization, error model, and loose integration: @sec-ins-gnss, @groves, @tittertonWeston2004, @farrell2008
+- IMU errors and process noise: @sec-ins-errors
+- Error-state filtering and the reset: @sec-ekf-error-state-filtering, @sola2017
+- Consistency tests: @sec-kf-consistency, @barShalom2001
+- The dataset: @MemsNavDataset

@@ -14,7 +14,10 @@ That is the correct project boundary. Professional systems sometimes move the
 boundary deeper, using observations produced inside the receiver or even aiding
 its tracking loops. This chapter follows the measurement backward from that
 receiver output to the radio signal, then forward again into loose, tight, and
-deeply integrated navigation.
+deeply integrated navigation. Along the way it builds the two pieces a tightly
+coupled filter needs that the project does not (a receiver clock model and a
+pseudorange measurement model) and the residual test that lets a receiver notice
+when one of its satellites is lying.
 
 ## From Signal in Space to a Navigation Observable {#sec-adv-gnss-from-signal-space}
 
@@ -33,8 +36,8 @@ $\tau_s$ is propagation delay, $f_{D,s}$ is Doppler, and $n(t)$ collects noise
 and interference. A real receiver also confronts front-end filtering, quantization,
 oscillator error, multipath, navigation-data boundaries, and other satellites.
 The simplified model is enough to explain why receiver work estimates delay,
-frequency, phase, and signal quality before it estimates position.
-[@kaplanHegarty2017; @misraEnge2006]
+frequency, phase, and signal quality before it estimates position
+[@kaplanHegarty2017; @misraEnge2006]. @fig-gnss-receiver-chain traces the path.
 
 ```{mermaid}
 %%| label: fig-gnss-receiver-chain
@@ -56,8 +59,8 @@ flowchart LR
 **Acquisition** searches candidate code delays and Doppler shifts until a
 correlation peak identifies a plausible satellite signal. The receiver then uses
 tracking loops to keep that alignment while the vehicle, satellite, and receiver
-oscillator move.
-[@kaplanHegarty2017; @misraEnge2006]
+oscillator move
+[@kaplanHegarty2017; @misraEnge2006].
 
 - A delay-lock loop (DLL) maintains code timing, which supports pseudorange.
 - A phase-lock loop (PLL) maintains carrier phase when the signal supports it.
@@ -134,29 +137,40 @@ observation types. Their precision and failure modes differ.
 A practical pseudorange model is
 
 $$
-\tilde\rho_s = \|\mathbf r_u - \mathbf r_s\|
+\tilde\rho_s = \|\mathbf r_s - \mathbf r_u\|
 + c(\delta t_u - \delta t_s)
 + T_s + I_s + b_s + m_s + \epsilon_s,
-$$
+$$ {#eq-adv-gnss-pseudorange}
 
 where receiver and satellite clock terms, tropospheric and ionospheric delay,
 hardware biases, multipath, and residual noise are visible rather than silently
-hidden in “GPS error.” Carrier phase has a related model, but the ionospheric
-term has the opposite sign and the unknown integer ambiguity enters as
-$\lambda N_s$. That ambiguity is why carrier phase can be remarkably precise
-without instantly producing an absolute range.
+hidden in “GPS error.” Carrier phase, expressed in meters, has a related model,
+
+$$
+\Phi_s = \|\mathbf r_s - \mathbf r_u\|
++ c(\delta t_u - \delta t_s)
++ T_s - I_s + \lambda_c N_s + \epsilon_{\Phi,s},
+$$
+
+in which the ionospheric term has the opposite sign (the ionosphere delays the
+code and advances the carrier phase) and the unknown integer ambiguity
+$N_s$ enters multiplied by the carrier wavelength $\lambda_c$, about 19 cm for GPS
+L1. That ambiguity is why carrier phase can be remarkably precise, with millimeter
+noise, without instantly producing an absolute range.
 
 The navigation message supplies ephemeris, clock information, health/status data,
 and other broadcast parameters used to predict satellite state and correct the
 observations. Receiver PVT is therefore an estimation result, not a direct sensor
-reading. [@kaplanHegarty2017; @misraEnge2006]
+reading [@kaplanHegarty2017; @misraEnge2006].
 
 ## Receiver PVT and Coupling Boundaries {#sec-adv-gnss-receiver-pvt-coupling}
 
 In a standalone receiver, a least-squares or filter solution estimates position,
-velocity, receiver clock offset, and clock drift from the observations. The
-integrated-navigation architecture is named for the point at which it accepts GNSS
-information. [@kaplanHegarty2017; @misraEnge2006]
+velocity, receiver clock offset, and clock drift from the observations; the
+single-epoch least-squares version, with its dilution of precision, is worked in
+@sec-global-nav-dop-pvt. The integrated-navigation architecture is named for the
+point at which it accepts GNSS information (@fig-gnss-coupling-boundaries)
+[@groves; @kaplanHegarty2017].
 
 ```{mermaid}
 %%| label: fig-gnss-coupling-boundaries
@@ -186,59 +200,24 @@ Loose integration consumes the receiver's position and velocity solution. It is
 modular, straightforward to validate, and remains the assessed-course
 implementation. It needs a usable receiver PVT solution, so it cannot exploit a
 set of partial observations when too few satellites are available for standalone
-PVT.
+PVT. Its measurements are also the output of the receiver's own navigation
+filter, so their errors are time-correlated; feeding them to a second Kalman
+filter as if they were white makes that filter overconfident unless
+$\mathbf{R}$ is inflated or the update rate reduced.
 
 ### Tight Coupling
 
 Tight integration predicts each satellite observation from the navigation state
-and fuses its residual directly. The state normally gains receiver clock offset
-and clock-drift terms. A minimal pseudorange residual has the form
-
-$$
-y_s = \tilde\rho_s -
-\left(\|\hat{\mathbf r}_u - \mathbf r_s\| + c\hat{\delta t}_u
-- c\delta t_s + \hat T_s + \hat I_s\right).
-$$
-
-The following interface sketch makes that boundary concrete. It is a measurement
-prediction, not a complete correction or a substitute for transmit-time and Earth
-rotation handling in production software.
-
-```{python}
-#| label: gnss-tight-pseudorange-residual
-#| eval: false
-
-import numpy as np
-
-SPEED_OF_LIGHT_MPS = 299_792_458.0
-
-
-def predicted_pseudorange_m(
-    receiver_ecef_m: np.ndarray,
-    satellite_ecef_m: np.ndarray,
-    receiver_clock_bias_s: float,
-    satellite_clock_bias_s: float,
-    modeled_delay_m: float,
-) -> float:
-    """Return the simplified tight-coupling pseudorange prediction."""
-    geometric_range_m = np.linalg.norm(receiver_ecef_m - satellite_ecef_m)
-    clock_range_m = SPEED_OF_LIGHT_MPS * (
-        receiver_clock_bias_s - satellite_clock_bias_s
-    )
-    return geometric_range_m + clock_range_m + modeled_delay_m
-
-
-def tight_pseudorange_residual_m(
-    measured_pseudorange_m: float, **prediction_inputs
-) -> float:
-    """Return measured-minus-predicted residual for one satellite."""
-    return measured_pseudorange_m - predicted_pseudorange_m(**prediction_inputs)
-```
-
-Tight coupling may continue to obtain useful information from fewer than four
-satellites because the INS and its covariance provide a prior. It also demands
-satellite-state, clock, atmosphere, quality-control, timing, and antenna models
-that are absent from the loose-coupling project.
+and fuses its residual directly, with the receiver clock offset and drift added to
+the state. Three benefits follow. It keeps aiding the INS with fewer than four
+satellites, because the inertial prior supplies what the missing satellites would
+have. It can test each satellite's residual against the INS prediction and exclude
+a faulty satellite rather than a whole fix. And with no receiver navigation filter
+in between, the measurement errors are closer to the white noise the Kalman filter
+assumes. The cost is that satellite-state, clock, atmosphere, Earth-rotation,
+timing, and antenna models become the integrator's responsibility.
+@sec-adv-gnss-clock-model and @sec-adv-gnss-tight-coupling build the two new
+pieces.
 
 ### Deep and Very-Tight Coupling
 
@@ -246,22 +225,504 @@ Terminology varies: some authors use *deep*, *ultra-tight*, and *very tight*
 interchangeably; others draw distinctions based on exactly which loop receives
 navigation aiding. In this book, **deep/very-tight integration** means that the
 INS-estimated dynamics aid code or carrier tracking loops, while the resulting
-receiver observables remain part of the navigation estimator. It is a receiver
-and estimator co-design problem, not simply a tighter Kalman update.
+receiver observables remain part of the navigation estimator. Because the INS
+predicts the line-of-sight motion, the loops no longer have to follow the
+vehicle's dynamics on their own and can run with narrower bandwidths. The payoff
+is tracking at lower carrier-to-noise ratios and through higher dynamics, faster
+reacquisition, and better resistance to jamming. It is a receiver and estimator
+co-design problem, not simply a tighter Kalman update.
+
+None of the three is, by itself, a statement about accuracy. Centimeter-level
+positioning comes from carrier-phase processing
+(@sec-adv-gnss-carrier-phase-corrections), which can feed a loosely coupled filter
+as an RTK fix or a tightly coupled one as raw carrier observables. Coupling
+determines how the system behaves when satellites disappear, misbehave, or are
+jammed.
+
+## The Receiver Clock Model {#sec-adv-gnss-clock-model}
+
+A tightly coupled filter carries the receiver clock as state, and that clock is
+usually the worst oscillator in the whole system. A typical receiver uses a
+temperature-compensated crystal oscillator (TCXO) whose frequency is accurate to
+something like a part per million. One part per million of frequency error is a
+clock drift of one microsecond per second, which is 300 m of pseudorange per
+second. The filter therefore needs a clock model that is honest about how quickly
+the clock wanders.
+
+The standard model has two states, the clock bias and the clock drift, both
+expressed in range units: $b = c\,\delta t_u$ (m) and $d = c\,\delta\dot{t}_u$
+(m/s) [@brownHwang2012; @groves]. The bias integrates the drift plus white
+frequency noise, and the drift is a random walk:
+
+$$
+\frac{d}{dt}
+\begin{bmatrix} b \\ d \end{bmatrix}
+=
+\begin{bmatrix} 0 & 1 \\ 0 & 0 \end{bmatrix}
+\begin{bmatrix} b \\ d \end{bmatrix}
++
+\begin{bmatrix} w_f \\ w_g \end{bmatrix},
+\qquad
+\mathbf{Q}_c = \begin{bmatrix} S_f & 0 \\ 0 & S_g \end{bmatrix}.
+$$
+
+This is the constant-velocity model of @sec-kf-white-noise-acceleration with one
+extra noise input on the "position" state. Discretizing over a step $\tau$ with
+@eq-kf-qd-integral gives
+
+$$
+\mathbf{F}_{clk} =
+\begin{bmatrix} 1 & \tau \\ 0 & 1 \end{bmatrix},
+\qquad
+\mathbf{Q}_{clk} =
+\begin{bmatrix}
+S_f\tau + S_g\tau^3/3 & S_g\tau^2/2 \\
+S_g\tau^2/2 & S_g\tau
+\end{bmatrix}.
+$$ {#eq-adv-gnss-clock-q}
+
+Oscillator manufacturers do not quote $S_f$ and $S_g$; they quote Allan
+variance, the same tool @sec-ins-errors-allan-deviation uses for gyros. The
+fractional-frequency Allan variance of an oscillator is commonly modeled with
+three power-law coefficients,
+
+$$
+\sigma_y^2(\tau) \approx \frac{h_0}{2\tau} + 2\ln 2\,h_{-1} + \frac{2\pi^2}{3}h_{-2}\,\tau ,
+$$
+
+for white frequency noise, flicker frequency noise, and random-walk frequency
+noise. Matching the white and random-walk terms to the two-state model gives
+$S_f = c^2 h_0/2$ and $S_g = 2\pi^2 c^2 h_{-2}$ [@brownHwang2012]. Flicker noise
+has no exact finite-dimensional state model; the usual practice is to drop
+$h_{-1}$ or to inflate the other two terms slightly to cover it.
+
+| Oscillator | $h_0$ | $h_{-1}$ | $h_{-2}$ |
+|---|---|---|---|
+| TCXO (temperature-compensated crystal) | $2 \times 10^{-19}$ | $7 \times 10^{-21}$ | $2 \times 10^{-20}$ |
+| OCXO (oven-controlled crystal) | $8 \times 10^{-20}$ | $2 \times 10^{-21}$ | $4 \times 10^{-23}$ |
+
+: Representative Allan-variance coefficients for receiver oscillators, as tabulated by Brown and Hwang [@brownHwang2012]. Units: seconds for $h_0$, dimensionless for $h_{-1}$, per second for $h_{-2}$. Individual parts vary; use the datasheet or measure. {#tbl-adv-gnss-clock-coefficients}
+
+For a TCXO those coefficients give $S_f \approx 0.009$ m²/s and
+$S_g \approx 0.035$ m²/s³, the same order as the values Groves quotes for a
+TCXO-based receiver [@groves]. The code below builds @eq-adv-gnss-clock-q,
+checks it against the Van Loan method of @sec-kf-van-loan, and then asks the
+question that matters for tight coupling: how fast does the clock-bias
+uncertainty grow when no satellites are updating it?
+
+```{python}
+#| label: adv-gnss-clock-model
+#| echo: true
+
+from scipy.linalg import expm
+
+C_LIGHT = 299_792_458.0   # speed of light [m/s]
+
+OSCILLATORS = {   # Allan-variance coefficients (Brown and Hwang); clock error in seconds
+    "TCXO": {"h0": 2e-19, "h_m1": 7e-21, "h_m2": 2e-20},
+    "OCXO": {"h0": 8e-20, "h_m1": 2e-21, "h_m2": 4e-23},
+}
+
+
+def clock_psds(h0: float, h_m2: float) -> tuple[float, float]:
+    """White-frequency and random-walk-frequency PSDs in range units [m^2/s, m^2/s^3]."""
+    return C_LIGHT**2 * h0 / 2.0, C_LIGHT**2 * 2.0 * np.pi**2 * h_m2
+
+
+def clock_model(tau: float, h0: float, h_m2: float) -> tuple[np.ndarray, np.ndarray]:
+    """Two-state clock (bias [m], drift [m/s]): transition F and process noise Q over tau."""
+    S_f, S_g = clock_psds(h0, h_m2)
+    F = np.array([[1.0, tau], [0.0, 1.0]])
+    Q = np.array([[S_f * tau + S_g * tau**3 / 3.0, S_g * tau**2 / 2.0],
+                  [S_g * tau**2 / 2.0, S_g * tau]])
+    return F, Q
+
+
+tau = 1.0
+for name, coeffs in OSCILLATORS.items():
+    S_f, S_g = clock_psds(coeffs["h0"], coeffs["h_m2"])
+    F_clk, Q_clk = clock_model(tau, coeffs["h0"], coeffs["h_m2"])
+
+    # Independent check with Van Loan: expm([[-A, Qc], [0, A^T]] tau).
+    A = np.array([[0.0, 1.0], [0.0, 0.0]])
+    M = np.block([[-A, np.diag([S_f, S_g])], [np.zeros((2, 2)), A.T]]) * tau
+    E = expm(M)
+    Q_van_loan = E[2:, 2:].T @ E[:2, 2:]
+    assert np.allclose(Q_clk, Q_van_loan, rtol=1e-10, atol=0.0)
+
+    print(f"{name}: S_f = {S_f:.4f} m^2/s, S_g = {S_g:.3g} m^2/s^3")
+    print(f"      Q over {tau:.0f} s [m^2, m^2/s; m^2/s, m^2/s^2]:\n", np.array2string(Q_clk, precision=4))
+
+# Coasting: start from a fresh fix (1 m bias, 0.05 m/s drift) and propagate with no updates.
+print("\nclock-bias standard deviation [m] while coasting:")
+print("            10 s     30 s     60 s")
+for name, coeffs in OSCILLATORS.items():
+    F_clk, Q_clk = clock_model(1.0, coeffs["h0"], coeffs["h_m2"])
+    P_clk = np.diag([1.0**2, 0.05**2])
+    sigmas = []
+    for k in range(1, 61):
+        P_clk = F_clk @ P_clk @ F_clk.T + Q_clk
+        if k in (10, 30, 60):
+            sigmas.append(np.sqrt(P_clk[0, 0]))
+    print(f"  {name}  " + "  ".join(f"{s:7.2f}" for s in sigmas))
+```
+
+The TCXO forgets its bias within tens of seconds: after a minute without
+satellites its clock is uncertain by tens of meters of range, while the
+oven-controlled oscillator is still within a few meters. That difference is
+exactly what decides whether a tightly coupled filter can make good use of two or
+three satellites, because, as the next section shows, an uncertain clock soaks up
+one pseudorange's worth of information. It is also why some military and
+timing-critical systems carry chip-scale atomic clocks.
+
+One practical wrinkle: rather than steer their oscillator, some receivers let the
+clock bias grow to a millisecond and then jump it by exactly one millisecond,
+about 300 km of pseudorange. Every satellite's pseudorange jumps by the same
+amount at the same instant. A tightly coupled filter must recognize that common
+step and reset its clock state, or it will see a 300 km innovation on every
+satellite and reject them all.
+
+## Tightly Coupled Measurements {#sec-adv-gnss-tight-coupling}
+
+The tightly coupled error state appends the clock to the 15 INS error states of
+@sec-ins-gnss-error-state-formulation,
+
+$$
+\delta\mathbf{x} =
+\left[
+\delta\mathbf{p},\
+\delta\mathbf{v},\
+\delta\boldsymbol{\theta},\
+\delta\mathbf{b}_a,\
+\delta\mathbf{b}_g,\
+\delta b,\
+\delta d
+\right]^T \in \mathbb{R}^{17},
+$$
+
+with block-diagonal propagation: the INS block as before and the clock block of
+@eq-adv-gnss-clock-q. The measurement model is where the work is.
+
+### Predicting a pseudorange from the INS
+
+Given the nominal state, the predicted antenna position in ECEF is the IMU
+position plus the lever arm $\boldsymbol{\ell}^b$ rotated into ECEF,
+
+$$
+\hat{\mathbf{r}}_a^e = \mathbf{r}^e(\hat{L}, \hat{\lambda}, \hat{h})
++ \mathbf{C}_n^e\,\hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b,
+$$
+
+and the predicted pseudorange for satellite $s$, following @eq-adv-gnss-pseudorange, is
+
+$$
+\hat{\rho}_s = \left\|\mathbf{r}_s' - \hat{\mathbf{r}}_a^e\right\| + \hat{b}
+- c\,\delta t_s + \hat{T}_s + \hat{I}_s ,
+$$
+
+where $\mathbf{r}_s'$ is the satellite position corrected for Earth rotation and
+$\hat{T}_s$, $\hat{I}_s$ are modeled atmospheric delays. Two corrections hide in
+that expression. The **Sagnac correction**: the satellite position is computed
+in the ECEF frame at transmit time, but the receiver lives in the ECEF frame at
+receive time, which has rotated by $\omega_{ie}\tau_s$ during the 70-odd ms of
+flight, so $\mathbf{r}_s'$ is the transmit-time position rotated about the $z$
+axis by $-\omega_{ie}\tau_s$; the effect on range is approximately
+$(\omega_{ie}/c)(x_s y_a - y_s x_a)$, up to a few tens of meters. The
+**satellite relativistic clock correction**: a satellite on a slightly eccentric
+orbit runs fast near apogee and slow near perigee, a periodic clock term
+$\Delta t_r = F e\sqrt{A}\sin E_k$ (with $F = -4.442807633\times10^{-10}$
+s/m$^{1/2}$) worth several meters of range, which is applied together with the
+broadcast satellite clock correction $\delta t_s$ [@isGps200].
+
+### The measurement Jacobian
+
+Let $\mathbf{u}_s^n = \mathbf{C}_e^n(\mathbf{r}_s' - \hat{\mathbf{r}}_a^e)/\|\mathbf{r}_s' - \hat{\mathbf{r}}_a^e\|$
+be the unit line of sight from antenna to satellite, resolved in NED. With errors
+defined as true minus estimate, the true antenna position differs from the
+predicted one by $\delta\mathbf{p} + \delta(\mathbf{C}_b^n\boldsymbol{\ell}^b)$,
+and from @sec-frames-conventions,
+$\delta(\mathbf{C}_b^n\boldsymbol{\ell}^b) \approx [\delta\boldsymbol{\theta}]_\times\hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b
+= -[\hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b]_\times\delta\boldsymbol{\theta}$.
+Moving the antenna toward the satellite shortens the range, so
+
+$$
+\nu_s = \tilde{\rho}_s - \hat{\rho}_s
+\approx -\mathbf{u}_s^{nT}\left(\delta\mathbf{p}
+- [\hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b]_\times\delta\boldsymbol{\theta}\right)
++ \delta b + \epsilon_s ,
+$$
+
+and the pseudorange row of $\mathbf{H}$ is
+
+$$
+\mathbf{H}_{\rho,s} =
+\begin{bmatrix}
+-\mathbf{u}_s^{nT} & \mathbf{0}_{1\times3} & \mathbf{u}_s^{nT}[\hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b]_\times & \mathbf{0}_{1\times6} & 1 & 0
+\end{bmatrix}.
+$$ {#eq-adv-gnss-tight-h}
+
+Compare it with the loose position Jacobian of @sec-global-nav-loosely-coupled-ins,
+$[\mathbf{I}_3,\ \mathbf{0},\ -[\hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b]_\times,\ \mathbf{0},\ \mathbf{0}]$:
+a pseudorange row is the loose position measurement projected onto one line of
+sight, with a sign flip and a clock column added. The pseudorange-rate row
+follows the same pattern from $\dot{\rho}_s = \mathbf{u}_s^T(\mathbf{v}_s - \mathbf{v}_a) + d$:
+
+$$
+\mathbf{H}_{\dot\rho,s} =
+\begin{bmatrix}
+\mathbf{0}_{1\times3} & -\mathbf{u}_s^{nT} & \mathbf{0}_{1\times9} & 0 & 1
+\end{bmatrix},
+$$
+
+plus a small attitude term from the rotating lever arm that is usually
+neglected. The velocity of the satellite comes from the ephemeris, and the
+Earth-rotation correction applies to it as well.
+
+### Why fewer than four satellites still help
+
+Read @eq-adv-gnss-tight-h as information. Each pseudorange constrains one linear
+combination of the position error along that satellite's line of sight and the
+clock error. If the clock is well known from its model, every satellite pins down
+position along its own line of sight, and even one satellite is useful. If the
+clock is poorly known, the clock column absorbs the common part of all the
+residuals, and $m$ satellites give roughly $m - 1$ independent position
+constraints. Meanwhile the INS prior covers every direction no satellite
+constrains. A loosely coupled filter, by contrast, gets nothing at all until the
+receiver has four satellites and produces a fix.
+
+The cell below builds the tightly coupled measurement model with lever arm and
+Sagnac correction, checks every column of @eq-adv-gnss-tight-h against finite
+differences of the full nonlinear prediction, and then performs one update in a
+north-south street canyon where only three satellites are visible.
+
+```{python}
+#| label: adv-gnss-tight-coupling
+#| echo: true
+
+WGS84_A = 6_378_137.0             # semi-major axis [m]
+WGS84_E2 = 6.69437999014e-3       # first eccentricity squared
+OMEGA_IE = 7.292115e-5            # Earth rotation rate [rad/s]
+GPS_ORBIT_RADIUS = 26_560e3       # [m]
+
+
+# Geodesy helpers, as in the global navigation chapter.
+def radii(lat):
+    den = 1.0 - WGS84_E2 * np.sin(lat) ** 2
+    return WGS84_A * (1.0 - WGS84_E2) / den**1.5, WGS84_A / np.sqrt(den)
+
+
+def geodetic_to_ecef(lat, lon, h):
+    R_N = radii(lat)[1]
+    return np.array([(R_N + h) * np.cos(lat) * np.cos(lon),
+                     (R_N + h) * np.cos(lat) * np.sin(lon),
+                     (R_N * (1.0 - WGS84_E2) + h) * np.sin(lat)])
+
+
+def C_e_to_n(lat, lon):
+    sL, cL, sl, cl = np.sin(lat), np.cos(lat), np.sin(lon), np.cos(lon)
+    return np.array([[-sL * cl, -sL * sl, cL], [-sl, cl, 0.0], [-cL * cl, -cL * sl, -sL]])
+
+
+def place_satellites(r_rx, lat, lon, az_deg, el_deg, radius=GPS_ORBIT_RADIUS):
+    az, el = np.radians(az_deg), np.radians(el_deg)
+    u_ned = np.column_stack([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), -np.sin(el)])
+    u_ecef = u_ned @ C_e_to_n(lat, lon)
+    b = u_ecef @ r_rx
+    return r_rx + (-b + np.sqrt(b**2 - r_rx @ r_rx + radius**2))[:, None] * u_ecef
+
+
+def skew(a):
+    return np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
+
+
+def rotvec_to_dcm(phi):
+    angle = np.linalg.norm(phi)
+    if angle < 1e-12:
+        return np.eye(3) + skew(phi)
+    K = skew(phi / angle)
+    return np.eye(3) + np.sin(angle) * K + (1.0 - np.cos(angle)) * K @ K
+
+
+def sagnac_rotate(sat_ecef, travel_time_s):
+    """Rotate transmit-time ECEF satellite positions into the receive-time ECEF frame."""
+    theta = OMEGA_IE * travel_time_s
+    c, s = np.cos(theta), np.sin(theta)
+    x, y, z = sat_ecef.T
+    return np.column_stack([c * x + s * y, -s * x + c * y, z])
+
+
+def predict_pseudoranges(nominal, C_bn, lever_arm_b, clock_bias_m, sat_ecef):
+    """Predicted pseudoranges (satellite clock and atmosphere already removed).
+
+    nominal = (lat, lon, h) of the IMU. Returns predicted pseudoranges [m],
+    NED unit lines of sight (one row per satellite), and the Sagnac terms [m].
+    """
+    lat, lon, h = nominal
+    C_en = C_e_to_n(lat, lon)
+    r_ant = geodetic_to_ecef(lat, lon, h) + C_en.T @ (C_bn @ lever_arm_b)
+    geometric = np.linalg.norm(sat_ecef - r_ant, axis=1)
+    ranges = geometric
+    for _ in range(2):             # travel time depends on the range it corrects
+        sat_rx = sagnac_rotate(sat_ecef, ranges / C_LIGHT)
+        ranges = np.linalg.norm(sat_rx - r_ant, axis=1)
+    u_ned = ((sat_rx - r_ant) / ranges[:, None]) @ C_en.T
+    return ranges + clock_bias_m, u_ned, ranges - geometric
+
+
+def tight_pseudorange_jacobian(u_ned, C_bn, lever_arm_b):
+    """Pseudorange rows of H for the 17-state error [dp, dv, dtheta, dba, dbg, db, dd]."""
+    H = np.zeros((len(u_ned), 17))
+    H[:, 0:3] = -u_ned
+    H[:, 6:9] = u_ned @ skew(C_bn @ lever_arm_b)
+    H[:, 15] = 1.0
+    return H
+
+
+def apply_position_error(nominal, dp_ned):
+    """Nominal geodetic position displaced by a NED-meter error (true = nominal + dp)."""
+    lat, lon, h = nominal
+    R_M, R_N = radii(lat)
+    return (lat + dp_ned[0] / (R_M + h), lon + dp_ned[1] / ((R_N + h) * np.cos(lat)),
+            h - dp_ned[2])
+
+
+# A car near WPI heading north-east; antenna 1.2 m above and 0.8 m ahead of the IMU.
+nominal = (np.radians(42.2742), np.radians(-71.8080), 150.0)
+C_bn_hat = rotvec_to_dcm(np.radians([1.0, -2.0, 45.0]))
+lever_arm_b = np.array([0.8, 0.0, -1.2])
+clock_hat = 1.0e4                                           # nominal clock bias [m]
+r_imu = geodetic_to_ecef(*nominal)
+
+az = np.array([10.0, 60.0, 105.0, 150.0, 200.0, 245.0, 290.0, 330.0])
+el = np.array([72.0, 28.0, 45.0, 15.0, 60.0, 22.0, 38.0, 12.0])
+sats = place_satellites(r_imu, nominal[0], nominal[1], az, el)
+
+rho_hat, u_ned, sagnac_m = predict_pseudoranges(nominal, C_bn_hat, lever_arm_b, clock_hat, sats)
+H = tight_pseudorange_jacobian(u_ned, C_bn_hat, lever_arm_b)
+print("Sagnac terms [m]:", np.round(sagnac_m, 1))
+
+# Finite-difference check of every nonzero column block of H.
+H_fd = np.zeros_like(H)
+for j in range(3):
+    e = np.zeros(3)
+    e[j] = 1.0                                              # 1 m steps in position
+    plus = predict_pseudoranges(apply_position_error(nominal, e), C_bn_hat, lever_arm_b, clock_hat, sats)[0]
+    minus = predict_pseudoranges(apply_position_error(nominal, -e), C_bn_hat, lever_arm_b, clock_hat, sats)[0]
+    H_fd[:, j] = (plus - minus) / 2.0
+    e = np.zeros(3)
+    e[j] = 1e-4                                             # 0.1 mrad steps in attitude
+    plus = predict_pseudoranges(nominal, rotvec_to_dcm(e) @ C_bn_hat, lever_arm_b, clock_hat, sats)[0]
+    minus = predict_pseudoranges(nominal, rotvec_to_dcm(-e) @ C_bn_hat, lever_arm_b, clock_hat, sats)[0]
+    H_fd[:, 6 + j] = (plus - minus) / 2e-4
+H_fd[:, 15] = (predict_pseudoranges(nominal, C_bn_hat, lever_arm_b, clock_hat + 1.0, sats)[0] - rho_hat)
+print("max |H - H_finite_difference| =", f"{np.max(np.abs(H - H_fd)):.1e}")
+# H neglects the dependence of the Sagnac angle on receiver position (through the
+# travel time), a term of order omega_ie |r_s| / c ~ 1e-5; everything else matches.
+assert np.allclose(H, H_fd, atol=1e-4)
+```
+
+The Sagnac terms are up to about twenty meters here, signed by whether the
+satellite lies east or west of the receiver. The analytic Jacobian matches the
+finite differences of the full nonlinear model, lever arm and Earth rotation
+included, to about $10^{-5}$; the remainder is the small dependence of the Sagnac
+angle on the receiver position through the travel time, which
+@eq-adv-gnss-tight-h neglects. Now the street
+canyon. The INS has coasted, so its prior is a few meters in position; the clock
+has either coasted for tens of seconds (TCXO, $\sigma_b = 30$ m) or been held by
+a better oscillator ($\sigma_b = 1$ m). Only satellites near the street's
+north-south axis are visible.
+
+```{python}
+#| label: adv-gnss-tight-canyon
+#| echo: true
+
+def kalman_update(P, nu, H, R):
+    """Joseph-form update with zero prior error-state mean."""
+    S = H @ P @ H.T + R
+    K = np.linalg.solve(S, H @ P).T
+    I_KH = np.eye(P.shape[0]) - K @ H
+    return K @ nu, I_KH @ P @ I_KH.T + K @ R @ K.T
+
+
+def prior_covariance(sigma_clock_bias):
+    sig = np.r_[5.0, 5.0, 8.0,                         # position N, E, D [m]
+                0.5, 0.5, 0.5,                         # velocity [m/s]
+                np.radians([1.0, 1.0, 3.0]),           # attitude [rad]
+                np.full(3, 0.05), np.full(3, np.radians(0.05)),   # accel, gyro bias
+                sigma_clock_bias, 1.0]                 # clock bias [m], drift [m/s]
+    return np.diag(sig**2)
+
+
+canyon_az = np.array([5.0, 175.0, 340.0])              # along a north-south street
+canyon_el = np.array([62.0, 55.0, 35.0])
+canyon_sats = place_satellites(r_imu, nominal[0], nominal[1], canyon_az, canyon_el)
+
+# Truth: the INS is 3 m north, 4 m east, 2 m low of the nominal; clock off by 0.8 m
+# (a value consistent with both clock priors below).
+dp_true, db_true = np.array([3.0, 4.0, -2.0]), 0.8
+rng = np.random.default_rng(11)
+sigma_rho = 3.0
+true_pos = apply_position_error(nominal, dp_true)
+rho_meas = (predict_pseudoranges(true_pos, C_bn_hat, lever_arm_b, clock_hat + db_true, canyon_sats)[0]
+            + sigma_rho * rng.standard_normal(3))
+
+print("case                         sigma_N  sigma_E  sigma_D  sigma_b    dp_hat (N, E, D)")
+for label, n_sats, sigma_b in (("INS prior only (no update)", 0, 30.0),
+                               ("2 satellites, TCXO clock", 2, 30.0),
+                               ("3 satellites, TCXO clock", 3, 30.0),
+                               ("3 satellites, held clock", 3, 1.0)):
+    P = prior_covariance(sigma_b)
+    dx = np.zeros(17)
+    if n_sats:
+        idx = slice(0, n_sats)
+        rho_hat_c, u_c, _ = predict_pseudoranges(nominal, C_bn_hat, lever_arm_b, clock_hat, canyon_sats[idx])
+        H_c = tight_pseudorange_jacobian(u_c, C_bn_hat, lever_arm_b)
+        dx, P = kalman_update(P, rho_meas[idx] - rho_hat_c, H_c, sigma_rho**2 * np.eye(n_sats))
+    s = np.sqrt(np.diag(P))
+    print(f"{label:<28} {s[0]:7.2f}  {s[1]:7.2f}  {s[2]:7.2f}  {s[15]:7.2f}    {np.round(dx[:3], 1)}")
+print("truth dp:", dp_true, " (a loosely coupled filter receives no fix at all)")
+```
+
+With two satellites and a poorly known clock, the clock absorbs the common part
+of the two residuals and their difference, which looks almost due north and south,
+pins down northing; height and the clock stay poorly known. A third satellite adds
+a little more, and holding the clock turns each pseudorange into a direct position
+constraint: the vertical uncertainty drops from 8 m to 2.5 m. The flip side is
+that the clock and vertical columns of $\mathbf{H}$ are nearly parallel for
+high-elevation satellites, so a "held" clock that is actually wrong pushes its
+error straight into height. In every case the east (cross-street) error stays near
+its prior, because no visible satellite looks across the street. That is geometry,
+not a filter failure, and it is why urban navigation systems work so hard to add
+sensors that see sideways: wheel odometry, cameras, lidar.
 
 ## Carrier Phase, Corrections, and High-Accuracy GNSS {#sec-adv-gnss-carrier-phase-corrections}
 
 Carrier phase enables high relative precision after the integer ambiguities are
-handled correctly. RTK uses common observations from a rover and a nearby base
-station or correction network to reduce shared errors; a *float* solution leaves
-ambiguities unresolved, while a *fixed* solution has accepted an integer
-hypothesis. A false fix is worse than an honest float solution.
+handled correctly. **Real-time kinematic (RTK)** positioning uses common
+observations from a rover and a nearby base station or correction network to
+reduce shared errors. The key operation is double differencing. Differencing the
+rover's and base's observations of the same satellite cancels that satellite's
+clock and, over a short baseline, most of its orbit and atmospheric error.
+Differencing that result between two satellites cancels the two receivers' clocks.
+What remains is geometry, residual noise, and an integer double-differenced
+ambiguity, which ambiguity-resolution methods search for. A *float* solution
+leaves the ambiguities as real numbers; a *fixed* solution has accepted an integer
+hypothesis and typically reaches 1 to 2 cm horizontally plus about one part per
+million of the baseline. That works well for baselines up to roughly 10 to 20 km
+from a single base; beyond that the atmosphere decorrelates and fixing becomes
+slow and unreliable, which is why network RTK interpolates corrections from many
+stations. A false fix is worse than an honest float solution.
 
-PPP uses precise satellite orbit and clock products rather than a local base.
-PPP-RTK combines precise corrections with ambiguity-resolution methods to reduce
-the convergence penalty. These approaches change the correction and state model;
-they do not remove the need to detect multipath, data gaps, cycle slips, timing
-errors, and incorrect antenna modeling. [@kaplanHegarty2017; @misraEnge2006]
+**Precise point positioning (PPP)** uses precise satellite orbit and clock products
+rather than a local base, with dual-frequency observations and careful models of
+everything a base station would have cancelled: solid-Earth tides, antenna phase
+centers, phase wind-up. The penalty is convergence: the float ambiguities take
+tens of minutes to settle to decimeter-level and often longer to reach a few
+centimeters. PPP-RTK combines precise corrections with regional atmospheric
+information and ambiguity resolution to cut that to minutes. These approaches
+change the correction and state model; they do not remove the need to detect
+multipath, data gaps, cycle slips, timing errors, and incorrect antenna modeling
+[@kaplanHegarty2017; @misraEnge2006].
 
 ## Public Signals and Protected Services {#sec-adv-gnss-public-signals-protected}
 
@@ -295,11 +756,326 @@ log the event, gate or downweight observations according to its model, grow
 uncertainty appropriately, and publish the resulting health state. “The point
 estimate did not jump” is not an integrity argument.
 
+## RAIM, Interference, and Spoofing {#sec-adv-gnss-raim}
+
+### Receiver autonomous integrity monitoring
+
+With more than four satellites, the least-squares fix of @sec-global-nav-dop-pvt
+is overdetermined, and the leftover residuals carry information about whether the
+measurements agree with each other. That is the idea behind **receiver autonomous
+integrity monitoring** (RAIM), developed for aviation in the late 1980s so that a
+receiver could vouch for its own fix without a ground monitoring network
+[@brown1992raim]. With the geometry matrix $\mathbf{G}$ of
+@eq-global-nav-geometry-matrix, write the least-squares estimator as
+$\Delta\hat{\mathbf{x}} = \mathbf{A}\,\Delta\boldsymbol{\rho}$ with
+$\mathbf{A} = (\mathbf{G}^T\mathbf{G})^{-1}\mathbf{G}^T$. The post-fit residuals are
+
+$$
+\mathbf{r} = (\mathbf{I} - \mathbf{G}\mathbf{A})\,\Delta\boldsymbol{\rho}
+= \mathbf{S}\,\boldsymbol{\epsilon},
+$$
+
+where $\mathbf{S} = \mathbf{I} - \mathbf{G}\mathbf{A}$ is a projection of rank $m - 4$
+(the second equality uses $\mathbf{S}\mathbf{G} = \mathbf{0}$): the residuals see only the part
+of the measurement error that no position and clock could explain. If the errors
+are independent with standard deviation $\sigma$, the normalized sum of squared
+errors
+
+$$
+T = \frac{\mathbf{r}^T\mathbf{r}}{\sigma^2} = \frac{\text{SSE}}{\sigma^2}
+\sim \chi^2_{m-4}
+$$ {#eq-adv-gnss-raim-test}
+
+is a chi-square variable with $m - 4$ degrees of freedom (with unequal variances,
+use $\mathbf{r}^T\mathbf{R}^{-1}\mathbf{r}$). **Fault detection** compares $T$ with
+a threshold $T_D$ set by the allowed false-alarm probability. It needs $m \geq 5$.
+**Fault exclusion** repeats the test on each subset with one satellite removed and
+drops the satellite whose removal restores consistency. That needs $m \geq 6$,
+because a five-satellite subset with one removed has no redundancy left to test.
+This is the same chi-square machinery as the NIS test of @sec-kf-consistency,
+applied inside a single epoch; the parity-space and range-comparison formulations
+of RAIM turn out to be equivalent to it [@brown1992raim].
+
+A test that only *detects* is not yet an integrity guarantee, because a bias can
+hide. A bias $\beta$ on satellite $i$ adds $\beta\,\mathbf{S}_{:,i}$ to the
+residuals, so the test statistic becomes noncentral chi-square with
+noncentrality $\beta^2 S_{ii}/\sigma^2$, while the horizontal position error grows
+as $\beta$ times the horizontal (NED-rotated) part of column $i$ of $\mathbf{A}$,
+$\mathbf{a}_{H,i}$. Their ratio, the satellite's **slope**
+$\|\mathbf{a}_{H,i}\|/\sqrt{S_{ii}}$, says how much horizontal error a fault on
+that satellite causes per unit of $\sigma\sqrt{\text{noncentrality}}$ it adds to
+the test. The satellite with the largest slope is the
+hardest to catch. A **protection level** turns that into a bound: the horizontal
+error that the largest-slope fault could cause while still escaping detection with
+the allowed missed-detection probability. Aviation receivers publish the
+protection level and declare the fix unusable for a phase of flight when it exceeds
+the alert limit. **Advanced RAIM** (ARAIM) extends the idea to multiple
+constellations and dual-frequency measurements, with a broadcast integrity support
+message describing satellite and constellation fault probabilities, aiming at
+vertical guidance for aircraft approaches [@blanch2015araim].
+
+The example injects a 60 m fault on one satellite of an eight-satellite fix,
+detects it, excludes it, and then computes the slopes and a simplified horizontal
+protection level for the fault-free geometry.
+
+```{python}
+#| label: adv-gnss-raim
+#| echo: true
+
+from scipy.optimize import brentq
+from scipy.stats import chi2, ncx2
+
+
+def geometry_matrix(sat_ecef, r_rx):
+    diff = sat_ecef - r_rx
+    ranges = np.linalg.norm(diff, axis=1)
+    return np.column_stack([-diff / ranges[:, None], np.ones(len(ranges))]), ranges
+
+
+def solve_pvt(sat_ecef, rho, x0, iterations=6):
+    """Gauss-Newton single-point positioning, as in the global navigation chapter."""
+    x = np.array(x0, dtype=float)
+    for _ in range(iterations):
+        G, ranges = geometry_matrix(sat_ecef, x[:3])
+        x = x + np.linalg.solve(G.T @ G, G.T @ (rho - ranges - x[3]))
+    G, ranges = geometry_matrix(sat_ecef, x[:3])
+    return x, G, rho - ranges - x[3]                     # estimate, G, post-fit residuals
+
+
+def raim_test(sat_ecef, rho, sigma, p_fa, x0):
+    """SSE chi-square RAIM test. Returns T, the threshold, and the fix."""
+    x, G, r = solve_pvt(sat_ecef, rho, x0)
+    dof = len(rho) - 4
+    return float(r @ r) / sigma**2, float(chi2.ppf(1.0 - p_fa, dof)), x
+
+
+def detect_and_exclude(sat_ecef, rho, sigma, p_fa, x0):
+    """Fault detection, then leave-one-out exclusion. Returns (excluded index or None, fix)."""
+    T, T_D, x = raim_test(sat_ecef, rho, sigma, p_fa, x0)
+    print(f"all {len(rho)} satellites: T = {T:7.1f}, threshold {T_D:5.1f} ->",
+          "FAULT DETECTED" if T > T_D else "consistent")
+    if T <= T_D:
+        return None, x
+    passing = []
+    for i in range(len(rho)):
+        keep = np.arange(len(rho)) != i
+        T_i, T_D_i, x_i = raim_test(sat_ecef[keep], rho[keep], sigma, p_fa, x0)
+        print(f"   without satellite {i + 1}: T = {T_i:7.1f}, threshold {T_D_i:5.1f}")
+        if T_i <= T_D_i:
+            passing.append((T_i, i, x_i))
+    if len(passing) != 1:            # zero or several consistent subsets: cannot identify
+        return "unidentified", x
+    _, i_bad, x_clean = passing[0]
+    return i_bad, x_clean
+
+
+sigma_rho, p_fa, p_md = 3.0, 1e-5, 1e-3
+clock_true = 9.0e4
+lat0, lon0 = nominal[0], nominal[1]
+C_en = C_e_to_n(lat0, lon0)
+rng = np.random.default_rng(7)
+rho_clean = (np.linalg.norm(sats - r_imu, axis=1) + clock_true
+             + sigma_rho * rng.standard_normal(len(sats)))
+x0 = np.r_[r_imu + 500.0, 0.0]                         # a rough prior fix
+
+rho_faulty = rho_clean.copy()
+rho_faulty[3] += 60.0                                  # 60 m fault on satellite 4
+excluded, x_fde = detect_and_exclude(sats, rho_faulty, sigma_rho, p_fa, x0)
+x_bad, _, _ = solve_pvt(sats, rho_faulty, x0)
+print(f"excluded satellite: {excluded + 1}")
+print("horizontal error with the fault:  "
+      f"{np.linalg.norm((C_en @ (x_bad[:3] - r_imu))[:2]):5.1f} m")
+print("horizontal error after exclusion: "
+      f"{np.linalg.norm((C_en @ (x_fde[:3] - r_imu))[:2]):5.1f} m")
+
+# Slopes and a simplified horizontal protection level for the fault-free geometry.
+_, G, _ = solve_pvt(sats, rho_clean, x0)
+A = np.linalg.solve(G.T @ G, G.T)                       # least-squares estimator, 4 x m
+S = np.eye(len(sats)) - G @ A                           # residual projection
+A_ned = C_en @ A[:3]
+slopes = np.hypot(A_ned[0], A_ned[1]) / np.sqrt(np.diag(S))
+dof = len(sats) - 4
+T_D = chi2.ppf(1.0 - p_fa, dof)
+lam = brentq(lambda nc: ncx2.cdf(T_D, dof, nc) - p_md, 1e-6, 1e3)   # noncentrality to detect
+worst = int(np.argmax(slopes))
+print("\nslopes (horizontal error per sigma x sqrt(noncentrality)):", np.round(slopes, 2))
+print(f"hardest fault to detect: satellite {worst + 1}; even a "
+      f"{sigma_rho * np.sqrt(lam / S[worst, worst]):.0f} m bias there is missed "
+      f"with probability {p_md:.0e}")
+print(f"simplified HPL = max slope x sigma x sqrt(lambda) = {slopes.max() * sigma_rho * np.sqrt(lam):.1f} m")
+```
+
+The fault shows up as a test statistic far above threshold, the leave-one-out
+search identifies the faulty satellite, and the fix returns to its fault-free
+accuracy. The slope calculation tells the less comfortable part of the story: a
+bias of tens of meters on the worst-placed satellite can slip under the threshold,
+and the protection level is correspondingly several times larger than the typical
+error. Real aviation protection levels add the noise contribution, account for
+multiple faults, and are computed from carefully validated error models, but the
+logic is the one above.
+
+An integrated INS adds a second, independent opinion. The tightly coupled filter
+of @sec-adv-gnss-tight-coupling can test each pseudorange innovation against
+$\mathbf{H}\mathbf{P}\mathbf{H}^T + \mathbf{R}$ from the inertial prediction, which
+works even with fewer than five satellites, and a navigation-grade INS can coast
+long enough to make that prediction sharp. For a smartphone IMU the prediction
+degrades within seconds, so the inertial opinion is only briefly worth having.
+
+### Jamming
+
+GPS L1 C/A signals are specified to arrive at no less than $-158.5$ dBW, which is
+$-128.5$ dBm, well below the thermal noise in the receiver's bandwidth
+[@isGps200]. Correlation against the known code lifts each signal out of the noise,
+and a receiver typically tracks at a carrier-to-noise-density ratio $C/N_0$ of 35
+to 50 dB-Hz. A jammer raises the effective noise. For a jammer-to-signal power
+ratio $J/S$, a widely used approximation for the effective ratio is
+
+$$
+\left(\frac{C}{N_0}\right)_{\text{eff}} =
+\left[\left(\frac{C}{N_0}\right)^{-1} + \frac{J/S}{Q R_c}\right]^{-1},
+$$
+
+where $R_c$ is the chipping rate (1.023 Mchip/s for C/A) and $Q$ is a factor of
+order one that depends on the jammer's spectrum [@kaplanHegarty2017]. Setting the
+effective ratio equal to a tracking threshold gives the $J/S$ a receiver tolerates;
+free-space path loss then turns that into a range.
+
+```{python}
+#| label: adv-gnss-jamming
+#| echo: true
+
+L1_HZ = 1575.42e6
+S_DBM = -128.5                   # minimum specified received L1 C/A power [dBm]
+R_C = 1.023e6                    # C/A chipping rate [chip/s]
+
+
+def js_tolerance_db(cn0_dbhz=45.0, threshold_dbhz=28.0, Q=1.0):
+    """J/S [dB] that pulls C/N0 from its nominal value down to the tracking threshold."""
+    return 10 * np.log10(Q * R_C * (10 ** (-threshold_dbhz / 10) - 10 ** (-cn0_dbhz / 10)))
+
+
+def denial_radius_km(jammer_dbm, js_db):
+    """Free-space distance [km] inside which the jammer exceeds the J/S tolerance."""
+    allowed_path_loss_db = jammer_dbm - (S_DBM + js_db)
+    return 10 ** (allowed_path_loss_db / 20) * C_LIGHT / (4 * np.pi * L1_HZ) / 1e3
+
+
+js = js_tolerance_db()
+print(f"J/S tolerance (45 -> 28 dB-Hz, Q = 1): {js:.0f} dB")
+for label, p_dbm in (("10 mW 'privacy' jammer", 10.0), ("1 W jammer", 30.0),
+                     ("100 W jammer", 50.0)):
+    print(f"  {label:<24} denies tracking out to about {denial_radius_km(p_dbm, js):6.1f} km "
+          "(free space, line of sight)")
+print(f"radio horizon of an aircraft at 10 km altitude: {np.sqrt(2 * 6371e3 * 1e4) / 1e3:.0f} km")
+```
+
+On the ground, terrain and buildings shorten these free-space distances
+considerably. In the air there is nothing in the way, which is why a jammer on the
+ground can deny GNSS to aircraft across a region hundreds of kilometers wide. Even
+the cigarette-lighter "privacy" jammers that some drivers use to defeat fleet
+tracking, illegal in the United States and many other countries, have disrupted
+airport GNSS equipment from a passing highway. Jamming is at least honest: the
+receiver loses lock, $C/N_0$ falls, and an INS takes over. Resistance comes from
+antennas that null the direction of the jammer (controlled reception pattern
+antennas), from deep integration's narrower loops, and from not depending on GNSS
+alone.
+
+### Spoofing
+
+Spoofing is worse, because a spoofed receiver reports a confident fix. A spoofer
+transmits counterfeit signals, typically starting aligned with the real ones and
+then dragging the victim's solution away slowly enough to avoid tripping simple
+checks. Because all counterfeit signals come from one transmitter, they often
+share telltale features, and a receiver or integrated system can look for:
+
+- $C/N_0$ values that are suspiciously high or nearly identical across satellites,
+  or a jump in received power and automatic gain control level;
+- all signals arriving from the same direction, which a multi-element antenna
+  can measure (real satellites are spread across the sky);
+- jumps in the receiver clock bias or time, or position and velocity that move in
+  ways the inertial sensors did not feel;
+- inconsistency between constellations or frequencies when a spoofer reproduces
+  only some of them;
+- failure of navigation-message authentication where it is available, such as
+  Galileo's Open Service Navigation Message Authentication (OSNMA).
+
+The inertial cross-check is the one this course is equipped to reason about. A
+spoofer that drags the position with an acceleration well above the INS
+accelerometer-bias uncertainty produces innovations that grow until the filter
+rejects them. A spoofer that drags more gently than that can be absorbed into the
+bias estimates, which is why the quality of the IMU sets the sensitivity of the
+check (Exercise 5).
+
+These attacks have left the laboratory. In 2017, ships near the Russian Black
+Sea coast reported GPS positions placing them inland at an airport, and later
+open-source analysis documented systematic spoofing around sensitive sites in
+Russia and Syria [@c4ads2019]. Since 2023, commercial aircraft over parts of the
+Middle East have encountered spoofing that displaced their GNSS positions by
+large distances, in some reported cases contaminating the aircraft's integrated
+navigation solution as well, and flights around the Baltic have faced persistent
+jamming and increasingly spoofing. Aviation authorities responded with safety
+bulletins and revised procedures [@easaSib202202]. The engineering lesson is the
+one this chapter keeps returning to: a GNSS fix is a measurement, measurements can
+be wrong in structured ways, and the navigation system must be built to notice.
+
 ## Further Reading {#sec-adv-gnss-further-reading}
 
 For receiver and observable detail, see [@kaplanHegarty2017] and
-[@misraEnge2006]. For the global-scale estimator and the assessed loose-coupling
-workflow, return to @sec-global-nav, @sec-ins-gnss, and @sec-ins-errors. The important connection is now
-visible: a GNSS position solution, raw pseudorange, and code-tracking error are
-different products of the same radio-navigation chain, so they belong at different
-places in an integrated navigation architecture.
+[@misraEnge2006]. Groves covers tightly coupled integration and receiver clock
+modeling in depth [@groves]; remember that he writes $R_N$ and $R_E$ where this
+book writes $R_M$ and $R_N$. Brown and Hwang derive the clock model from Allan
+variance [@brownHwang2012]. For the global-scale estimator and the assessed
+loose-coupling workflow, return to @sec-global-nav, @sec-ins-gnss, and
+@sec-ins-errors. The important connection is now visible: a GNSS position
+solution, raw pseudorange, and code-tracking error are different products of the
+same radio-navigation chain, so they belong at different places in an integrated
+navigation architecture.
+
+## Exercises {#sec-adv-gnss-exercises}
+
+1. **Clock process noise.** Derive @eq-adv-gnss-clock-q from @eq-kf-qd-integral
+   for the two-state clock with $\mathbf{Q}_c = \operatorname{diag}(S_f, S_g)$.
+   Check the units of each entry. Then, using `clock_model`, find how long each
+   oscillator in @tbl-adv-gnss-clock-coefficients can coast from
+   $(\sigma_b, \sigma_d) = (1\ \text{m}, 0.05\ \text{m/s})$ before $\sigma_b$
+   exceeds 3 m. Which term of $\mathbf{Q}_{clk}$ dominates the growth for each
+   oscillator, and what does that say about which datasheet number to look at?
+
+2. **The tightly coupled Jacobian.** (a) Starting from the predicted pseudorange
+   and the attitude-error convention of @sec-frames-conventions, derive
+   @eq-adv-gnss-tight-h, including the sign of the attitude block. (b) Show that
+   stacking four pseudorange rows with a perfectly known clock is equivalent to
+   the loose position measurement transformed by $-[\mathbf{u}_1, \dots, \mathbf{u}_4]^T$.
+   (c) Using the Sagnac approximation $(\omega_{ie}/c)(x_s y_a - y_s x_a)$, find
+   where on Earth and for which satellite direction the correction is largest, and
+   estimate its maximum. Use `solve_pvt` with Sagnac-corrupted pseudoranges to
+   find the position error caused by ignoring it for the chapter's eight-satellite
+   sky.
+
+3. **Double differences.** Write the carrier-phase model for receivers $r$
+   (rover) and $b$ (base) observing satellites $j$ and $k$. Form the single
+   difference between receivers and then the double difference between
+   satellites, and show which terms cancel exactly, which cancel approximately on
+   a short baseline, and which survive. Why is the surviving ambiguity still an
+   integer, and why does the approximation weaken beyond about 10 to 20 km?
+
+4. **How big a fault can hide?** Using the RAIM code and the eight-satellite sky,
+   sweep a bias from 0 to 100 m on each satellite in turn and estimate the
+   detection probability by Monte Carlo (500 trials per point,
+   $P_{FA} = 10^{-5}$). Plot detection probability against bias for each
+   satellite, and compare the bias at which it reaches 99.9% with
+   $\sigma\sqrt{\lambda/S_{ii}}$. Which satellite is worst, and how does its
+   slope relate to its elevation and azimuth? Remove the lowest-elevation
+   satellite and repeat: what happens to the protection level?
+
+5. **A spoofer meets an INS.** An airliner's tightly coupled INS/GNSS (navigation
+   grade, accelerometer bias uncertainty about $5\times10^{-4}$ m/s²) and a
+   phone's loosely coupled filter (accelerometer bias uncertainty about
+   0.05 m/s²) are spoofed by the same signal, which drags the reported position
+   with a constant acceleration $a_s$ starting from the true position. (a) Write
+   the position innovation after $t$ seconds if the filter had no bias states,
+   and the time for it to reach three times a 3 m measurement $\sigma$, for
+   $a_s = 0.01$ and $0.1$ m/s². (b) Explain qualitatively what the bias states
+   do to that detection when $a_s$ is below the bias uncertainty. (c) List three
+   receiver-level cues from this chapter that would flag the attack regardless of
+   the IMU, and say which ones a smartphone could realistically check.
