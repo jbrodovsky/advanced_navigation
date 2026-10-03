@@ -1,56 +1,82 @@
-# Syllabus
+# Syllabus {#sec-syllabus}
 
 This is the syllabus for an approximately sixteen-week semester. For WPI
 students, Canvas and the official academic calendar remain the authoritative
 sources for policies and deadlines.
 
-## Learning Outcomes
+## Learning Outcomes {#sec-syllabus-learning-outcomes}
 
 By the end of the course, students should be able to:
 
-1. Implement and explain probabilistic navigation methods built on Bayesian,
-   Kalman-style, and Monte Carlo estimation.
-2. Develop sensor, propagation, and fusion models for a dynamic vehicle.
-3. Evaluate a navigation system using accuracy, uncertainty, consistency, and
-   computational-cost evidence.
-4. Apply the same estimation ideas from local robotics problems through global
-   inertial and GNSS navigation.
+1. Explain where navigation sits in an autonomy stack: what it consumes from
+   perception and sensors, and what guidance, planning, and control need from
+   it (state, uncertainty, rate, latency, frames, and health).
+2. Turn raw sensor data into measurement models, including a camera-based
+   perception model, and justify the noise model with evidence.
+3. Implement and compare probabilistic estimators built on Bayesian,
+   Kalman-style (EKF, UKF, error-state), and Monte Carlo methods.
+4. Build a landmark-based SLAM system and reason about data association,
+   map growth, and consistency.
+5. Integrate an inertial navigation system with GNSS on the curved Earth using
+   an error-state Kalman filter.
+6. Evaluate a navigation system using accuracy, uncertainty, consistency, and
+   computational-cost evidence, and communicate the results in a technical
+   report.
 
-## Textbooks
+## Textbooks {#sec-syllabus-textbooks}
 
-The notes draw primarily from:
+These notes are the primary text. They draw on:
 
-- *Probabilistic Robotics* by Thrun, Burgard, and Fox;
-- *Robotics, Vision and Control* by Peter Corke;
+- *Probabilistic Robotics* by Thrun, Burgard, and Fox [@ProbRob];
+- *Robotics, Vision and Control* by Peter Corke [@corke2021robotics];
 - *Principles of GNSS, Inertial, and Multisensor Integrated Navigation Systems*
-  by Paul Groves; and
-- Roger Labbe's *Kalman and Bayesian Filters in Python*.
+  by Paul Groves [@groves]; and
+- Roger Labbe's *Kalman and Bayesian Filters in Python* [@labbe2020].
 
-## Course Requirements
+@sec-intro-textbooks-resources explains which of these to buy and which are
+free through the WPI library.
 
-The course is project centered. Modules build on one another but remain
-individually assessable. Each submission includes source code and a short
-technical report that explains model choices, results, limitations, and the
-evidence supporting the conclusions. Python is the supported language for course
-examples and debugging support; students may use another language when they can
-still meet the required deliverables.
+## Course Requirements {#sec-syllabus-course-requirements}
 
-## Grading Policy
+The course is project centered, with three projects that build on one another
+but remain individually assessable:
 
-The course follows the standard A--F scale. The exact deadline and any extension
-policy are set by the official course offering. The sample module weights are:
+- **Project 1, visual-inertial navigation (@sec-project1).** Build a
+  computer-vision perception model (AprilTag PnP) to see how navigation
+  connects to the rest of the stack, derive its measurement model and noise,
+  then implement a basic Cartesian-frame inertial navigator as an EKF, a UKF,
+  and a particle filter, and compare them.
+- **Project 2, Victoria Park FastSLAM (@sec-project2).** Extract tree landmarks
+  from laser scans and estimate the vehicle path and map with FastSLAM.
+- **Project 3, INS/GNSS integration (@sec-project3).** Mechanize a strapdown
+  INS on the curved Earth and aid it with GNSS through an error-state Kalman
+  filter.
 
-- Module 1: Visual-Inertial Navigation -- 50%
-  - Part A: Dead Reckoning and Sensor Characterization -- 25%
-  - Part B: PnP Observation Model -- 25%
-  - Part C: Nonlinear Navigation Filters -- 50%
-- Module 2: Victoria Park FastSLAM -- 25%
-- Module 3: INS/GNSS Integration -- 25%
+Each submission includes source code and a technical report that explains
+model choices, results, limitations, and the evidence supporting the
+conclusions (see @sec-intro-project-guidance). The starter packages are in
+Python, which is the supported language for examples and debugging help;
+students may use another language when they can still meet the required
+deliverables.
 
-An acceptable submission demonstrates a correct, documented implementation and
-honest analysis. Higher ratings require clearer justification of state,
-measurement, covariance, and validation choices. Code that runs is necessary;
-it is not by itself evidence that the navigation model is correct.
+## Grading Policy {#sec-syllabus-grading-policy}
+
+The course follows the standard A--F scale. Projects are weighted:
+
+- Project 1: Visual-Inertial Navigation -- 50%
+  - Dataset understanding and loading -- 10% of the project
+  - Part A: mechanization and dead reckoning -- 20%
+  - Part B: PnP observation model and covariance -- 20%
+  - Part C: EKF, UKF, and particle filter -- 30%
+  - Cross-method evaluation and technical communication -- 20%
+- Project 2: Victoria Park FastSLAM -- 25%
+- Project 3: INS/GNSS Integration -- 25%
+
+Each project's rubric (in its handout) rates components as Excellent,
+Acceptable, Marginal, or Unacceptable; an Acceptable rating corresponds roughly
+to a B. Code that runs is necessary, but it is not by itself evidence that the
+navigation model is correct. Higher ratings require clear justification of
+state, measurement, covariance, and validation choices.
 
 | Letter grade | Percentage |
 |---|---:|
@@ -60,26 +86,43 @@ it is not by itself evidence that the navigation model is correct.
 | D | 60--69 |
 | F | Below 60 |
 
-## Course Schedule
+## Course Policies {#sec-syllabus-course-policies}
 
-The schedule is a suggested sequencing of the rendered book. It does not add
-assessment requirements to the optional advanced chapters.
+- **Deadlines.** All projects are due by the **end of week 16**. The weeks in
+  the schedule below are a recommended pace, not hard deadlines; submitting
+  early gets you feedback while there is still time to act on it. Extensions
+  past the end of the semester are granted only in extreme circumstances and
+  must be requested in writing beforehand (@sec-intro-grading).
+- **Prerequisites:** see @sec-intro-recommended-prerequisites.
+- **Reports:** expected structure and length are in @sec-intro-project-guidance.
+- **AI tools and software libraries:** see @sec-intro-ai-policy-and-dependencies,
+  including the rule for pre-built filtering libraries such as `filterpy`.
+- **Course materials** are proprietary. Keep your solutions in a private
+  repository and do not republish the notes, handouts, or starter code.
+- **WPI policies** (academic integrity, accessibility accommodations,
+  incompletes, and student support resources) are on Canvas.
 
-| Week | Topics | Suggested milestone |
+## Course Schedule {#sec-syllabus-course-schedule}
+
+The schedule sequences the book. The course is deliberately front-loaded: the
+theory arrives early so the second half of the semester leaves room to
+implement. The optional advanced chapters add no assessment requirements.
+
+| Week | Topics | Recommended pace |
 |---:|---|---|
 | 1 | Course orientation; GNC; coordinate-frame and attitude conventions | |
 | 2 | Linear algebra, probability, and scientific Python refresh | |
-| 3 | Sensor taxonomy, motion models, IMU errors, and dead reckoning | Module 1A |
+| 3 | Sensor taxonomy, motion models, IMU errors, and dead reckoning | Project 1 Part A |
 | 4 | Measurement models, data association, and PnP vision | |
-| 5 | Camera-to-robot observation models and covariance | Module 1B |
+| 5 | Camera-to-robot observation models and covariance | Project 1 Part B |
 | 6 | Bayes filtering and the Kalman-filter review | |
 | 7 | EKF, error-state filtering, and consistency diagnostics | |
-| 8 | UKF, information filters, and particle filters | Module 1C |
-| 9 | Filter comparison, project integration, and implementation review | Module 1 |
+| 8 | UKF, information filters, and particle filters | Project 1 Part C |
+| 9 | Filter comparison, project integration, and implementation review | Project 1 complete |
 | 10 | Mapping, landmark SLAM, and data association | |
-| 11 | FastSLAM, visual navigation, and loop closure | Module 2 |
+| 11 | FastSLAM, visual navigation, and loop closure | Project 2 |
 | 12 | Global frames, GNSS measurements, and IMU error models | |
-| 13 | Curved-Earth INS/GNSS integration and observability | Module 3 |
+| 13 | Curved-Earth INS/GNSS integration and observability | Project 3 |
 | 14 | Timing, health monitoring, validation, and production software | |
 | 15 | Optional advanced topics: smoothing, GNSS receiver-to-fusion, and resilient navigation | |
-| 16 | Integration, review, and project completion | All module submissions |
+| 16 | Integration, review, and project completion | **All projects due** |

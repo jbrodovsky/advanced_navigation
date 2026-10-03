@@ -1,6 +1,6 @@
-# Advanced Navigation Topics
+# Advanced Navigation Topics {#sec-advanced-slam}
 
-## Why This Chapter Exists
+## Why This Chapter Exists {#sec-advanced-slam-why-this-chapter}
 
 This chapter is a brief tour of topics that sit beyond the required course
 projects. These are not new assignment requirements, and students will not be
@@ -17,7 +17,7 @@ methods for environments where one sensor cannot be trusted.
 Think of this chapter as a map of the neighborhood, not a demand that you build
 the entire city by Friday.
 
-## Factor Graphs and Smoothing
+## Factor Graphs and Smoothing {#sec-advanced-slam-factor-graphs-smoothing}
 
 Many modern navigation systems are written as optimization problems rather than
 only as recursive filters. Instead of estimating only the current state, a
@@ -49,7 +49,7 @@ just a giant dense matrix. Each measurement usually touches only a few states, s
 the solver can exploit sparse linear algebra. That is one reason graph methods
 scale better than a naive full covariance over every pose and landmark.
 
-## Visual-Inertial Odometry and SLAM
+## Visual-Inertial Odometry and SLAM {#sec-advanced-slam-visual-inertial-odometry}
 
 Visual-inertial odometry (VIO) estimates motion by combining camera measurements
 with IMU measurements. Visual-inertial SLAM extends this with mapping and loop
@@ -87,15 +87,14 @@ differ, but the recurring pattern is the same: use IMU for high-rate propagation
 vision for environmental constraints, and careful timing/calibration to make the
 fusion meaningful.
 
-## Advanced GNSS Processing
+## Advanced GNSS Processing {#sec-advanced-slam-gnss-processing}
 
 GNSS receiver signals, observables, RTK/PPP context, and the boundary between
 loose, tight, and deep integration now have a dedicated optional chapter:
-[GNSS Signals, Receivers, and Deep Integration](adv-gnss.qmd). The required
-course material remains the loose INS/GNSS workflow in the global-navigation
-part of the book.
+@sec-adv-gnss. The required course material remains the loose INS/GNSS
+workflow in @sec-global-nav through @sec-ins-errors.
 
-## GNSS-Denied and Resilient Navigation
+## GNSS-Denied and Resilient Navigation {#sec-advanced-slam-gnss-denied-resilient}
 
 GNSS-denied navigation means operating when satellite positioning is unavailable,
 unreliable, or intentionally attacked. This is common indoors, underwater,
@@ -122,7 +121,7 @@ pretend nothing happened. It should change mode, report lower confidence, adjust
 controller limits when appropriate, and log enough information to explain the
 outage later.
 
-## Advanced SLAM and Mapping
+## Advanced SLAM and Mapping {#sec-advanced-slam-mapping}
 
 The SLAM module introduced EKF-SLAM, FastSLAM, GraphSLAM, visual navigation, and
 loop closure. Advanced SLAM systems push those ideas in several directions.
@@ -174,7 +173,7 @@ large autonomous survey operations. They also expose practical problems:
 - communication bandwidth is limited;
 - privacy and security may constrain what data can be shared.
 
-## Rao-Blackwellized and Hybrid Filters
+## Rao-Blackwellized and Hybrid Filters {#sec-advanced-slam-rao-blackwellized-hybrid}
 
 FastSLAM is a Rao-Blackwellized particle filter (RBPF). That phrase is worth
 remembering beyond the project.
@@ -200,7 +199,7 @@ throwing away the correct hypothesis.
 The takeaway is not "use RBPFs everywhere." The takeaway is that marginalization
 and conditional structure can make hard estimation problems tractable.
 
-## Learning-Based and Emerging Methods
+## Learning-Based and Emerging Methods {#sec-advanced-slam-learning-based-emerging}
 
 Machine learning is now part of navigation, but it rarely replaces the entire
 navigation stack. More commonly, learned components provide perception,
@@ -230,7 +229,7 @@ needs calibrated uncertainty, failure detection, and operational constraints. A
 neural network that works beautifully on a benchmark can still fail in exactly the
 weather, lighting, vehicle vibration, or terrain that matters to your deployment.
 
-## How to Read the Research Literature
+## How to Read the Research Literature {#sec-advanced-slam-how-read-research}
 
 Advanced navigation papers can be difficult to compare because they often differ
 in sensors, datasets, compute hardware, initialization assumptions, and failure
@@ -251,7 +250,7 @@ Be especially careful with phrases like "real time," "robust," and
 "state-of-the-art." They are meaningful only relative to a platform, dataset,
 sensor suite, and operating environment.
 
-## Summary
+## Summary {#sec-advanced-slam-summary}
 
 The advanced topics in this chapter are extensions of the same foundations used
 throughout the course:

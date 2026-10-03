@@ -1,4 +1,4 @@
-# GNSS Signals, Receivers, and Deep Integration {#advanced-gnss}
+# GNSS Signals, Receivers, and Deep Integration {#sec-adv-gnss}
 
 ::: {.callout-note title="Enrichment chapter: not assessed"}
 This chapter explains how a GNSS radio measurement becomes an input to a
@@ -8,7 +8,7 @@ examples are deliberately small enough to expose the estimation interfaces witho
 pretending that a notebook is a flight-qualified signal-processing chain.
 :::
 
-The core GNSS chapters treat a receiver as a useful black box: it provides a
+The core GNSS chapters (@sec-global-nav and @sec-ins-gnss) treat a receiver as a useful black box: it provides a
 timestamped position, velocity, and uncertainty for loose INS/GNSS integration.
 That is the correct project boundary. Professional systems sometimes move the
 boundary deeper, using observations produced inside the receiver or even aiding
@@ -16,7 +16,7 @@ its tracking loops. This chapter follows the measurement backward from that
 receiver output to the radio signal, then forward again into loose, tight, and
 deeply integrated navigation.
 
-## From Signal in Space to a Navigation Observable
+## From Signal in Space to a Navigation Observable {#sec-adv-gnss-from-signal-space}
 
 A satellite broadcasts a structured radio signal. At a useful conceptual level,
 it combines a spreading code, a navigation-data sequence, and a carrier. The
@@ -119,7 +119,7 @@ The real search operates over longer codes, more hypotheses, changing data bits,
 and receiver-specific front-end behavior. Its output is still conceptually the
 same: a delay/frequency hypothesis strong enough to hand to a tracking loop.
 
-## The Observations Used by Navigation
+## The Observations Used by Navigation {#sec-adv-gnss-observations-used-by}
 
 After tracking and navigation-data decoding, the receiver can produce several
 observation types. Their precision and failure modes differ.
@@ -151,7 +151,7 @@ and other broadcast parameters used to predict satellite state and correct the
 observations. Receiver PVT is therefore an estimation result, not a direct sensor
 reading. [@kaplanHegarty2017; @misraEnge2006]
 
-## Receiver PVT and Coupling Boundaries
+## Receiver PVT and Coupling Boundaries {#sec-adv-gnss-receiver-pvt-coupling}
 
 In a standalone receiver, a least-squares or filter solution estimates position,
 velocity, receiver clock offset, and clock drift from the observations. The
@@ -249,7 +249,7 @@ INS-estimated dynamics aid code or carrier tracking loops, while the resulting
 receiver observables remain part of the navigation estimator. It is a receiver
 and estimator co-design problem, not simply a tighter Kalman update.
 
-## Carrier Phase, Corrections, and High-Accuracy GNSS
+## Carrier Phase, Corrections, and High-Accuracy GNSS {#sec-adv-gnss-carrier-phase-corrections}
 
 Carrier phase enables high relative precision after the integer ambiguities are
 handled correctly. RTK uses common observations from a rover and a nearby base
@@ -263,7 +263,7 @@ the convergence penalty. These approaches change the correction and state model;
 they do not remove the need to detect multipath, data gaps, cycle slips, timing
 errors, and incorrect antenna modeling. [@kaplanHegarty2017; @misraEnge2006]
 
-## Public Signals and Protected Services
+## Public Signals and Protected Services {#sec-adv-gnss-public-signals-protected}
 
 The table is a map of publicly documented interfaces, not a receiver procurement
 guide. Signal availability and service documentation change, so receiver design
@@ -282,7 +282,7 @@ here because signal/service access affects what observations a receiver can
 provide. This course confines the discussion to public material and treats
 security-sensitive receiver behavior as outside scope.
 
-## Integrity and Resilience
+## Integrity and Resilience {#sec-adv-gnss-integrity-resilience}
 
 Accuracy asks how close an estimate is to truth. Integrity asks whether the system
 can recognize and report when it should not be trusted. Quality indicators,
@@ -295,11 +295,11 @@ log the event, gate or downweight observations according to its model, grow
 uncertainty appropriately, and publish the resulting health state. “The point
 estimate did not jump” is not an integrity argument.
 
-## Further Reading
+## Further Reading {#sec-adv-gnss-further-reading}
 
 For receiver and observable detail, see [@kaplanHegarty2017] and
 [@misraEnge2006]. For the global-scale estimator and the assessed loose-coupling
-workflow, return to the GNSS and INS chapters. The important connection is now
+workflow, return to @sec-global-nav, @sec-ins-gnss, and @sec-ins-errors. The important connection is now
 visible: a GNSS position solution, raw pseudorange, and code-tracking error are
 different products of the same radio-navigation chain, so they belong at different
 places in an integrated navigation architecture.

@@ -1,4 +1,4 @@
-# Curved-Earth INS and Loose GNSS Integration
+# Curved-Earth INS and Loose GNSS Integration {#sec-ins-gnss}
 
 The previous chapter introduced GNSS as the external radio-navigation system that keeps long-duration navigation tied to a global reference. This chapter focuses on the other half of the problem: propagating an inertial navigation solution on a curved, rotating Earth, then correcting that solution with loosely coupled GNSS position and velocity measurements.
 
@@ -10,7 +10,7 @@ The central idea is simple:
 
 That is the practical workflow behind the INS/GNSS project. The details matter because small frame mistakes and sign mistakes can produce navigation errors that look like bad filtering, bad data, or a cursed IMU. It is usually just geometry.
 
-## State and Frames
+## State and Frames {#sec-ins-gnss-state-frames}
 
 The way typical strapdown INSs represent state can be somewhat confusing and variable, primarily due to the mixed-frame state representation. Remeber, what were are concerned about is a vehicle navigating on or close to the surface of the Earth (as opposed to orbital mechanics). Sometimes, we can keep a local flat-earth frame and cartesian axes and assume the gravity vector is along the negative z-axis (local level frame). For some larger scale navigation applications, we can account for the curvature of the Earth while still using such an approximation by periodically resetting the origin of such a frame to a new geodetic location on the Earth (latitude and longitude).
 
@@ -37,7 +37,7 @@ where:
 
 For our purposes, we will adopt the conventions and notation in Groves Chapter 5.4 and used an X-Y-Z rotation scheme and an Euler angle representation. Alternative approaches exist (such as using a quaternion representation), however this is one of the more intuitive approaches. Mathematically, we will use the rotation matrix form ($\mathbf{C}_b^n$) for ease of computation.
 
-## WGS84 Geometry
+## WGS84 Geometry {#sec-ins-gnss-wgs84-geometry}
 
 The local navigation frame changes with position, so the position update needs the local radii of curvature. For WGS84, let $a$ be the semi-major axis and $e^2$ the first eccentricity squared:
 
@@ -85,7 +85,7 @@ $$\boldsymbol{\omega}_{en}^n
 
 Some references use a different sign convention for NED transport rate depending on whether the angular rate is written as frame-with-respect-to-frame or the reverse. The convention above is paired with the velocity and attitude equations in this chapter. Do not mix formulas from two sources without checking the frame subscripts.
 
-## Navigation equations in the Local Navigation Frame
+## Navigation equations in the Local Navigation Frame {#sec-ins-gnss-navigation-equations-local}
 
 Follow along with Groves Chapter 5.4 for a more detailed approach. Here we provide an abbreviated set of notes. We will use a trapezoidal integration approximation. Under such an approximation the $X(\cdot)$ notation defines a posterior value using a plus sign (e.g. $X(+)$) where as a prior value is denoted using a minus sign (e.g. $X(-)$). In other words $x_{t-1} = X(-)$ and $x_t = X(+)$.
 
@@ -113,9 +113,9 @@ $$\hat{\mathbf{f}}^b = \tilde{\mathbf{f}}^b - \hat{\mathbf{b}}_a,
 =
 \tilde{\boldsymbol{\omega}}_{ib}^b - \hat{\mathbf{b}}_g.$$
 
-The error behavior of those bias terms is handled in the next chapter. Here, the important point is that the strapdown equations consume corrected IMU measurements and propagate the nominal state.
+The error behavior of those bias terms is handled in @sec-ins-errors. Here, the important point is that the strapdown equations consume corrected IMU measurements and propagate the nominal state.
 
-## Attitude Propagation
+## Attitude Propagation {#sec-ins-gnss-attitude-propagation}
 
 The gyroscope measures body angular rate with respect to inertial space, resolved in body axes. We can use the trapezoidal approximation to calculate the change in attitude:
 
@@ -129,7 +129,7 @@ The corrected specific force output from IMU must be transformed into the naviga
 
 $$\mathbf{f}_{ib}^n \approx \frac{1}{2} ( \mathbf{C}_b^n(-) + \mathbf{C}_b^n(+)) \hat{\mathbf{f}}^b$$
 
-## Velocity Propagation
+## Velocity Propagation {#sec-ins-gnss-velocity-propagation}
 
 Specific force is transformed into the navigation frame with the current attitude. This is then used to update the velocity vector:
 
@@ -159,7 +159,7 @@ $$g(\phi,h)
 
 This is sufficient for course-scale examples. Precision navigation systems use more careful gravity modeling, especially over large altitude ranges or for high-grade inertial sensors.
 
-## Position Propagation
+## Position Propagation {#sec-ins-gnss-position-propagation}
 
 The geodetic position rates follow from NED velocity:
 
@@ -177,7 +177,7 @@ $$\dot{h}
 
 The latitude and longitude equations are a common source of unit bugs. They produce radians per second, not meters per second. If the filter stores position errors in meters, convert between curvilinear coordinate errors and local metric errors explicitly.
 
-## Strapdown Processing Order
+## Strapdown Processing Order {#sec-ins-gnss-strapdown-processing-order}
 
 At each IMU epoch:
 
@@ -192,7 +192,7 @@ At each IMU epoch:
 
 That order is not arbitrary. Attitude determines how specific force is resolved. Velocity determines transport rate and position rate. Position determines gravity, Earth-rate resolution, and the curvature terms. Production systems may use midpoint or higher-order integration, but the dependency chain is the same.
 
-## Implementation Skeleton
+## Implementation Skeleton {#sec-ins-gnss-implementation-skeleton}
 
 The example below is intentionally compact. It is not a full production INS, but it shows the pieces that need to be explicit in the project.
 
@@ -295,7 +295,7 @@ def propagate_one_step(state, accel_b, gyro_b, dt):
 
 For a real implementation, use a quaternion or a carefully maintained rotation matrix, handle timestamps explicitly, and test stationary, constant-velocity, and known-trajectory cases before adding a Kalman filter.
 
-## Error-State Formulation
+## Error-State Formulation {#sec-ins-gnss-error-state-formulation}
 
 The nominal strapdown state is nonlinear. The ESKF keeps the nonlinear nominal state separate from a small error state:
 
@@ -337,7 +337,7 @@ $$\delta \dot{\mathbf{b}}_a = \mathbf{w}_{ba},
 
 This is not the only valid error-state model. Higher-grade systems include more Earth-model terms, scale-factor states, lever-arm states, clock states, or time-synchronization states. The project model should stay focused: position, velocity, attitude error, and IMU biases.
 
-## Loose GNSS Measurement Update
+## Loose GNSS Measurement Update {#sec-ins-gnss-loose-gnss-measurement}
 
 The GNSS primer used the convention
 
@@ -399,7 +399,7 @@ $$\mathbf{q}_b^n
 
 Then reset the error-state mean to zero. The covariance may also need a reset Jacobian for the attitude injection. For the course project, the small-angle reset is usually sufficient if corrections are kept small and frequent.
 
-## Lever Arm and Timing
+## Lever Arm and Timing {#sec-ins-gnss-lever-arm-timing}
 
 Loose integration compares GNSS antenna motion against INS body motion. Those are not necessarily the same point on the vehicle.
 
@@ -424,7 +424,7 @@ For slow ground robots with a short lever arm, this may be negligible. For aircr
 
 Timing is equally important. A GNSS measurement should be compared with the INS state at the GNSS measurement time, not at the time the packet is processed. If the measurement is delayed, interpolate or buffer the INS state. A 100 ms timing error at 30 m/s creates a 3 m position innovation before sensor noise even enters the conversation.
 
-## Practical Failure Modes
+## Practical Failure Modes {#sec-ins-gnss-practical-failure-modes}
 
 Most bad INS/GNSS implementations fail for ordinary reasons:
 
@@ -439,7 +439,7 @@ Most bad INS/GNSS implementations fail for ordinary reasons:
 
 These are not glamorous failure modes, but they are the ones that waste time. Test stationary cases, straight-line motion, and short GNSS outages before trusting a complex trajectory.
 
-## Summary
+## Summary {#sec-ins-gnss-summary}
 
 Curved-Earth INS/GNSS integration has three moving parts:
 
@@ -447,4 +447,4 @@ Curved-Earth INS/GNSS integration has three moving parts:
 - **Error-state filtering**: propagate small position, velocity, attitude, and bias errors with a linearized model.
 - **Loose GNSS updates**: compare GNSS position/velocity against the INS prediction at the correct time and inject the estimated error back into the nominal state.
 
-The next chapter focuses on the IMU errors that drive the process-noise model and determine how quickly the INS drifts when GNSS is absent.
+@sec-ins-errors focuses on the IMU errors that drive the process-noise model and determine how quickly the INS drifts when GNSS is absent.

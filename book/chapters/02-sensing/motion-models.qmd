@@ -1,4 +1,4 @@
-# Motion Models
+# Motion Models {#sec-motion-models}
 
 Motion models, or more generally state transition models, describe how a system moves from one state to the next. We define this in terms of a generic function of the previous state and some control input:
 $$\mathbf{x}_t = f(\mathbf{x}_{t-1}, \mathbf{u}_t) + \mathbf{w}_t,$$
@@ -80,7 +80,7 @@ def unicycle_step(x: np.ndarray, u: np.ndarray, dt: float) -> np.ndarray:
     ])
 ```
 
-## Why Proprioception Builds Error
+## Why Proprioception Builds Error {#sec-motion-models-why-proprioception-builds}
 
 The motion model is only as good as its inputs. Suppose the measured input is:
 
@@ -118,7 +118,7 @@ print(f"error from small bias: {position - true_position:.2f} m")
 
 The random noise partly averages out. The bias does not. In real navigation work, this is one reason calibration and bias estimation matter so much.
 
-## From Kinematics to Inertial Measurements
+## From Kinematics to Inertial Measurements {#sec-motion-models-from-kinematics-inertial}
 
 Kinematics describes motion: position, velocity, acceleration, attitude, and angular rate. A sensor does not magically report "the kinematics." It measures some physical quantity related to them.
 
@@ -130,7 +130,7 @@ An inertial measurement unit, or IMU, typically contains:
 
 The IMU does not directly measure position. It does not even directly measure velocity. In strapdown inertial navigation, velocity and position are obtained by integration. That integration is why small errors grow quickly.
 
-## Gyroscope Model
+## Gyroscope Model {#sec-motion-models-gyroscope-model}
 
 A gyroscope measures angular rate. A simple model is:
 
@@ -152,7 +152,7 @@ $$\theta_t = \theta_{t-1} + \hat{\omega}_t \Delta t.$$
 
 If $\hat{\omega}_t$ contains a constant bias, attitude error grows roughly linearly with time. Once attitude is wrong, every body-frame vector rotated into the navigation frame is wrong too. For inertial navigation, attitude error quickly contaminates velocity and position.
 
-## Accelerometer Model
+## Accelerometer Model {#sec-motion-models-accelerometer-model}
 
 Accelerometers measure **specific force**, not ordinary acceleration. Specific force is the non-gravitational acceleration experienced by the sensor. A stationary accelerometer sitting on a desk reads approximately one gravity upward in its body frame, even though its position is not accelerating. This is initially annoying, then important, then very annoying again.
 
@@ -179,9 +179,9 @@ where $R_{nb}$ rotates vectors from body coordinates to navigation coordinates a
 
 The important idea is that accelerometer interpretation requires attitude. If attitude is wrong, gravity leaks into horizontal acceleration. A small tilt error can look like a persistent horizontal acceleration, which then integrates into a large position error.
 
-## Bias, Scale Factor, Cross-Coupling, and Noise
+## Bias, Scale Factor, Cross-Coupling, and Noise {#sec-motion-models-bias-scale-factor}
 
-The lecture slides group common IMU errors into four categories:
+Common IMU errors fall into four categories:
 
 - **Bias**: a fixed or slowly varying offset.
 - **Scale factor**: the measurement gain is slightly wrong.
@@ -231,7 +231,7 @@ gyro_corrected = remove_affine_sensor_error(
 )
 ```
 
-## What the Filter Actually Sees
+## What the Filter Actually Sees {#sec-motion-models-what-filter-actually}
 
 A filter does not see "an IMU." It sees numbers and a model. If the model says the accelerometer noise covariance is tiny, the filter will treat the propagated motion as very trustworthy. If the model says camera pose measurements are precise, the filter will aggressively snap toward each visual update. Bad covariance values can make a mathematically correct filter behave badly.
 
@@ -241,4 +241,4 @@ This is the practical reason to care about sensor models:
 - The noise model determines how strongly the estimator uses it.
 - The failure model determines when the estimator should reject it.
 
-The next chapter develops this idea using range measurements, where failure modes are easier to visualize than with an IMU.
+@sec-measurement-models develops this idea using range measurements, where failure modes are easier to visualize than with an IMU.

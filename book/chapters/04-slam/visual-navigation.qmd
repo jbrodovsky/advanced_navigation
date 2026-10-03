@@ -1,4 +1,4 @@
-# Visual Navigation and Visual SLAM
+# Visual Navigation and Visual SLAM {#sec-visual-nav}
 
 The Victoria Park project uses a 2D laser scanner, not a camera. This chapter is therefore a survey, not an implementation recipe for the project. Its purpose is to show how the same navigation architecture appears in visual systems:
 
@@ -9,7 +9,7 @@ The Victoria Park project uses a 2D laser scanner, not a camera. This chapter is
 
 The sensor changes. The estimation themes do not.
 
-## From Images to Motion
+## From Images to Motion {#sec-visual-nav-from-images-motion}
 
 Visual navigation starts with image measurements. A camera does not directly measure range to a tree; it measures pixel intensities. The pipeline must create geometric constraints from those pixels.
 
@@ -24,7 +24,7 @@ A typical feature-based visual odometry pipeline is:
 
 The result is an incremental trajectory estimate. Without loop closure, visual odometry drifts just like wheel odometry.
 
-## Camera Model
+## Camera Model {#sec-visual-nav-camera-model}
 
 The pinhole camera model maps a 3D point $P = [X, Y, Z]^T$ to image coordinates:
 
@@ -58,7 +58,7 @@ $$
 
 This is the visual equivalent of a range-bearing sensor model. The measurement function is different, but the estimator still needs a prediction, residual, Jacobian or numerical approximation, and covariance.
 
-## Features and Descriptors
+## Features and Descriptors {#sec-visual-nav-features-descriptors}
 
 Feature-based visual SLAM uses image locations that are likely to be found again:
 
@@ -71,7 +71,7 @@ A detector finds candidate locations. A descriptor summarizes the local appearan
 
 Classic examples include SIFT, SURF, FAST, BRIEF, ORB, and modern learned descriptors. ORB remains popular because it is fast and works well enough for many real-time systems.
 
-## Geometry Checks
+## Geometry Checks {#sec-visual-nav-geometry-checks}
 
 Raw descriptor matches are not trustworthy. They need geometric verification:
 
@@ -82,7 +82,7 @@ Raw descriptor matches are not trustworthy. They need geometric verification:
 
 This is the visual analog of statistical gating in landmark SLAM. The details are different, but the goal is identical: keep bad correspondences from entering the estimator.
 
-## Visual Odometry vs. Visual SLAM
+## Visual Odometry vs. Visual SLAM {#sec-visual-nav-odometry-visual-slam}
 
 Visual odometry estimates motion incrementally. Visual SLAM adds a persistent map and loop closure.
 
@@ -95,7 +95,7 @@ Visual odometry estimates motion incrementally. Visual SLAM adds a persistent ma
 
 The distinction matters because many impressive demos are odometry demos. Long-term autonomy requires handling drift.
 
-## ORB-SLAM as a Reference Architecture
+## ORB-SLAM as a Reference Architecture {#sec-visual-nav-orb-slam-as}
 
 ORB-SLAM is a useful reference system because it separates the work into threads:
 
@@ -112,7 +112,7 @@ That architecture mirrors the course project:
 
 Students are not expected to implement ORB-SLAM in this module. The point is to recognize the recurring system pattern.
 
-## Monocular, Stereo, RGB-D, and Visual-Inertial
+## Monocular, Stereo, RGB-D, and Visual-Inertial {#sec-visual-nav-monocular-stereo-rgb}
 
 Different camera setups provide different observability:
 
@@ -125,7 +125,7 @@ Different camera setups provide different observability:
 
 This connects directly to the broader navigation course: inertial sensing often supplies short-term motion constraints, while vision supplies environmental corrections.
 
-## What Carries Over to Victoria Park
+## What Carries Over to Victoria Park {#sec-visual-nav-what-carries-over}
 
 The project is laser-based, but several visual-SLAM lessons carry over:
 
@@ -137,7 +137,7 @@ The project is laser-based, but several visual-SLAM lessons carry over:
 
 In Victoria Park, the "features" are tree trunks instead of image keypoints. The conceptual pipeline is the same.
 
-## Summary
+## Summary {#sec-visual-nav-summary}
 
 Visual navigation broadens the SLAM picture without changing the core estimation questions. Cameras create bearing-rich geometric constraints; lidar tree features create range-bearing landmark constraints. Both systems must solve measurement modeling, association, drift, and loop closure.
 

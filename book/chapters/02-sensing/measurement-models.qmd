@@ -1,7 +1,7 @@
-# Measurement Noise and Range Sensor Models
+# Measurement Noise and Range Sensor Models {#sec-measurement-models}
 
 
-## Measurements as Probabilistic Evidence
+## Measurements as Probabilistic Evidence {#sec-measurement-models-measurements-as-probabilistic}
 
 In a deterministic homework problem, a measurement might be written as:
 
@@ -19,7 +19,7 @@ That assumption is common because it makes Kalman-style filters convenient and o
 
 The job of a measurement model is to encode the part of this behavior that matters for estimation.
 
-## A Minimal Measurement Model
+## A Minimal Measurement Model {#sec-measurement-models-minimal-measurement-model}
 
 For a simple range sensor measuring distance to a known landmark at $\mathbf{m}$ from robot position $\mathbf{p}$, the ideal measurement might be:
 
@@ -81,7 +81,7 @@ Measurement noise is not just "Gaussian dust" sprinkled onto a clean signal. Som
 
 This chapter uses lidar as the main example, but the modeling pattern is broader. A sensor model should describe not only what the ideal measurement is, but also how real measurements deviate from that ideal.
 
-## A 2D Lidar Measurement
+## A 2D Lidar Measurement {#sec-measurement-models-2d-lidar-measurement}
 
 A 2D lidar produces a set of range measurements:
 
@@ -108,7 +108,7 @@ $$
 
 That is the **hit** model. It covers the case where the beam hit the expected object, but the reported distance is slightly wrong. Unfortunately, real lidar does not always cooperate.
 
-## Beam Model Components
+## Beam Model Components {#sec-measurement-models-beam-model-components}
 
 The classical beam model represents a lidar range likelihood as a mixture of several causes:
 
@@ -128,7 +128,7 @@ $$
 
 Each term captures a different physical story.
 
-## Correct Hit
+## Correct Hit {#sec-measurement-models-correct-hit}
 
 The correct-hit term models the sensor seeing the expected object:
 
@@ -142,7 +142,7 @@ $$
 
 for measurements within the valid range. The constant of proportionality is chosen so the truncated distribution integrates properly. In many practical filters, the exact normalization is less important than the relative likelihoods, but it should not be forgotten in a careful probabilistic treatment.
 
-## Unexpected Objects
+## Unexpected Objects {#sec-measurement-models-unexpected-objects}
 
 The short-reading term models a real return from an unmapped object between the sensor and the expected map object. A person walks through the beam, a box was moved into the hallway, a wave crest interrupts a marine lidar return, and so on.
 
@@ -165,7 +165,7 @@ $$
 
 where $\eta$ normalizes the truncated distribution.
 
-## Sensor Failures and Maximum Range
+## Sensor Failures and Maximum Range {#sec-measurement-models-sensor-failures-maximum}
 
 Sometimes the sensor does not get a useful return. The beam may leave the mapped area, hit a poor reflector, saturate, or fail for reasons the robot neither knows nor cares about in the moment. Many range sensors report a maximum value in this case:
 
@@ -180,7 +180,7 @@ $$
 
 In software, exact equality with floating-point range values is often replaced by a small tolerance or by checking a sensor-specific status flag.
 
-## Random Measurements
+## Random Measurements {#sec-measurement-models-random-measurements}
 
 The random term handles measurements that are not explained by the map or the expected failure mode:
 
@@ -237,7 +237,7 @@ def lidar_beam_likelihood(z: float,
 
 This is more complicated than a single Gaussian, but the complication corresponds to real behavior. The robot can now say, "This reading is unlikely as a correct hit, but plausible as a short return from an unexpected object."
 
-## Conditional Independence of Beams
+## Conditional Independence of Beams {#sec-measurement-models-conditional-independence-beams}
 
 Beam models often assume conditional independence:
 
@@ -251,7 +251,7 @@ This is convenient and usually wrong in detail. Neighboring beams are correlated
 
 The practical danger is overconfidence. Multiplying many correlated likelihoods as if they were independent can make the estimator believe it has more information than it really does. Downsampling beams, inflating measurement covariance, or using robust likelihoods can help.
 
-## Likelihood Field Model
+## Likelihood Field Model {#sec-measurement-models-likelihood-field-model}
 
 The likelihood field model is a simpler alternative. Instead of ray casting to find the expected range for each beam, it asks how close the measured endpoint is to the nearest occupied map feature.
 
@@ -290,7 +290,7 @@ def likelihood_field_hit(distance_to_nearest_obstacle: float,
 
 The same idea generalizes beyond lidar. If a measurement can be converted into a feature location and the map can answer "how far is this from the nearest expected thing?", then a likelihood-field-style model can often be built.
 
-## Maps as Context for Measurements
+## Maps as Context for Measurements {#sec-measurement-models-maps-as-context}
 
 A measurement model usually needs a map, but "map" does not always mean a dense image of the world. A map can be:
 
@@ -301,14 +301,14 @@ A measurement model usually needs a map, but "map" does not always mean a dense 
 - a GNSS satellite ephemeris;
 - an AprilTag layout on a laboratory floor.
 
-The lecture slides distinguish two broad forms:
+Maps come in two broad forms:
 
 - **Feature-based maps** store objects and their properties.
 - **Location-based maps** store information over space.
 
 Feature-based maps are natural when the sensor detects discrete things: AprilTags, trees, doors, buoys, stars, or visual keypoints. Location-based maps are natural when the sensor observes a field or occupancy pattern: terrain height, seafloor depth, magnetic intensity, or obstacle occupancy.
 
-## Measurement Noise Is a Modeling Choice
+## Measurement Noise Is a Modeling Choice {#sec-measurement-models-noise-modeling-choice}
 
 Students often ask, "What is the correct value of $\mathbf{R}$?" For a real sensor, there is rarely one universal answer. Measurement noise depends on:
 

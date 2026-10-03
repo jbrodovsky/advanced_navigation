@@ -1,4 +1,4 @@
-# INS Error Models and IMU Characterization
+# INS Error Models and IMU Characterization {#sec-ins-errors}
 
 An inertial navigation system is useful because it can propagate motion without external measurements. It is dangerous for exactly the same reason. Every small IMU error is integrated into attitude, velocity, and position. Without correction, the navigation solution will drift even if the mechanization equations are written perfectly.
 
@@ -12,7 +12,7 @@ This chapter focuses on the error models that matter for the INS/GNSS filter:
 
 The goal is not to turn students into IMU test engineers. The goal is to make the filter design defensible instead of tuned by vibes and a plot that happens to look okay once.
 
-## Measurement Error Models
+## Measurement Error Models {#sec-ins-errors-measurement-error-models}
 
 An accelerometer measures specific force, not total acceleration:
 
@@ -44,7 +44,7 @@ The terms are:
 
 For a first INS/GNSS implementation, do not estimate every possible error term. Calibrate scale factor and misalignment when possible, then estimate residual accelerometer and gyro biases in the filter. Adding states that the trajectory cannot observe usually makes the filter look more sophisticated while making it less reliable.
 
-## Deterministic and Stochastic Errors
+## Deterministic and Stochastic Errors {#sec-ins-errors-deterministic-stochastic-errors}
 
 IMU errors fall into three broad groups.
 
@@ -73,7 +73,7 @@ IMU errors fall into three broad groups.
 
 The boundary between these categories is not always clean. A bias may look constant on a lab bench and wander during a flight because temperature, vibration, and power supply conditions changed. The filter model should be simple, but not naive.
 
-## Why Bias Dominates Drift
+## Why Bias Dominates Drift {#sec-ins-errors-why-bias-dominates}
 
 Consider a constant accelerometer bias $b_a$ along one horizontal axis. Ignoring attitude coupling, the velocity and position errors are approximately
 
@@ -99,7 +99,7 @@ $$\delta\theta(t) \approx b_g t.$$
 
 The resulting position error can grow like a cubic term in simplified cases. This is why attitude is not just an output of the INS. It is part of the acceleration model.
 
-## Stochastic Bias Models
+## Stochastic Bias Models {#sec-ins-errors-stochastic-bias-models}
 
 The two most common bias models in an INS/GNSS filter are random walk and first-order Gauss-Markov.
 
@@ -147,7 +147,7 @@ $$Q_b
 
 FOGM is useful when the bias is known to remain bounded around a nominal value. Random walk is more conservative when you do not trust that assumption.
 
-## Allan Deviation
+## Allan Deviation {#sec-ins-errors-allan-deviation}
 
 Allan deviation is a standard way to characterize sensor noise over averaging time. It answers a practical question: if we average this sensor for $\tau$ seconds, how does the apparent error change?
 
@@ -212,7 +212,7 @@ def overlapping_allan_deviation(samples, dt, cluster_sizes=None):
 
 In a lab workflow, record stationary IMU data for as long as practical, compute Allan deviation for each axis, and compare the slope regions to the sensor data sheet. In a course project, the same idea is useful even when the data are simulated: it forces you to separate white measurement noise from bias drift.
 
-## Temperature and Vibration
+## Temperature and Vibration {#sec-ins-errors-temperature-vibration}
 
 Bias and scale factor are temperature sensitive. A simple bias model is
 
@@ -226,7 +226,7 @@ If the IMU reports temperature, store it. If the platform has warm-up behavior, 
 
 Vibration is harder. High-frequency vibration can excite nonlinearities and produce low-frequency apparent bias. This is one reason an IMU that behaves well on a desk may perform poorly on a vehicle. Mechanical isolation, sensor placement, and appropriate filtering matter. So does skepticism toward data sheets measured under conditions unlike your application.
 
-## Calibration Workflow
+## Calibration Workflow {#sec-ins-errors-calibration-workflow}
 
 A practical calibration workflow starts simple:
 
@@ -237,7 +237,7 @@ A practical calibration workflow starts simple:
 
 Static calibration finds initial parameters. Dynamic filtering estimates residual parameters during operation. Do not confuse those two jobs. A Kalman filter can clean up residual bias, but it is not a substitute for basic calibration if the raw sensor is far from the assumed model.
 
-## From IMU Specs to Process Noise
+## From IMU Specs to Process Noise {#sec-ins-errors-from-imu-specs}
 
 The process-noise matrix $\mathbf{Q}$ is where sensor characterization enters the error-state filter. A common 15-state ordering is
 
@@ -308,7 +308,7 @@ def fogm_discrete_variance(sigma_bias, dt, tau):
     return sigma_bias**2 * (1.0 - np.exp(-2.0 * dt / tau))
 ```
 
-## Observability in Loose INS/GNSS
+## Observability in Loose INS/GNSS {#sec-ins-errors-observability-loose-ins}
 
 GNSS position and velocity measurements directly observe position and velocity errors. They do not directly measure accelerometer bias, gyro bias, or attitude error. Those states become observable through dynamics and covariance coupling.
 
@@ -321,7 +321,7 @@ Examples:
 
 This is why trajectory design matters. If the vehicle never accelerates, turns, or changes attitude, some error states are hard or impossible to estimate. A filter cannot learn information the motion never reveals.
 
-## State Selection
+## State Selection {#sec-ins-errors-state-selection}
 
 Start with the standard 15-state error model:
 
@@ -343,7 +343,7 @@ Add states only when three conditions are true:
 
 Possible advanced states include scale-factor errors, axis misalignment, GNSS lever-arm uncertainty, GNSS timing offset, barometer bias, or wheel-odometry scale. For the course INS/GNSS project, those are usually distractions unless the assignment explicitly asks for them.
 
-## Practical Checklist
+## Practical Checklist {#sec-ins-errors-practical-checklist}
 
 When building the INS/GNSS filter:
 
@@ -355,7 +355,7 @@ When building the INS/GNSS filter:
 - Treat warm-up and temperature shifts as real operating conditions, not annoying lab details.
 - During GNSS outages, expect covariance to grow. If it does not, the process model is overconfident.
 
-## Summary
+## Summary {#sec-ins-errors-summary}
 
 IMU error modeling turns sensor behavior into filter behavior. Accelerometer bias drives velocity and position error. Gyro bias drives attitude error, which then corrupts acceleration through gravity projection. White noise, bias instability, and random walk dominate at different time scales.
 

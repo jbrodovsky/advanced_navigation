@@ -1,6 +1,6 @@
-# Assignment 3: INS/GNSS Integration
+# Project 3: INS/GNSS Integration {#sec-project3}
 
-## Overview
+## Overview {#sec-project3-overview}
 
 In this project, you will implement a complete Inertial Navigation System (INS) with Global Navigation Satellite System (GNSS) integration for a vehicle traveling over long distances where the Earth's curvature cannot be ignored.
 
@@ -20,7 +20,7 @@ You will implement the strapdown mechanization equations in a WGS84 geodetic fra
 
 ------------------------------------------------------------------------
 
-## Project Architecture
+## Project Architecture {#sec-project3-project-architecture}
 
 ```         
 Raw IMU → Strapdown Mechanization → Dead Reckoning Navigation
@@ -36,7 +36,7 @@ GNSS Position/Velocity (1-10 Hz) → ESKF Update (measurement fusion)
 
 ------------------------------------------------------------------------
 
-## Part A: Curved-Earth Strapdown Mechanization
+## Part A: Curved-Earth Strapdown Mechanization {#sec-project3-part-curved-earth}
 
 ### Learning Objectives
 
@@ -53,7 +53,11 @@ Unlike flat-earth small-scale navigation, when traveling long distances the Eart
 2.  **Earth rotation rate** $\omega_{ie}$: Creates Coriolis effect on accelerometers
 3.  **Transport rate** $\omega_{en}$: Local frame rotates as vehicle moves over curved surface
 
-**Relevant chapters:** - Chapter 7 (INS/GNSS Integration) — complete mechanization with curved Earth - Chapter 14 (Mathematical Reference) — quaternion kinematics, frame transformations - Chapter 8 (INS Error Models) — IMU characteristics and biases
+**Relevant chapters:**
+
+- @sec-ins-gnss: complete mechanization with curved Earth
+- @sec-ins-errors: IMU characteristics and biases
+- @sec-math-reference: quaternion kinematics and frame transformations
 
 ### Specification
 
@@ -283,7 +287,7 @@ class StrapdownNavigator:
 
 ------------------------------------------------------------------------
 
-## Part B: Error-State Kalman Filter (ESKF)
+## Part B: Error-State Kalman Filter (ESKF) {#sec-project3-part-b-error}
 
 ### Learning Objectives
 
@@ -295,7 +299,12 @@ class StrapdownNavigator:
 
 Rather than filtering the full 15-dimensional state (position, velocity, attitude, gyro bias, accel bias), the ESKF filters a much smaller error state while the nominal state is propagated nonlinearly. This dramatically improves numerical stability and computational efficiency.
 
-**Relevant chapters:** - Chapter 2 (Bayes Filter and EKF) — complete ESKF theory - Chapter 7 (INS/GNSS) — ESKF for INS - Chapter 14 (Mathematical Reference) — Jacobian derivations - Chapter 15 (Practical Guide) — numerical stability
+**Relevant chapters:**
+
+- @sec-ekf-error-state-filtering: error-state filtering theory
+- @sec-ins-gnss-error-state-formulation: the ESKF for INS
+- @sec-math-reference: Jacobian derivations
+- @sec-practical: numerical stability
 
 ### Error State Definition
 
@@ -410,7 +419,7 @@ class INSGNSSFilter:
         F = np.zeros((15, 15))
 
         # [Simplified] Approximate Jacobian structure
-        # For a complete implementation, refer to Chapter 14 or appendix
+        # For a complete implementation, see the Mathematical Reference chapter
 
         # Position ← velocity
         F[0:3, 3:6] = np.eye(3) * dt
@@ -500,7 +509,7 @@ class INSGNSSFilter:
 
 ------------------------------------------------------------------------
 
-## Part C: Performance Analysis
+## Part C: Performance Analysis {#sec-project3-part-c-performance}
 
 ### Learning Objectives
 
@@ -589,7 +598,7 @@ class NavigationEvaluator:
 
 ------------------------------------------------------------------------
 
-## Provided Data
+## Provided Data {#sec-project3-provided-data}
 
 ### INS/GNSS Dataset
 
@@ -631,7 +640,7 @@ The starter loader converts latitude and longitude to radians, normalizes timest
 
 ------------------------------------------------------------------------
 
-## Grading Rubric
+## Grading Rubric {#sec-project3-grading-rubric}
 
 | Component | Full (10) | Partial (5) | Minimal (2) | Missing (0) |
 |---------------|---------------|---------------|---------------|---------------|
@@ -643,12 +652,12 @@ The starter loader converts latitude and longitude to radians, normalizes timest
 
 ------------------------------------------------------------------------
 
-## References
+## References {#sec-project3-references}
 
-- Chapter 2: Extended Kalman Filter and Error-State Kalman Filter
-- Chapter 7: INS/GNSS Integration (mechanization equations, earth models)
-- Chapter 8: INS Error Models (sensor specifications, biases)
-- Chapter 14: Mathematical Reference (Jacobian computation, quaternions)
-- Chapter 15: Practical Implementation Guide (debugging, validation)
+- @sec-ekf: the extended and error-state Kalman filters
+- @sec-ins-gnss: mechanization equations and Earth models
+- @sec-ins-errors: sensor specifications and biases
+- @sec-math-reference: Jacobian computation and quaternions
+- @sec-practical: debugging and validation
 - Farrell, J. A. (2008). Aided Navigation: GPS with High-Rate Sensors
 - Grewal, M. S., Weill, L. R., & Andrews, A. P. (2007). Global Positioning Systems, Inertial Navigation, and Integration

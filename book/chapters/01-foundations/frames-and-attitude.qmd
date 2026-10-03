@@ -1,4 +1,4 @@
-# Coordinate Frames and Attitude {#frames-and-attitude}
+# Coordinate Frames and Attitude {#sec-frames}
 
 Every navigation result is meaningful only with a frame attached. A position in
 meters, a velocity vector, and a quaternion can all look perfectly reasonable
@@ -6,7 +6,7 @@ while describing different worlds. This chapter establishes the convention used
 throughout the book before the IMU, camera, GNSS, and filter chapters make the
 same choices less visibly.
 
-## The Convention Contract
+## The Convention Contract {#sec-frames-convention-contract}
 
 We write a vector expressed in frame $a$ as $\mathbf{v}^a$ and a rotation that
 maps coordinates from frame $b$ into frame $a$ as $\mathbf{C}_b^a$:
@@ -28,7 +28,148 @@ language: write the source and destination frames, then test the transform with 
 known vector.
 [@groves]
 
-## Common Navigation Frames
+## Book-Wide Conventions {#sec-frames-conventions}
+
+Every chapter, project handout, and starter package in this course follows the
+conventions below. When a dataset or library uses something different, the code
+that loads it converts at the boundary and says so in a comment.
+
+**Notation.**
+
+- Vectors are bold lowercase ($\mathbf{v}$), matrices bold uppercase
+  ($\mathbf{P}$), scalars italic ($h$).
+- $\mathbf{v}^a$ is a vector resolved in frame $a$.
+- $\mathbf{C}_b^a$ is the rotation (direction-cosine) matrix that maps
+  coordinates from frame $b$ into frame $a$.
+- $\boldsymbol{\omega}_{ab}^c$ is the angular velocity of frame $b$ relative to
+  frame $a$, resolved in frame $c$. For example, $\boldsymbol{\omega}_{ib}^b$ is
+  what a gyroscope measures [@groves].
+- $[\mathbf{a}]_\times$ is the skew-symmetric matrix with
+  $[\mathbf{a}]_\times \mathbf{b} = \mathbf{a} \times \mathbf{b}$.
+
+**Frames.**
+
+- Navigation frame $n$: north-east-down (NED).
+- Body frame $b$ in the INS chapters and Project 3: forward-right-down (FRD).
+- Camera frame $c$: the optical convention, $x$ right, $y$ down, $z$ along the
+  optical axis.
+- Project 1 has its own world frame $w$ (the AprilTag mat) and a $z$-up drone
+  body frame. @sec-pnp defines both and gives the transforms; the handout uses
+  the same ones.
+
+**Quaternions.**
+
+- Hamilton convention, scalar first: $\mathbf{q} = [q_w, q_x, q_y, q_z]^T$.
+- $\mathbf{q}_b^n$ is the attitude of the body relative to navigation, and
+  $\mathbf{C}(\mathbf{q}_b^n) = \mathbf{C}_b^n$.
+- Rotations compose like matrices:
+  $\mathbf{q}_c^a = \mathbf{q}_b^a \otimes \mathbf{q}_c^b$.
+- SciPy also uses the Hamilton convention but stores quaternions scalar *last*,
+  `[x, y, z, w]`. Convert at the boundary (see
+  @sec-frames-quaternions-software).
+
+**Euler angles** are for display, plotting, and initialization, not internal
+states.
+
+- Roll $\phi$, pitch $\theta$, yaw $\psi$, applied in the Z-Y-X (yaw, pitch,
+  roll) sequence:
+
+$$
+\mathbf{C}_b^n = \mathbf{R}_z(\psi)\,\mathbf{R}_y(\theta)\,\mathbf{R}_x(\phi).
+$$
+
+- In SciPy this is `Rotation.from_euler("ZYX", [yaw, pitch, roll])`.
+- The Project 1 dataset reports attitude in a Z-X-Y sequence, so Project 1
+  uses that sequence for its roll, pitch, and yaw states
+  (@sec-pnp-euler-angles-project). It is the one deliberate exception.
+
+**Errors.**
+
+- Vector errors are true minus estimate: $\delta\mathbf{x} = \mathbf{x} - \hat{\mathbf{x}}$,
+  so a correction is applied as $\hat{\mathbf{x}} \leftarrow \hat{\mathbf{x}} + \delta\hat{\mathbf{x}}$.
+- Attitude errors are small rotations resolved in the navigation frame:
+
+$$
+\mathbf{C}_b^n \approx \left(\mathbf{I} + [\delta\boldsymbol{\theta}]_\times\right)\hat{\mathbf{C}}_b^n,
+\qquad
+\mathbf{q}_b^n \approx \delta\mathbf{q}(\delta\boldsymbol{\theta}) \otimes \hat{\mathbf{q}}_b^n.
+$$
+
+**Earth model** (@sec-ins-gnss).
+
+- Latitude $L$, longitude $\lambda$, and ellipsoidal height $h$ on the WGS-84
+  ellipsoid. Angles are in radians in all equations and code.
+- $R_M$ is the meridian radius of curvature and $R_N$ the prime-vertical
+  (transverse) radius of curvature.
+
+::: {.callout-warning title="Groves uses different letters"}
+Groves writes $R_N$ for the *meridian* radius and $R_E$ for the transverse radius
+[@groves]. This book follows Farrell [@farrell2008]: $R_M$ meridian, $R_N$
+prime vertical. Check which convention a reference uses before copying an
+equation.
+:::
+
+**Filter notation** (@sec-filtering onward).
+
+- State $\mathbf{x}$, covariance $\mathbf{P}$, state transition $\mathbf{F}$,
+  measurement Jacobian $\mathbf{H}$, process noise $\mathbf{Q}$, measurement
+  noise $\mathbf{R}$, and gain $\mathbf{K}$, at discrete time step $k$.
+- The predicted (prior) estimate is $\hat{\mathbf{x}}_{k|k-1}$, $\mathbf{P}_{k|k-1}$.
+  The updated (posterior) estimate is $\hat{\mathbf{x}}_{k|k}$, $\mathbf{P}_{k|k}$.
+- The Bayes-filter chapter writes the same prior as $\overline{bel}(x_k)$ and the
+  posterior as $bel(x_k)$.
+- To keep symbols unambiguous: particle weights are $w^{[i]}$ and process noise
+  is $\mathbf{w}_k$ (always bold). The UKF spread parameter is $\alpha$, and
+  angular rate is always a bold $\boldsymbol{\omega}$ with frame subscripts.
+  A rotation matrix is always $\mathbf{C}$, never $\mathbf{R}$, because
+  $\mathbf{R}$ is measurement noise.
+
+```{python}
+#| label: frames-conventions-check
+#| echo: true
+
+import numpy as np
+from scipy.spatial.transform import Rotation
+
+
+def quat_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+    """Hamilton product of two scalar-first quaternions."""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array([
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ])
+
+
+def scalar_first(rotation: Rotation) -> np.ndarray:
+    x, y, z, w = rotation.as_quat()
+    return np.array([w, x, y, z])
+
+
+roll, pitch, yaw = np.deg2rad([5.0, -10.0, 30.0])
+
+# C_b^n = Rz(yaw) Ry(pitch) Rx(roll) is SciPy's intrinsic "ZYX" sequence.
+C_bn = Rotation.from_euler("ZYX", [yaw, pitch, roll])
+manual = (
+    Rotation.from_euler("z", yaw) * Rotation.from_euler("y", pitch) * Rotation.from_euler("x", roll)
+)
+np.testing.assert_allclose(C_bn.as_matrix(), manual.as_matrix(), atol=1e-12)
+
+# Quaternion composition matches matrix composition (Hamilton convention).
+q_a = scalar_first(Rotation.from_euler("z", yaw))
+q_b = scalar_first(Rotation.from_euler("x", roll))
+np.testing.assert_allclose(
+    quat_multiply(q_a, q_b),
+    scalar_first(Rotation.from_euler("z", yaw) * Rotation.from_euler("x", roll)),
+    atol=1e-12,
+)
+print("Z-Y-X Euler and Hamilton quaternion conventions check out.")
+```
+
+## Common Navigation Frames {#sec-frames-common-navigation-frames}
 
 | Frame | Purpose | Typical axes |
 |---|---|---|
@@ -39,24 +180,26 @@ known vector.
 | ECI ($i$) | Inertial dynamics | Origin at Earth's center, not Earth-fixed |
 
 NED and ENU are not interchangeable relabelings: their vertical axes have
-opposite signs and their horizontal axes are permuted. GNSS chapters use NED for
+opposite signs and their horizontal axes are permuted. The GNSS chapters use NED for
 local velocity and positive-down vertical position errors. A camera or middleware
 interface may use a different convention; its adapter must make the conversion
 explicit. [@groves]
 
-## Rotation Matrices and Euler Angles
+## Rotation Matrices and Euler Angles {#sec-frames-rotation-matrices-euler}
 
 A direction-cosine matrix (DCM) is simply a $3\times3$ rotation matrix. It must
 remain orthonormal with determinant one. Euler angles are useful for displaying
 roll, pitch, and yaw, but their meaning depends on the stated rotation sequence.
-They have a singularity near pitch $\pm90^\circ$, so they are poor internal states
-for a vehicle that can point in arbitrary directions.
+Every sequence has a singularity (gimbal lock) where its middle rotation reaches
+$\pm90^\circ$: pitch for the Z-Y-X sequence used in this book, roll for the
+Z-X-Y sequence of the Project 1 dataset. That makes Euler angles poor internal
+states for a vehicle that can point in arbitrary directions.
 
 Heading is also not automatically yaw. Heading is a direction relative to a
 chosen north reference; yaw is an attitude component under a specified frame and
 rotation sequence. On a tilted vehicle the distinction matters.
 
-## Quaternions in Software
+## Quaternions in Software {#sec-frames-quaternions-software}
 
 Unit quaternions avoid the Euler-angle singularity and compose rotations
 efficiently. Their double cover means $q$ and $-q$ represent the same physical
@@ -92,7 +235,7 @@ np.testing.assert_allclose(
 )
 ```
 
-## Checks Before Trusting a Transform
+## Checks Before Trusting a Transform {#sec-frames-checks-before-trusting}
 
 - State both source and destination frames in variable names and documentation.
 - Verify that $\mathbf{C}^T\mathbf{C}=I$ within floating-point tolerance.

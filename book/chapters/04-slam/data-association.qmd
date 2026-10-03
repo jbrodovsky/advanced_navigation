@@ -1,4 +1,4 @@
-# Data Association for Landmark SLAM
+# Data Association for Landmark SLAM {#sec-slam-association}
 
 Data association answers a deceptively simple question:
 
@@ -14,7 +14,7 @@ This chapter focuses on the association tools needed for the FastSLAM project:
 - landmark birth and deletion;
 - per-particle association in FastSLAM.
 
-## The Association Problem
+## The Association Problem {#sec-slam-association-problem}
 
 At time $t$, suppose the feature extractor returns observations
 
@@ -36,7 +36,7 @@ For each observation, we choose one of three outcomes:
 
 The third outcome matters. A feature extractor will sometimes report moving objects, partial trunks, signs, poles, or numerical nonsense wearing a convincing little hat.
 
-## Innovation and Mahalanobis Distance
+## Innovation and Mahalanobis Distance {#sec-slam-association-innovation-mahalanobis-distance}
 
 For a particle pose $x$ and landmark $\ell_j$, the predicted measurement is
 
@@ -102,7 +102,7 @@ For a 2D measurement, common chi-square gates are:
 
 A 95% gate is a reasonable starting point. It is not a law of nature.
 
-## Nearest Neighbor and Maximum Likelihood
+## Nearest Neighbor and Maximum Likelihood {#sec-slam-association-nearest-neighbor-maximum}
 
 The simplest association rule is nearest neighbor:
 
@@ -156,7 +156,7 @@ candidate_measurements = [
 associate_by_gate(candidate_measurements)
 ```
 
-## Landmark Birth
+## Landmark Birth {#sec-slam-association-landmark-birth}
 
 If no existing landmark passes the gate, the measurement may be a new tree. Initialize a landmark using the inverse range-bearing model:
 
@@ -183,7 +183,7 @@ Practical rules:
 - reject landmarks too close to the vehicle path if they would be in free space;
 - optionally require a tentative landmark to be observed more than once before becoming confirmed.
 
-## Landmark Deletion
+## Landmark Deletion {#sec-slam-association-landmark-deletion}
 
 A landmark may be deleted or marked inactive when:
 
@@ -202,7 +202,7 @@ For the course project, a simple track state is enough:
 | confirmed | repeatedly observed and usable for association |
 | inactive | not used for updates or final reporting |
 
-## Per-Particle Association in FastSLAM
+## Per-Particle Association in FastSLAM {#sec-slam-association-per-particle-association}
 
 FastSLAM performs association inside each particle. This changes the interpretation:
 
@@ -214,7 +214,7 @@ This is a useful form of multiple-hypothesis tracking. Particles with poor assoc
 
 The project implementation should therefore avoid a single global association table that is forced on all particles. Association should be a method of the particle or of the FastSLAM update step using that particle's pose and landmark map.
 
-## Outlier Handling
+## Outlier Handling {#sec-slam-association-outlier-handling}
 
 Outliers are expected in Victoria Park:
 
@@ -235,7 +235,7 @@ Useful defenses:
 
 The fastest way to make FastSLAM fail is to feed it overconfident outliers.
 
-## Choosing the Gate
+## Choosing the Gate {#sec-slam-association-choosing-gate}
 
 The gate threshold creates a tradeoff:
 
@@ -247,7 +247,7 @@ The gate threshold creates a tradeoff:
 
 Students should report a small sensitivity study. For example, compare final map size and trajectory shape using gates near 4.61, 5.99, and 9.21.
 
-## Diagnostics for the Project
+## Diagnostics for the Project {#sec-slam-association-diagnostics-project}
 
 Every implementation should produce diagnostic plots or tables:
 
@@ -261,7 +261,7 @@ Every implementation should produce diagnostic plots or tables:
 
 These diagnostics are not extra polish. They are how students find out whether the system is doing SLAM or merely drawing increasingly confident nonsense.
 
-## Summary
+## Summary {#sec-slam-association-summary}
 
 Data association is the hinge between perception and estimation. A good FastSLAM implementation needs:
 
@@ -272,4 +272,4 @@ Data association is the hinge between perception and estimation. A good FastSLAM
 5. explicit outlier handling;
 6. diagnostics that expose duplicate and merged landmarks.
 
-The next chapters place this in the larger SLAM ecosystem: visual front-ends, loop closure, and graph optimization.
+@sec-visual-nav and @sec-loop-closure place this in the larger SLAM ecosystem: visual front-ends, loop closure, and graph optimization.

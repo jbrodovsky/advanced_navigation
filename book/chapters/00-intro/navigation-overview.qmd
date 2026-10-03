@@ -1,8 +1,8 @@
-# Guidance, Navigation, and Control {#navigation-overview}
+# Guidance, Navigation, and Control {#sec-gnc}
 
 Guidance, Navigation, and Control (GNC) engineering is a multidisciplinary field. However, depending on the industry, application, and even the technology stack, the terminology can vary widely. This is largely an artifact of two different fields inventing and re-inventing very similar topics. Adding to this is the very fuzzy definition of what constitutes a robot, and where a simple machine ends and a robot begins. Here, we aim to make those definitions a little more clear.
 
-## Terminology
+## Terminology {#sec-gnc-terminology}
 
 The field of GNC engineering is concerned with the design, analysis, and implementation of systems that can guide, navigate, and control vehicles in a variety of environments semi- or fully-autonomously. This includes both manned and unmanned vehicles, as well as fully autonomous systems. Historically, the aerospace and marine industries have been the primary drivers of GNC engineering, with robotics being a more recent application that has gained significant attention in recent years but simultaneously seems to have slightly reinvented the field with new terminology. As such, while this is a robotics course, it is important to understand that the subject we're studying is in the field of autonomous GNC which sits at the intersection of traditional manned aerospace and maritime engineering (which uses semi-autonomous GNC systems) and in the unmanned robotics space. The primary difference between the two is in the terminology used to describe the problem, the specific applications and technologies used to solve it, and whether or not a human is in the decision making loop.
 
@@ -43,7 +43,7 @@ flowchart LR
     x7 --> B((B))
 ```
 
-## Navigation's Contract with Guidance and Control
+## Navigation's Contract with Guidance and Control {#sec-gnc-navigations-contract-guidance}
 
 Navigation does not merely publish a pose. Guidance needs a state estimate with a
 frame and a time of validity so that it can reason about where the vehicle will be
@@ -57,7 +57,7 @@ This is why covariance, timestamp, and integrity belong beside position, velocit
 and attitude. A controller that receives a stale or overconfident state is not
 receiving a complete navigation solution.
 
-## A Brief History of Navigation
+## A Brief History of Navigation {#sec-gnc-brief-history-navigation}
 
 ### Navigation and the Earth and the Historical Problem of Navigation
 
@@ -77,7 +77,7 @@ Celestial observations made more sense when viewed from an understanding of a sp
 
 Celestial navigation was also developed as a method of navigation that relies on observations of celestial bodies (e.g. the sun, moon, stars, and planets) to determine position and orientation. This method of navigation was particularly useful for maritime navigation, as it allowed sailors to navigate across open oceans where there were no landmarks to rely on. Celestial navigation relies on the fact that the positions of celestial bodies are predictable and can be used as reference points to determine position and orientation. By measuring the angles between celestial bodies and the horizon, sailors could determine their latitude and longitude. This method of navigation was widely used until the development of more advanced navigation technologies in the 20th century.
 
-### Where does this leave us? {#modern-navigation}
+### Where does this leave us? {#sec-gnc-modern-navigation}
 
 The accurate spherical model and navigation by celestial observations and physical landmarks was a sufficient form of navigation for thousands of years, and is still used in many contexts today. The development of more advanced navigation technologies in the 20th century has certainly made navigation easier and more accurate, but it’s important to recognize that the fundamental principles of navigation have been known for thousands of years and have been used by countless generations of navigators to explore and navigate the world around us. Keep in mind, with basic knowledge of celestial navigation, a spherical Earth, and sailing, peoples from east Asia were able to navigate and migrate into the Pacific Islands thousands of years ago (circa 3,500 to 1,500 BCE).
 

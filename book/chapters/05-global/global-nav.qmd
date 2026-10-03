@@ -1,4 +1,4 @@
-# Global Navigation and GNSS Measurements
+# Global Navigation and GNSS Measurements {#sec-global-nav}
 
 Until now, most of our examples have lived in a friendly local world: a flat plane, a fixed Cartesian reference frame, and distances small enough that Earth's curvature is not the dominant problem. That approximation is useful. It is also limited.
 
@@ -10,7 +10,7 @@ This chapter introduces global scale navigation and the external measurements th
 
 The signal-processing and receiver-design details are important, but they are not the focus here. There is a entire branch of PNT engineering that is devoted to satellite radio signal processing, but that is beyond the scope of this class. Our goal is to understand what a GNSS receiver is estimating, why it needs multiple satellites, why its errors are not simple Gaussian noise, and how its position and velocity outputs become measurements in an INS/GNSS filter.
 
-## From Local Coordinates to Global Coordinates
+## From Local Coordinates to Global Coordinates {#sec-global-nav-from-local-coordinates}
 
 The flat-Earth approximation assumes that a local navigation frame can be treated as fixed over the region of interest. For indoor robots, small drones, and many short-range experiments, this is usually acceptable. For aircraft, ships, long-range ground vehicles, and strategic navigation, it is not.
 
@@ -47,7 +47,7 @@ The WGS84 ellipsoid gives the standard geometric model used by GPS and most mode
 
 That detail matters in software. A filter state may store position errors in meters while the nominal state stores latitude and longitude in radians. Mixing those without an explicit conversion is a good way to create a bug that looks like a physics problem.
 
-## What the GNSS Provides
+## What the GNSS Provides {#sec-global-nav-what-gnss-provides}
 
 The GNSS is the generic term for the satellite navigation constellations such as the Global Positioning System (USA), Galileo (EU), GLONASS (Russia), and BeiDou (China). A receiver estimates its position and clock offset by listening to radio signals transmitted by satellites whose positions and clock corrections are known from the broadcast navigation message.
 
@@ -101,7 +101,7 @@ $$\mathbf{z}_{GNSS,k}
 
 with a timestamp and some statement of uncertainty. The receiver may report that uncertainty as a covariance matrix, horizontal and vertical accuracy estimates, a dilution-of-precision value, or a vendor-specific quality flag. In real projects, the exact receiver interface matters. In this course, we will model it as a position and velocity measurement with covariance $\mathbf{R}_{GNSS,k}$.
 
-## GNSS Error Sources
+## GNSS Error Sources {#sec-global-nav-gnss-error-sources}
 
 GNSS is an external reference, but it is not truth. A receiver solution is an estimate from radio measurements, and radio measurements are sensitive to the environment.
 
@@ -124,7 +124,7 @@ That point matters for Kalman filtering. If $\mathbf{R}_{GNSS}$ is too small, th
 
 **Accuracy** is closeness to the true state. **Availability** is whether a service or measurement is usable under its declared conditions. **Integrity** is the ability to warn when the system should not be used as intended. A small reported standard deviation is an accuracy statement; it is not an integrity guarantee. For the project, record quality flags, use innovation gating, and make stale or rejected measurements visible in diagnostics.
 
-## Why INS and GNSS Fit Together
+## Why INS and GNSS Fit Together {#sec-global-nav-why-ins-gnss}
 
 An inertial navigation system and a GNSS receiver fail in different ways. That is why they are useful together.
 
@@ -149,7 +149,7 @@ sequenceDiagram
     GNSS->>INS: timestamped recovery update
 ```
 
-## Loosely Coupled INS/GNSS Integration
+## Loosely Coupled INS/GNSS Integration {#sec-global-nav-loosely-coupled-ins}
 
 In a loosely coupled architecture, the GNSS receiver computes its own navigation solution first. The INS/GNSS filter then uses that receiver solution as a measurement. The filter does not process raw satellite pseudoranges or carrier-phase observables.
 
@@ -258,7 +258,7 @@ def loose_gnss_update(error_state_mean, P, ins_position, ins_velocity,
 
 The code above is not a complete INS/GNSS system. It is the measurement-update shape. A complete implementation also needs strapdown propagation, error-state propagation, measurement gating, timestamp handling, lever-arm compensation, error injection, and error-state reset.
 
-## Loose, Tight, and Deep Coupling
+## Loose, Tight, and Deep Coupling {#sec-global-nav-loose-tight-deep}
 
 The coupling terms describe where GNSS information enters the integrated navigation algorithm [@groves].
 
@@ -268,7 +268,7 @@ The coupling terms describe where GNSS information enters the integrated navigat
 
 For this course, tight and deep coupling are comparison points only. They are worth knowing because they explain why professional GNSS/INS systems can look more complicated than the filter we implement here. They are not required for the assignment.
 
-## Practical Checklist for the Project
+## Practical Checklist for the Project {#sec-global-nav-practical-checklist-project}
 
 When using GNSS measurements in the INS/GNSS project, check the following:
 
@@ -280,4 +280,4 @@ When using GNSS measurements in the INS/GNSS project, check the following:
 - Choose $\mathbf{R}_{GNSS}$ from reported uncertainty when available; otherwise choose conservative values and tune using innovation statistics.
 - Treat outages explicitly. Do not feed stale GNSS measurements as if they were current.
 
-The next chapter develops the curved-Earth strapdown equations used for INS propagation. After that, the IMU error chapter explains why the error-state model needs bias and noise states. Together, those pieces give us the loose INS/GNSS system used in the final project.
+@sec-ins-gnss develops the curved-Earth strapdown equations used for INS propagation. After that, @sec-ins-errors explains why the error-state model needs bias and noise states. Together, those pieces give us the loose INS/GNSS system used in the final project.

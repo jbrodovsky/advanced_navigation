@@ -1,6 +1,6 @@
-# Visual-Inertial Navigation Part C: EKF, UKF, and Particle Filters
+# Visual-Inertial Navigation Part C: EKF, UKF, and Particle Filters {#sec-project1c}
 
-## Overview
+## Overview {#sec-project1c-overview}
 
 Part C combines the IMU propagation from Part A and the visual pose measurements from Part B into three nonlinear estimators:
 
@@ -10,7 +10,7 @@ Part C combines the IMU propagation from Part A and the visual pose measurements
 
 All three filters must use the same dataset, the same 15-state convention, the same propagation model, and the same PnP-based observation source. If one filter gets different semantics, the comparison stops being interesting and turns into a bookkeeping accident.
 
-## Starter Interfaces
+## Starter Interfaces {#sec-project1c-starter-interfaces}
 
 Use the starter package:
 
@@ -27,7 +27,7 @@ from drone_pipeline.observation import estimate_pose
 
 The starter classes define the public interfaces, but the core estimation logic is for you to implement.
 
-## Common Requirements
+## Common Requirements {#sec-project1c-common-requirements}
 
 All three filters must:
 
@@ -39,7 +39,7 @@ All three filters must:
 - wrap propagated attitudes and attitude residuals
 - report position RMSE against Vicon truth
 
-## EKF Requirements
+## EKF Requirements {#sec-project1c-ekf-requirements}
 
 Implement `EKFNavigator` with:
 
@@ -57,7 +57,7 @@ Report:
 - mean NIS compared to the expected measurement dimension of `6`
 - any covariance inflation or tuning choices
 
-## UKF Requirements
+## UKF Requirements {#sec-project1c-ukf-requirements}
 
 Implement `UKFNavigator` with:
 
@@ -74,7 +74,7 @@ Report:
 - innovation or NIS diagnostics comparable to the EKF
 - whether the UKF earned its extra bookkeeping
 
-## Particle Filter Requirements
+## Particle Filter Requirements {#sec-project1c-particle-filter-requirements}
 
 Implement `ParticleFilterNavigator` with:
 
@@ -104,7 +104,7 @@ For each particle count, compute navigation solutions using:
 
 Report position RMSE and runtime for each choice. For weighted means, use a weighted RMSE.
 
-## Comparison Requirements
+## Comparison Requirements {#sec-project1c-comparison-requirements}
 
 Compare EKF, UKF, and PF on:
 
@@ -117,7 +117,7 @@ Compare EKF, UKF, and PF on:
 
 Use one development trial and one validation trial for detailed figures, then summarize all eight datasets in tables.
 
-## Deliverables
+## Deliverables {#sec-project1c-deliverables}
 
 Submit:
 
@@ -130,6 +130,6 @@ Submit:
 - PF particle-count and runtime study
 - a short technical comparison of the three methods
 
-## Notes
+## Notes {#sec-project1c-notes}
 
 The old nonlinear-KF and particle-filter projects are merged here on purpose. You are not building three unrelated assignments. You are building one pipeline with three different estimators attached to the same underlying navigation problem.

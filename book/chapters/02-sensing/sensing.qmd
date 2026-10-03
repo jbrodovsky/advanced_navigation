@@ -1,11 +1,11 @@
-# Sensing and Perception {#sensing}
+# Sensing and Perception {#sec-sensing}
 
 Navigation estimates where a system is, how it moves, and how it is oriented.
 Perception supplies the physical evidence for that estimate. The two directions
 belong together: a state estimate predicts what a sensor should observe, and an
 observation tests whether the state estimate is plausible.
 
-## A Sensor Is Not a State Estimate
+## A Sensor Is Not a State Estimate {#sec-sensing-sensor-not-state}
 
 It is tempting to say that a GNSS receiver “gives position” or an IMU “gives
 attitude.” What each device actually provides is a measurement with a frame,
@@ -28,7 +28,7 @@ model does not explain. A good measurement interface records at least:
 This contract is what makes a camera observation, lidar range, GNSS solution, and
 magnetometer reading usable by the same estimation machinery.
 
-## Proprioception and Exteroception
+## Proprioception and Exteroception {#sec-sensing-proprioception-exteroception}
 
 Two broad sensor classes make the division of work clear:
 
@@ -43,7 +43,7 @@ may be obstructed, delayed, or fooled by a repeated-looking environment. Robust
 navigation uses the different failure modes rather than pretending one sensor is
 truth.
 
-## From Hardware to an Estimator
+## From Hardware to an Estimator {#sec-sensing-from-hardware-estimator}
 
 ```{mermaid}
 %%| label: fig-sensor-measurement-contract
@@ -62,11 +62,11 @@ extraction, or a receiver solution. Those operations can change latency and
 correlation, so they belong in the measurement model rather than being treated as
 invisible plumbing.
 
-## What This Part Covers
+## What This Part Covers {#sec-sensing-what-this-part}
 
-The next chapter develops motion models and IMU measurements. The measurement
-model chapter turns physical observations into likelihoods; data association
-addresses which feature generated an observation; and the PnP chapter builds a
-camera observation model used in Module 1. The global-navigation chapters return
-to this contract for GNSS, where signal quality and time validity matter just as
+@sec-motion-models develops motion models and IMU measurements.
+@sec-measurement-models turns physical observations into likelihoods;
+@sec-feature-association addresses which feature generated an observation; and
+@sec-pnp builds the camera observation model used in Module 1. The
+global-navigation chapters (@sec-global-nav onward) return to this contract for GNSS, where signal quality and time validity matter just as
 much as position.

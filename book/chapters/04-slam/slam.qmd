@@ -1,4 +1,4 @@
-# Simultaneous Localization and Mapping
+# Simultaneous Localization and Mapping {#sec-slam}
 
 Simultaneous Localization and Mapping (SLAM) estimates the robot trajectory and the map at the same time:
 
@@ -10,7 +10,7 @@ The problem is hard because localization needs a map, while mapping needs a pose
 
 This chapter gives a broad view of EKF-SLAM, FastSLAM, and GraphSLAM, but it goes deepest on FastSLAM because that is the implementation target for the Victoria Park project [@Montemerlo2002FastSLAM; @Thrun2004FastSLAM].
 
-## Online SLAM and Full SLAM
+## Online SLAM and Full SLAM {#sec-slam-online-slam-full}
 
 **Online SLAM** estimates only the current robot pose and the map:
 
@@ -26,7 +26,7 @@ $$
 
 Filtering methods such as EKF-SLAM and FastSLAM are usually presented as online algorithms. GraphSLAM and factor-graph methods are usually presented as full-trajectory smoothing algorithms.
 
-## EKF-SLAM in One Page
+## EKF-SLAM in One Page {#sec-slam-ekf-slam-one}
 
 EKF-SLAM augments the robot state with all landmark positions. The compressed EKF work around Victoria Park is a useful historical reference for why dense covariance management became a practical bottleneck [@GuivantNebot2001CompressedEKFSLAM]:
 
@@ -78,7 +78,7 @@ $$
 
 The issue is scale. The covariance grows with all landmarks, and updating it becomes expensive as the map grows. EKF-SLAM is conceptually elegant and historically important, but it is not the project backend.
 
-## FastSLAM: The Project Backend
+## FastSLAM: The Project Backend {#sec-slam-fastslam-project-backend}
 
 FastSLAM uses a Rao-Blackwellized particle filter [@Montemerlo2002FastSLAM]. The key factorization is
 
@@ -122,7 +122,7 @@ $$
 
 That is why FastSLAM is attractive for large landmark maps.
 
-## A Small Range-Bearing World
+## A Small Range-Bearing World {#sec-slam-small-range-bearing}
 
 Before working with the dataset, it helps to make the geometry concrete.
 
@@ -176,7 +176,7 @@ first_observation = observe_landmark(pose, true_landmarks[0])
 first_observation
 ```
 
-## Per-Landmark EKF
+## Per-Landmark EKF {#sec-slam-per-landmark-ekf}
 
 Each landmark EKF estimates a fixed point in the world. The robot pose is treated as known within a particle.
 
@@ -258,9 +258,9 @@ landmark = LandmarkEKF.initialize(pose, first_observation, R)
 landmark.mean
 ```
 
-The Joseph-form covariance update is used here for the same reason it was used in the filtering chapter: it is slightly more expensive and much less annoying.
+The Joseph-form covariance update is used here for the same reason it was used in @sec-ekf-measurement-update: it is slightly more expensive and much less annoying.
 
-## FastSLAM Algorithm
+## FastSLAM Algorithm {#sec-slam-fastslam-algorithm}
 
 For each time step:
 
@@ -448,7 +448,7 @@ slam.estimated_pose(), len(slam.best_map()), slam.effective_sample_size()
 
 This is a minimal implementation, not a production one. The project version should add better feature filtering, better landmark management, timing measurements, diagnostic plots, and careful tuning.
 
-## Data Association Inside FastSLAM
+## Data Association Inside FastSLAM {#sec-slam-data-association-inside}
 
 In EKF-SLAM, there is one global association decision for each measurement. In FastSLAM, each particle can make its own association decision. This is one of FastSLAM's advantages: different particles can preserve different hypotheses when the pose is uncertain.
 
@@ -461,7 +461,7 @@ For one particle and one observation:
 
 The gate threshold matters. A gate that is too tight creates duplicate trees. A gate that is too loose fuses distinct trees. Both failure modes are visible in the final map.
 
-## FastSLAM 1.0 vs. FastSLAM 2.0
+## FastSLAM 1.0 vs. FastSLAM 2.0 {#sec-slam-fastslam-1-0}
 
 FastSLAM 1.0 samples pose from the motion model:
 
@@ -477,7 +477,7 @@ $$
 
 FastSLAM 2.0 can need fewer particles, especially when sensor measurements are accurate relative to odometry. It is also more complex. For this course project, a solid FastSLAM 1.0 implementation with honest diagnostics is preferable to a fragile FastSLAM 2.0 implementation.
 
-## GraphSLAM in One Page
+## GraphSLAM in One Page {#sec-slam-graphslam-one-page}
 
 GraphSLAM treats poses and landmarks as variables in a nonlinear least-squares problem. The Durrant-Whyte and Bailey tutorial is a good high-level bridge between the filtering and graph views of SLAM [@DurrantWhyteBailey2006SLAMTutorial]:
 
@@ -495,7 +495,7 @@ This is the dominant style in many modern systems:
 
 GraphSLAM handles loop closure naturally because past poses remain variables. Filtering methods are causal; once they have marginalized or resampled away a past hypothesis, they cannot easily revise the entire trajectory.
 
-## Comparison for the Project Report
+## Comparison for the Project Report {#sec-slam-comparison-project-report}
 
 | Aspect | EKF-SLAM | FastSLAM | GraphSLAM |
 |---|---|---|---|
@@ -508,7 +508,7 @@ GraphSLAM handles loop closure naturally because past poses remain variables. Fi
 
 Students should use this comparison to interpret their Victoria Park results, not as a second implementation assignment.
 
-## Practical Failure Modes
+## Practical Failure Modes {#sec-slam-practical-failure-modes}
 
 FastSLAM fails in recognizable ways:
 
@@ -520,7 +520,7 @@ FastSLAM fails in recognizable ways:
 
 The cure is not one magic parameter. It is measurement modeling, feature filtering, enough particles, careful resampling, and diagnostic plots.
 
-## Summary
+## Summary {#sec-slam-summary}
 
 EKF-SLAM teaches why landmark correlations matter. GraphSLAM teaches why sparse optimization dominates many modern systems. FastSLAM is the implementation target because it sits directly between the particle filters students already know and the landmark-based Victoria Park dataset.
 

@@ -1,4 +1,4 @@
-# The Unscented Kalman Filter
+# The Unscented Kalman Filter {#sec-ukf}
 
 The Extended Kalman Filter handles nonlinear systems by linearizing the model.
 That works when the estimate is close and the nonlinearities are gentle. It
@@ -13,7 +13,7 @@ The UKF still represents the belief with a mean and covariance. It is not a
 particle filter. It is a Gaussian filter that uses smarter bookkeeping for
 nonlinear transformations.
 
-## The Problem with Transforming a Gaussian
+## The Problem with Transforming a Gaussian {#sec-ukf-problem-transforming-gaussian}
 
 If
 
@@ -35,7 +35,7 @@ reconstructs an approximate mean and covariance from the transformed points.
 
 This is the unscented transform.
 
-## Sigma Points
+## Sigma Points {#sec-ukf-sigma-points}
 
 For an $n$-dimensional state, the common UKF construction uses $2n + 1$ sigma
 points. Define
@@ -136,7 +136,7 @@ ax.legend()
 plt.show()
 ```
 
-## Weights
+## Weights {#sec-ukf-weights}
 
 Each sigma point has a mean weight and a covariance weight:
 
@@ -168,7 +168,7 @@ The first point is the mean. The remaining points are paired around the mean.
 The weights allow the sigma point set to reconstruct the original mean and
 covariance before any nonlinear transformation is applied.
 
-## The Unscented Transform
+## The Unscented Transform {#sec-ukf-unscented-transform}
 
 Given sigma points $\mathcal{X}_i$, transform each point through the nonlinear
 function:
@@ -268,7 +268,7 @@ The transformed points do not need to lie on a straight line or an ellipse. The
 UKF uses them only to recover the best Gaussian summary it can from the
 nonlinear transformation.
 
-## UKF Prediction
+## UKF Prediction {#sec-ukf-prediction}
 
 For the nonlinear process model
 
@@ -312,7 +312,7 @@ $$
 
 No process Jacobian appears.
 
-## UKF Update
+## UKF Update {#sec-ukf-update}
 
 For the nonlinear measurement model
 
@@ -386,7 +386,7 @@ $$
 \mathbf{K}_k \mathbf{S}_k \mathbf{K}_k^T.
 $$
 
-## Minimal Implementation Skeleton
+## Minimal Implementation Skeleton {#sec-ukf-minimal-implementation-skeleton}
 
 ```{python}
 #| label: ukf-skeleton-code
@@ -431,7 +431,7 @@ definite covariance repair, square-root filtering, additive versus augmented
 noise handling, and state components that do not live in ordinary Euclidean
 space. Those details are not optional in serious navigation software.
 
-## Practical Implementation Considerations
+## Practical Implementation Considerations {#sec-ukf-practical-implementation-considerations}
 
 The UKF removes Jacobians from the main loop, but it does not remove numerical
 care. It trades derivative bookkeeping for sigma-point bookkeeping.
@@ -503,7 +503,7 @@ def circular_mean(angles: np.ndarray, weights: np.ndarray) -> float:
     return float(np.arctan2(s, c))
 ```
 
-## EKF vs UKF
+## EKF vs UKF {#sec-ukf-ekf-ukf}
 
 The UKF is attractive because it avoids Jacobians and often handles nonlinear
 transformations better than a first-order EKF. That does not make it universally
@@ -535,7 +535,7 @@ teaching and prototyping tool. For large inertial navigation systems, EKF and
 error-state EKF formulations remain common because they are computationally
 efficient and fit the structure of the physics.
 
-## Algorithm Summary
+## Algorithm Summary {#sec-ukf-algorithm-summary}
 
 ```text
 predict:

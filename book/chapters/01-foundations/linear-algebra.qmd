@@ -1,8 +1,8 @@
-# Linear Algebra Refresher
+# Linear Algebra Refresher {#sec-linalg}
 
 Navigation math is, at its core, a linear algebra problem. State vectors, sensor models, covariance propagation, coordinate transforms — every algorithm in this course is built from a small set of linear algebra operations. This chapter is a concise refresher of those operations, pairing each definition with its `NumPy` equivalent. If a topic feels unfamiliar, treat this as a starting point and consult a dedicated reference; if it feels obvious, use this chapter as a quick-reference card.
 
-## Vectors
+## Vectors {#sec-linalg-vectors}
 
 A **vector** $\mathbf{v} \in \mathbb{R}^n$ is an ordered list of $n$ real numbers, written as a column:
 
@@ -162,7 +162,7 @@ print("Cross product equals skew-symmetric multiplication form:", np.allclose(cr
 ```
 
 
-## Matrices
+## Matrices {#sec-linalg-matrices}
 
 A **matrix** has $m$ rows and $n$ columns and is typically written with a capital boldface letter: $\mathbf{A} \in \mathbb{R}^{m \times n}$ Entry in row $i$, column $j$ is written $A_{ij}$ or $[\mathbf{A}]_{ij}$. A **tensor** is a generalization of matrices to higher dimensions, but we will only need two dimensional matrices in this course. Matrices can be sliced and indexed similarly to vectors, but with two indices: $A_{ij}$ is the element in the $i$-th row and $j$-th column, and we can refer to sub-matrices with slicing: $\mathbf{A}_{1:3, 2:4}$ is the $2 \times 2$ block formed by rows 1-2 and columns 2-3. Slicing matrices in `NumPy` uses the same syntax: `A[0:2, 1:3]` for the same block.
 
@@ -226,7 +226,7 @@ print("A.T shape:", A.T.shape)
 print("(A @ B).T == B.T @ A.T:", np.allclose((A @ B).T, B.T @ A.T))
 ```
 
-## Determinant and Rank
+## Determinant and Rank {#sec-linalg-determinant-rank}
 
 ### Determinant
 
@@ -283,7 +283,7 @@ print("rank(full rank):    ", np.linalg.matrix_rank(M_full))
 print("rank(singular):     ", np.linalg.matrix_rank(M_sing))
 ```
 
-## Matrix Inverse
+## Matrix Inverse {#sec-linalg-matrix-inverse}
 
 For a square, full-rank $\mathbf{A} \in \mathbb{R}^{n \times n}$, the **inverse** $\mathbf{A}^{-1}$ satisfies:
 
@@ -331,7 +331,7 @@ A_rect = np.array([[1, 2], [3, 4], [5, 6]])   # 3x2
 print("Pseudoinverse shape:", np.linalg.pinv(A_rect).shape)
 ```
 
-## Eigenvalues and Eigenvectors
+## Eigenvalues and Eigenvectors {#sec-linalg-eigenvalues-eigenvectors}
 
 For a square matrix $\mathbf{A} \in \mathbb{R}^{n \times n}$, a nonzero vector $\mathbf{v}$ is an **eigenvector** with **eigenvalue** $\lambda$ if:
 
@@ -373,7 +373,7 @@ for i in range(len(eigenvalues)):
 
 ---
 
-## Norms
+## Norms {#sec-linalg-norms}
 
 ### Vector norms
 
@@ -409,7 +409,7 @@ print("Frobenius: ", np.linalg.norm(A, 'fro'))
 print("Condition: ", np.linalg.cond(A))
 ```
 
-## Matrix Decompositions
+## Matrix Decompositions {#sec-linalg-matrix-decompositions}
 
 Decompositions factor a matrix into structured pieces that are easier to work with numerically. They are the workhorses of linear algebra algorithms, underlying everything from solving linear systems to computing eigenvalues. 
 
@@ -444,7 +444,7 @@ print("Singular values:", np.round(s, 4))
 print("Effective rank  :", np.sum(s > 1e-10))
 ```
 
-## Least Squares
+## Least Squares {#sec-linalg-least-squares}
 
 Many navigation problems reduce to minimizing a sum of squared residuals. Given an overdetermined system ($m > n$):
 
@@ -487,7 +487,7 @@ print("Least-squares solution:", np.round(x, 4))
 print("Fit: intercept =", round(x[0], 3), "  slope =", round(x[1], 3))
 ```
 
-## Quick Reference
+## Quick Reference {#sec-linalg-quick-reference}
 
 | Operation | Math | NumPy |
 |-----------|------|-------|
@@ -505,7 +505,7 @@ print("Fit: intercept =", round(x[0], 3), "  slope =", round(x[1], 3))
 | Rank | $\text{rank}(\mathbf{A})$ | `np.linalg.matrix_rank(A)` |
 | Condition number | $\kappa(\mathbf{A})$ | `np.linalg.cond(A)` |
 
-## Common Mistakes
+## Common Mistakes {#sec-linalg-common-mistakes}
 
 - **Dimension mismatch.** Check shapes before multiplying: $(m \times k)(k \times n)$ is valid; $(m \times k)(m \times k)$ is not unless $m=k$.
 - **Row vs. column vector conventions.** NumPy 1-D arrays are neither; use `reshape(-1, 1)` when shape matters.

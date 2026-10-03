@@ -1,4 +1,4 @@
-# Project 1: Drone Visual-Inertial Navigation Pipeline
+# Project 1: Drone Visual-Inertial Navigation Pipeline {#sec-project1}
 
 Project 1 is the main implementation project for the first part of the course. You will build a complete visual-inertial navigation pipeline around a real quadrotor dataset, starting from raw packets and ending with fused navigation estimates and an engineering report you can defend. This project is divided into three staged checkpoints, each building on the previous one. These three parts are not three unrelated mini-projects. They are staged build steps within one end-to-end system. Part A establishes the inertial propagation backbone, Part B builds the visual observation model that corrects it, and Part C fuses both into three nonlinear estimators that you will compare honestly. 
 
@@ -8,7 +8,7 @@ You can find the individual checkpoints here:
 - [Project 1b: PnP Observation Model](m1-drone-pipeline-b.qmd)
 - [Project 1c: EKF, UKF, and Particle Filters](m1-drone-pipeline-c.qmd)
 
-## Project summary
+## Project summary {#sec-project1-project-summary}
 
 This is the main implementation project for the first part of the course. You will build a complete visual-inertial navigation pipeline around a real quadrotor dataset, starting from raw packets and ending with fused navigation estimates and an engineering report you can defend.
 
@@ -48,7 +48,7 @@ Project 1 is worth **50% of the course grade**. It is divided into three staged 
 | Project 1c                        | EKF, UKF, and particle-filter fusion                                   |
 +-----------------------------------+------------------------------------------------------------------------+
 
-## Project Architecture
+## Project Architecture {#sec-project1-project-architecture}
 
 ``` text
 drone dataset packets
@@ -72,7 +72,7 @@ trajectory, diagnostics, comparison, report
 
 All three checkpoints reuse the same dataset, the same timing conventions, and the same shared state definition. If those interfaces drift between Parts A, B, and C, you are no longer building one navigation pipeline. You are building three incompatible experiments.
 
-## Shared Dataset
+## Shared Dataset {#sec-project1-shared-dataset}
 
 Download the data once from the repository root (about 570 MB):
 
@@ -136,7 +136,7 @@ Each packet contains:
 
 Some packets contain no visible tags. That is normal. Your filter and observation pipeline must skip missing visual measurements cleanly rather than treating them as a software emergency.
 
-## Shared State and Measurement Convention
+## Shared State and Measurement Convention {#sec-project1-shared-state-measurement}
 
 Use this 15-state vector throughout Parts A, B, and C:
 
@@ -170,7 +170,7 @@ So the nominal measurement model in Part C is:
 h(x) = x[:6]
 ```
 
-## Starter Package Layout
+## Starter Package Layout {#sec-project1-starter-package-layout}
 
 You are expected to work from the standardized starter package in `projects/drone_pipeline/` rather than building the project as a single notebook or one very large script.
 
@@ -197,7 +197,7 @@ from drone_pipeline.filters import (
 
 You may add helper modules, notebooks, and analysis scripts, but keep your public project interfaces stable and keep the code organized enough that another engineer can run and inspect it without reverse-engineering your folder habits.
 
-## Truth Usage Rules
+## Truth Usage Rules {#sec-project1-truth-usage-rules}
 
 The `vicon` data is the truth reference.
 
@@ -210,7 +210,7 @@ You may use it to:
 
 You may not use it as a recurring measurement inside the navigation solution itself. If your filter is secretly using Vicon as an update, that is not visual-inertial navigation. That is expensive cheating.
 
-## Development Split
+## Development Split {#sec-project1-development-split}
 
 Unless you justify another split, use:
 
@@ -219,7 +219,7 @@ Unless you justify another split, use:
 
 You are trying to build a pipeline that generalizes, not one that was hand-tuned until it wins a beauty contest on one file.
 
-## Grading Rubric
+## Grading Rubric {#sec-project1-grading-rubric}
 
 Project 1 is graded out of `100` project points.
 
@@ -240,7 +240,7 @@ Project 1 is graded out of `100` project points.
 +-----------------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
 | Part C: EKF implementation and diagnostics          | 10       | EKF prediction and update are technically correct, angle-aware, numerically responsible, and supported by meaningful innovation or NIS diagnostics.                              | EKF is fundamentally working with only minor weaknesses in Jacobians, covariance handling, or diagnostic depth.                                 | EKF is only partially working or contains important implementation or consistency errors; evidence is limited.          | EKF is missing, nonfunctional, or fundamentally incorrect.                                      |
 |                                                     |          |                                                                                                                                                                                  |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
-|                                                     |          | ***15 points***                                                                                                                                                                  | ***8 points***                                                                                                                                  | ***7 points***                                                                                                          |                                                                                                 |
+|                                                     |          | ***10 points***                                                                                                                                                                  | ***8 points***                                                                                                                                  | ***7 points***                                                                                                          |                                                                                                 |
 +-----------------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
 | Part C: UKF implementation and diagnostics          | 10       | UKF implementation is technically sound, uses appropriate sigma-point handling, and includes clear evidence and sensitivity discussion.                                          | UKF is fundamentally working with only minor weaknesses in parameter choice, residual handling, or analysis.                                    | UKF is only partially working or contains important implementation or consistency errors; evidence is limited.          | UKF is missing, nonfunctional, or fundamentally incorrect.                                      |
 |                                                     |          |                                                                                                                                                                                  |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
