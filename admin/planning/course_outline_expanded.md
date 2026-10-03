@@ -1,3 +1,7 @@
+> **Superseded.** This planning outline predates the current course structure. The
+> authoritative syllabus is `book/chapters/00-intro/syllabus.qmd`; the project
+> handouts are in `book/assignments/`. Kept for reference only.
+
 # Advanced Autonomous Navigation: Expanded Open Course Outline
 
 ## Vision and Philosophy
