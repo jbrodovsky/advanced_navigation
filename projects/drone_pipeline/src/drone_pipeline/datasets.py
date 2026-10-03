@@ -9,8 +9,29 @@ import numpy as np
 from scipy.io import loadmat
 
 from .config import CAMERA_MATRIX, CAMERA_BODY_TRANSLATION_M, CAMERA_BODY_YAW_RAD, DIST_COEFFS, TAG_IDS
+from .data_paths import DatasetNotFoundError, find_dataset_dir
 from .types import DroneDataset, DronePacket, DroneParameters, TruthSample
 from .utils import Rx, Rz, interpolate_rows, make_transform
+
+DATASET_NAME = "drone-data"
+
+
+def drone_data_dir(root: str | Path | None = None) -> Path:
+    """Return the folder holding ``parameters.txt`` and ``studentdata*.mat``."""
+    return find_dataset_dir(DATASET_NAME, root, required=("parameters.txt",))
+
+
+def default_parameters_path(root: str | Path | None = None) -> Path:
+    """Return the path to ``parameters.txt`` in the drone dataset folder."""
+    return drone_data_dir(root) / "parameters.txt"
+
+
+def default_dataset_path(index: int, root: str | Path | None = None) -> Path:
+    """Return the path to ``studentdata<index>.mat`` in the drone dataset folder."""
+    path = drone_data_dir(root) / f"studentdata{index}.mat"
+    if not path.exists():
+        raise DatasetNotFoundError(f"{path.name} is not in {path.parent}")
+    return path
 
 
 def _as_float64_array(value: object) -> np.ndarray:
@@ -24,15 +45,31 @@ def _packet_array(value: object) -> np.ndarray:
     return np.atleast_1d(array)
 
 
-def load_drone_dataset(path: str | Path) -> DroneDataset:
-    """Load one quadrotor dataset and normalize packets into typed records."""
-    path = Path(path)
+def _rate_signal(packet: dict) -> tuple[np.ndarray, str]:
+    for field in ("omg", "drpy"):
+        if field in packet:
+            return _as_float64_array(packet[field]), field
+    raise KeyError("packet has neither an 'omg' nor a 'drpy' angular-rate field")
+
+
+def load_drone_dataset(path: str | Path | int) -> DroneDataset:
+    """Load one quadrotor dataset and normalize packets into typed records.
+
+    ``path`` may be a file path or an integer index, in which case
+    ``studentdata<index>.mat`` is loaded from the drone dataset folder.
+    Both on-disk schemas are supported: ``studentdata0`` (``drpy``, no ``p0``)
+    and ``studentdata1``-``7`` (``omg``, ``p0``, ``is_ready``).
+    """
+    path = default_dataset_path(path) if isinstance(path, int) else Path(path)
     raw = loadmat(path, simplify_cells=True)
+    raw_packets = raw["data"]
+    if isinstance(raw_packets, dict):
+        raw_packets = [raw_packets]
     packets: list[DronePacket] = []
-    for packet in raw["data"]:
+    for packet in raw_packets:
+        rate, rate_field = _rate_signal(packet)
         packets.append(
             DronePacket(
-                img=np.asarray(packet["img"]),
                 id=np.atleast_1d(np.asarray(packet["id"], dtype=np.int64)),
                 p1=_packet_array(packet["p1"]),
                 p2=_packet_array(packet["p2"]),
@@ -40,8 +77,12 @@ def load_drone_dataset(path: str | Path) -> DroneDataset:
                 p4=_packet_array(packet["p4"]),
                 t=float(packet["t"]),
                 rpy=_as_float64_array(packet["rpy"]),
-                drpy=_as_float64_array(packet["drpy"]),
+                drpy=rate,
                 acc=_as_float64_array(packet["acc"]),
+                p0=_packet_array(packet["p0"]) if "p0" in packet else None,
+                img=np.asarray(packet["img"]) if "img" in packet else None,
+                is_ready=bool(packet["is_ready"]) if "is_ready" in packet else None,
+                rate_field=rate_field,
             )
         )
     return DroneDataset(
@@ -52,8 +93,13 @@ def load_drone_dataset(path: str | Path) -> DroneDataset:
     )
 
 
-def load_drone_parameters(path: str | Path) -> DroneParameters:
-    """Parse the supplied parameter file and expose standard camera/rig values."""
+def load_drone_parameters(path: str | Path | None = None) -> DroneParameters:
+    """Parse the supplied parameter file and expose standard camera/rig values.
+
+    With no ``path``, ``parameters.txt`` is read from the drone dataset folder.
+    """
+    if path is None:
+        path = default_parameters_path()
     text = Path(path).read_text()
     if "Camera Matrix" not in text or "Tag ids" not in text:
         raise ValueError(f"parameter file did not match the expected drone format: {path}")

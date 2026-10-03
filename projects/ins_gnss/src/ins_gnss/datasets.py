@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .data_paths import find_dataset_dir
 from .types import (
     GNSSSample,
     IMUSample,
@@ -114,9 +115,23 @@ def load_ins_gnss_data(root: str | Path) -> INSGNSSDataset:
     )
 
 
-def list_mems_nav_trials(root: str | Path) -> list[str]:
-    """Return trial names that have both synchronized input and baseline files."""
-    root = Path(root)
+MEMS_DATASET_NAME = "mems-nav-dataset"
+
+
+def default_mems_root(root: str | Path | None = None) -> Path:
+    """Return the fetched MEMS dataset folder (the one holding ``input/`` and ``baseline/``).
+
+    Fetch it with ``uv run python scripts/fetch_data.py mems-nav-dataset``.
+    """
+    return find_dataset_dir(MEMS_DATASET_NAME, root, required=("input", "baseline"))
+
+
+def list_mems_nav_trials(root: str | Path | None = None) -> list[str]:
+    """Return trial names that have both synchronized input and baseline files.
+
+    With no ``root``, the fetched dataset under ``data/mems-nav-dataset`` is used.
+    """
+    root = default_mems_root() if root is None else Path(root)
     input_dir = root / "input"
     baseline_dir = root / "baseline"
     if not input_dir.exists() or not baseline_dir.exists():
@@ -127,13 +142,14 @@ def list_mems_nav_trials(root: str | Path) -> list[str]:
     return sorted(input_trials & baseline_trials)
 
 
-def load_mems_nav_trial(root: str | Path, trial_name: str) -> MEMSNavTrial:
+def load_mems_nav_trial(root: str | Path | None, trial_name: str) -> MEMSNavTrial:
     """Load one MEMS navigation dataset trial.
 
     The dataset root should contain the fetched ``input`` and ``baseline``
-    directories from https://github.com/jbrodovsky/mems-nav-dataset.
+    directories from https://github.com/jbrodovsky/mems-nav-dataset. Pass
+    ``None`` to use the fetched copy under ``data/mems-nav-dataset``.
     """
-    root = Path(root)
+    root = default_mems_root() if root is None else Path(root)
     normalized_name = Path(trial_name).stem
     input_path = root / "input" / f"{normalized_name}.csv"
     baseline_path = root / "baseline" / f"{normalized_name}.csv"

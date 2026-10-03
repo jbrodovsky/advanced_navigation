@@ -7,60 +7,26 @@ from pathlib import Path
 import numpy as np
 from scipy.io import loadmat
 
+from .data_paths import find_dataset_dir
 from .types import VictoriaParkDataset
 
 
-DEFAULT_VICTORIA_PARK_ROOT = Path("data/victoria-park")
+DATASET_NAME = "victoria-park"
+DEFAULT_VICTORIA_PARK_ROOT = Path("data") / DATASET_NAME
 REQUIRED_MATLAB_FILES = ("aa3_lsr2.mat", "aa3_dr.mat", "aa3_gpsx.mat")
 
 
-def resolve_victoria_park_root(root: str | Path = DEFAULT_VICTORIA_PARK_ROOT) -> Path:
+def resolve_victoria_park_root(root: str | Path | None = None) -> Path:
     """Resolve the directory that contains the original Victoria Park `.mat` files.
 
-    The course repository stores the MATLAB files directly under
-    `data/victoria-park`. Legacy paths such as `dataset_victoria_park` and
-    `dataset_victoria_park/original_MATLAB_dataset` are still accepted when
-    passed explicitly.
+    With no ``root``, the dataset is found under ``data/victoria-park`` at the
+    repository root (or under ``$ADVNAV_DATA_DIR/victoria-park``). Fetch it with
+    ``uv run python scripts/fetch_data.py victoria-park``.
     """
-
-    candidate = Path(root).expanduser()
-    if not candidate.is_absolute():
-        for parent in [Path.cwd(), *Path.cwd().parents]:
-            repo_relative = parent / candidate
-            if repo_relative.exists():
-                candidate = repo_relative
-                break
-
-    if candidate.name == "dataset_victoria_park":
-        candidate = candidate / "original_MATLAB_dataset"
-    elif not candidate.exists():
-        for parent in [Path.cwd(), *Path.cwd().parents]:
-            default_root = parent / DEFAULT_VICTORIA_PARK_ROOT
-            if default_root.exists():
-                candidate = default_root
-                break
-
-    missing = [name for name in REQUIRED_MATLAB_FILES if not (candidate / name).exists()]
-    if missing:
-        archive_hint = f" Expected the active course data at `{DEFAULT_VICTORIA_PARK_ROOT}`."
-        for parent in [candidate, *candidate.parents]:
-            archive = parent / "dataset_victoria_park.tar.gz"
-            if archive.exists():
-                archive_hint = (
-                    f" Found legacy archive {archive}; prefer `data/victoria-park`, "
-                    "or extract the archive and pass the extracted MATLAB directory."
-                )
-                break
-
-        raise FileNotFoundError(
-            "Victoria Park MATLAB files are missing from "
-            f"{candidate}. Missing: {', '.join(missing)}.{archive_hint}"
-        )
-
-    return candidate
+    return find_dataset_dir(DATASET_NAME, root, required=REQUIRED_MATLAB_FILES)
 
 
-def load_victoria_park_data(root: str | Path = DEFAULT_VICTORIA_PARK_ROOT) -> VictoriaParkDataset:
+def load_victoria_park_data(root: str | Path | None = None) -> VictoriaParkDataset:
     """Load the Victoria Park laser, odometry, and optional GPS files."""
     root = resolve_victoria_park_root(root)
     laser = loadmat(root / "aa3_lsr2.mat", simplify_cells=True)

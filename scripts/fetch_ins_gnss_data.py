@@ -16,7 +16,8 @@ OWNER = "jbrodovsky"
 REPO = "mems-nav-dataset"
 REPO_URL = f"https://github.com/{OWNER}/{REPO}"
 DATASETS = ("input", "baseline")
-DEFAULT_DESTINATION = Path("data/mems-nav-dataset")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DESTINATION = REPO_ROOT / "data" / "mems-nav-dataset"
 
 
 def contents_api_url(dataset: str, ref: str) -> str:

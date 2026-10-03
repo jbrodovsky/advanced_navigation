@@ -10,7 +10,13 @@ from .datasets import list_mems_nav_trials, load_ins_gnss_data, load_mems_nav_tr
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Inspect the INS/GNSS dataset loader.")
-    parser.add_argument("root", type=Path, help="dataset root")
+    parser.add_argument(
+        "root",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="dataset root; with --mems, defaults to data/mems-nav-dataset at the repository root",
+    )
     parser.add_argument("--mems", action="store_true", help="inspect a fetched MEMS navigation dataset root")
     parser.add_argument("--trial", help="MEMS trial name to load")
     args = parser.parse_args()
@@ -31,6 +37,8 @@ def main() -> None:
             )
         return
 
+    if args.root is None:
+        parser.error("root is required unless --mems is given")
     dataset = load_ins_gnss_data(args.root)
     print(f"loaded {len(dataset.imu_samples)} IMU samples and {len(dataset.gnss_samples)} GNSS samples")
 

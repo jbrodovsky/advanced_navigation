@@ -10,7 +10,13 @@ import numpy as np
 
 @dataclass(slots=True)
 class DronePacket:
-    img: np.ndarray
+    """One onboard packet: AprilTag detections plus IMU readings.
+
+    ``drpy`` holds the body angular-rate signal. In ``studentdata1``-``7`` it is
+    read from the ``omg`` field; ``studentdata0`` stores it as ``drpy``.
+    ``rate_field`` records which raw field was used.
+    """
+
     id: np.ndarray
     p1: np.ndarray
     p2: np.ndarray
@@ -20,6 +26,10 @@ class DronePacket:
     rpy: np.ndarray
     drpy: np.ndarray
     acc: np.ndarray
+    p0: np.ndarray | None = None
+    img: np.ndarray | None = None
+    is_ready: bool | None = None
+    rate_field: str = "omg"
 
 
 @dataclass(slots=True)

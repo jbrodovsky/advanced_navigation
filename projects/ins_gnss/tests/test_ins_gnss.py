@@ -2,20 +2,34 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ins_gnss.datasets import list_mems_nav_trials, load_ins_gnss_data, load_mems_nav_trial
+from ins_gnss.data_paths import DATA_ENV_VAR, DatasetNotFoundError
+from ins_gnss.datasets import default_mems_root, list_mems_nav_trials, load_ins_gnss_data, load_mems_nav_trial
 from ins_gnss.strapdown import IMUCalibration, StrapdownNavigator
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+FETCH_HINT = "MEMS data not downloaded; run `uv run python scripts/fetch_data.py mems-nav-dataset`"
+
+
+def _real_mems_root() -> Path | None:
+    try:
+        return default_mems_root()
+    except DatasetNotFoundError:
+        return None
+
+
+REAL_DATA = _real_mems_root()
 
 
 def _load_fetch_script():
@@ -29,6 +43,22 @@ def _load_fetch_script():
 
 
 class INSGNSSTests(unittest.TestCase):
+    def test_default_root_comes_from_env_var(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir) / "mems-nav-dataset"
+            (root / "input").mkdir(parents=True)
+            (root / "baseline").mkdir()
+            with mock.patch.dict(os.environ, {DATA_ENV_VAR: tmp_dir}):
+                self.assertEqual(default_mems_root(), root)
+                self.assertEqual(list_mems_nav_trials(), [])
+
+    @unittest.skipIf(REAL_DATA is None, FETCH_HINT)
+    def test_real_dataset_lists_and_loads_a_trial(self) -> None:
+        trials = list_mems_nav_trials()
+        self.assertGreater(len(trials), 10)
+        trial = load_mems_nav_trial(None, trials[-1])
+        self.assertGreater(len(trial.imu_samples), 100)
+
     def test_load_ins_gnss_data_reads_conventional_csv_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

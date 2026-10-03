@@ -1,5 +1,6 @@
 """Starter interfaces for the Victoria Park SLAM assignment."""
 
+from .data_paths import DatasetNotFoundError, find_dataset_dir
 from .datasets import DEFAULT_VICTORIA_PARK_ROOT, load_victoria_park_data, resolve_victoria_park_root
 from .fastslam import FastSLAM, FastSLAMParticle, LandmarkEKF
 from .landmarks import extract_tree_landmarks
@@ -22,6 +23,7 @@ __all__ = [
     "FastSLAMParticle",
     "LandmarkEKF",
     "DEFAULT_VICTORIA_PARK_ROOT",
+    "DatasetNotFoundError",
     "effective_sample_size",
     "extract_tree_landmarks",
     "inverse_range_bearing",
@@ -31,6 +33,7 @@ __all__ = [
     "predict_bicycle_pose",
     "range_bearing_jacobian",
     "range_bearing_prediction",
+    "find_dataset_dir",
     "resolve_victoria_park_root",
     "scan_angles",
     "scan_to_xy",
