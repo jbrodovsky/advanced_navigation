@@ -123,7 +123,7 @@ That one equation is the bridge from laser features to a map.
 
 ## Victoria Park Dataset Primer
 
-The local repository includes the original Victoria Park MATLAB data under `data/victoria-park` [@VictoriaParkDataset]. The important files are:
+The course provides the original Victoria Park MATLAB data [@VictoriaParkDataset]. Download it into `data/victoria-park` from the repository root with `uv run python scripts/fetch_data.py victoria-park`. The important files are:
 
 | File | Variables | Meaning |
 |---|---|---|
@@ -142,20 +142,38 @@ import numpy as np
 from scipy.io import loadmat
 
 
-def load_victoria_park_data(root="data/victoria-park"):
+import os
+
+
+def find_victoria_park_root(root=None):
+    """Return the folder holding the Victoria Park `.mat` files.
+
+    Looks in `$ADVNAV_DATA_DIR/victoria-park`, then `data/victoria-park` in the
+    working directory and each parent folder.
+    """
+    if root is not None:
+        candidates = [Path(root)]
+    else:
+        candidates = []
+        if os.environ.get("ADVNAV_DATA_DIR"):
+            candidates.append(Path(os.environ["ADVNAV_DATA_DIR"]) / "victoria-park")
+        candidates += [base / "data" / "victoria-park" for base in [Path.cwd(), *Path.cwd().parents]]
+    for candidate in candidates:
+        if (candidate / "aa3_lsr2.mat").exists():
+            return candidate
+    raise FileNotFoundError(
+        "Victoria Park data not found; run `uv run python scripts/fetch_data.py victoria-park`"
+    )
+
+
+def load_victoria_park_data(root=None):
     """Load the local Victoria Park MATLAB files.
 
     The original files use centimeters for laser ranges and milliseconds for
     timestamps. This loader keeps both raw and converted values visible so
     students can make their unit handling explicit.
     """
-    root = Path(root)
-    if not root.exists():
-        for parent in [Path.cwd(), *Path.cwd().parents]:
-            repo_relative_root = parent / root
-            if repo_relative_root.exists():
-                root = repo_relative_root
-                break
+    root = find_victoria_park_root(root)
 
     laser_data = loadmat(root / "aa3_lsr2.mat", squeeze_me=True)
     odom_data = loadmat(root / "aa3_dr.mat", squeeze_me=True)
@@ -175,8 +193,14 @@ def load_victoria_park_data(root="data/victoria-park"):
     }
 
 
-vp = load_victoria_park_data()
-vp["laser_m"].shape, vp["speed_mps"].shape, vp["gps_xy_m"].shape
+try:
+    vp = load_victoria_park_data()
+except FileNotFoundError as error:
+    vp = None
+    print(error)
+
+if vp is not None:
+    print(vp["laser_m"].shape, vp["speed_mps"].shape, vp["gps_xy_m"].shape)
 ```
 
 The GPS is useful for sanity checking, plotting, and rough performance context. It should not be treated as perfect truth. The original papers explicitly note GPS degradation in the park environment; this is part of why the dataset is useful.
@@ -264,8 +288,9 @@ def extract_tree_landmarks(
     return observations
 
 
-sample_features = extract_tree_landmarks(vp["laser_m"][0])
-len(sample_features), sample_features[:2]
+if vp is not None:
+    sample_features = extract_tree_landmarks(vp["laser_m"][0])
+    print(len(sample_features), sample_features[:2])
 ```
 
 In a real implementation, students should tune the segmentation thresholds, reject tiny segments, reject suspiciously wide objects, and track how many new landmarks are born per distance traveled. A detector that creates thousands of false trees will make any SLAM backend look worse than it really is.

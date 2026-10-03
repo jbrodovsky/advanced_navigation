@@ -61,13 +61,10 @@ Start with the architecture and Part A sections in `m3-ins-gnss.qmd`. Then load
 one trial and inspect the normalized records:
 
 ```python
-from pathlib import Path
-
 from ins_gnss.datasets import list_mems_nav_trials, load_mems_nav_trial
 
-root = Path("data/mems-nav-dataset")
-trial_name = list_mems_nav_trials(root)[0]
-trial = load_mems_nav_trial(root, trial_name)
+trial_name = list_mems_nav_trials()[0]  # finds data/mems-nav-dataset
+trial = load_mems_nav_trial(None, trial_name)
 
 print(trial.name)
 print(len(trial.imu_samples), len(trial.gnss_samples))
@@ -84,15 +81,15 @@ From the repository root:
 
 ```bash
 uv sync
-uv run python scripts/fetch_ins_gnss_data.py
-uv run python -m unittest discover -s projects/ins_gnss/tests
-uv run --package ins-gnss python -m ins_gnss.cli data/mems-nav-dataset --mems
+uv run python scripts/fetch_data.py mems-nav-dataset
+uv run pytest projects/ins_gnss/tests
+uv run python -m ins_gnss.cli --mems
 ```
 
 To inspect one fetched trial:
 
 ```bash
-uv run --package ins-gnss python -m ins_gnss.cli data/mems-nav-dataset --mems --trial TRIAL_NAME
+uv run python -m ins_gnss.cli --mems --trial TRIAL_NAME
 ```
 
 Replace `TRIAL_NAME` with one of the names printed by the summary command.
@@ -102,10 +99,10 @@ Replace `TRIAL_NAME` with one of the names printed by the summary command.
 The MEMS dataset is not checked directly into this repository. Fetch it with:
 
 ```bash
-uv run python scripts/fetch_ins_gnss_data.py
+uv run python scripts/fetch_data.py mems-nav-dataset
 ```
 
-By default it writes:
+It writes:
 
 ```text
 data/mems-nav-dataset/

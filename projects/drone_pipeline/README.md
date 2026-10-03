@@ -74,11 +74,9 @@ in order. In code, start by loading one dataset and checking the packet and
 truth conventions:
 
 ```python
-from pathlib import Path
-
 from drone_pipeline.datasets import load_drone_dataset, interpolate_vicon_truth
 
-dataset = load_drone_dataset(Path("data/drone-data/studentdata0.mat"))
+dataset = load_drone_dataset(1)  # data/drone-data/studentdata1.mat
 truth = interpolate_vicon_truth(dataset)
 
 print(len(dataset.packets))
@@ -97,17 +95,20 @@ From the repository root:
 
 ```bash
 uv sync
-uv run python -m unittest discover -s projects/drone_pipeline/tests
-uv run --package drone-pipeline python -m drone_pipeline.cli data/drone-data/studentdata0.mat
+uv run python scripts/fetch_data.py drone-data
+uv run pytest projects/drone_pipeline/tests
+uv run python -m drone_pipeline.cli 1
 ```
 
 The tests check the starter surface, not a full navigation solution. Passing
 them means the provided loaders and utilities still work; it does not mean the
-student implementation is complete.
+student implementation is complete. Tests that need the real data are skipped
+until it has been downloaded.
 
 ## Data
 
-This project expects the course drone data under:
+Download the course drone data (about 570 MB) with
+`uv run python scripts/fetch_data.py drone-data`. It is installed under:
 
 ```text
 data/drone-data/

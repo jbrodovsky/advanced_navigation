@@ -74,18 +74,23 @@ All three checkpoints reuse the same dataset, the same timing conventions, and t
 
 ## Shared Dataset
 
-Use the files in `data/drone-data/`:
+Download the data once from the repository root (about 570 MB):
+
+``` bash
+uv run python scripts/fetch_data.py drone-data
+```
+
+This places the following files in `data/drone-data/`:
 
 - `studentdata0.mat` through `studentdata7.mat`
 - `parameters.txt`
 
-Load the data with:
+Load a dataset by index (or pass a file path):
 
 ``` python
 from drone_pipeline.datasets import load_drone_dataset
-from pathlib import Path
 
-dataset = load_drone_dataset(Path("data/drone-data/studentdata0.mat"))
+dataset = load_drone_dataset(1)  # data/drone-data/studentdata1.mat
 ```
 
 Each dataset contains:

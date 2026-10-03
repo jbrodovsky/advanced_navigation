@@ -68,7 +68,7 @@ dataset:
 from victoria_park_slam.datasets import load_victoria_park_data
 from victoria_park_slam.utils import scan_to_xy
 
-dataset = load_victoria_park_data("data/victoria-park")
+dataset = load_victoria_park_data()  # finds data/victoria-park
 scan_xy = scan_to_xy(dataset.laser_ranges_m[0])
 
 print(dataset.laser_ranges_m.shape)
@@ -95,9 +95,10 @@ From the repository root:
 
 ```bash
 uv sync
-uv run python -m unittest discover -s projects/victoria_park_slam/tests
-uv run --package victoria-park-slam victoria-park-slam summary
-uv run --package victoria-park-slam victoria-park-slam plot-scan --index 0 --output /tmp/victoria-park-scan-0.png
+uv run python scripts/fetch_data.py victoria-park
+uv run pytest projects/victoria_park_slam/tests
+uv run victoria-park-slam summary
+uv run victoria-park-slam plot-scan --index 0 --output /tmp/victoria-park-scan-0.png
 ```
 
 The tests check the starter utilities and data loader. They do not represent a
@@ -105,7 +106,8 @@ complete SLAM solution.
 
 ## Data
 
-The active course data is expected under:
+Download the course data with `uv run python scripts/fetch_data.py victoria-park`.
+It is installed under:
 
 ```text
 data/victoria-park/

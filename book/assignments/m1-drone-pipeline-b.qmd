@@ -47,7 +47,7 @@ The drone's camera is mounted on the body with a known rigid transform as shown 
 The camera intrinsics and mounting transform are provided in `data/drone-data/parameters.txt`. Use the starter package to load them:
 
 ``` python
-params = load_drone_parameters(Path("data/drone-data/parameters.txt"))
+params = load_drone_parameters()  # reads data/drone-data/parameters.txt
 ```
 
 The key parameters are:

@@ -21,7 +21,13 @@ The attached FastSLAM paper is technical context, not an instruction sheet. Use 
 
 ## Dataset
 
-Use the local Victoria Park data:
+Download the Victoria Park data once from the repository root:
+
+``` bash
+uv run python scripts/fetch_data.py victoria-park
+```
+
+This places the original MATLAB files in `data/victoria-park/`:
 
 ``` text
 data/victoria-park/
@@ -30,7 +36,7 @@ data/victoria-park/
   aa3_gpsx.mat   # Lo_m, La_m, timeGps
 ```
 
-The starter tools default to `data/victoria-park`. If you keep a personal copy elsewhere, pass that directory explicitly.
+The starter tools find `data/victoria-park` automatically. If you keep a copy elsewhere, pass that directory explicitly or set the `ADVNAV_DATA_DIR` environment variable to the folder that contains `victoria-park/`.
 
 Important conventions:
 
