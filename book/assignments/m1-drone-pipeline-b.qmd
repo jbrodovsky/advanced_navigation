@@ -2,85 +2,75 @@
 
 ## Overview {#sec-project1b-overview}
 
-Part B builds the visual observation model used by the filters in Part C. You will convert AprilTag corner detections into body pose estimates using the known tag-map geometry, supplied camera intrinsics, and OpenCV's `solvePnP`.
+Part B builds the perception model at the top of the stack and the measurement model that Part C will use. You will turn AprilTag corner detections into body pose estimates using the known tag-mat geometry, the supplied camera intrinsics, the camera-to-body mounting, and OpenCV's `solvePnP`, and then measure how wrong those poses are.
 
-The hard part is not calling one library function. The hard part is building the correspondences, getting the frame conventions right, handling packets with missing tags, and estimating observation covariance honestly.
+Calling one library function is not the hard part. The hard part is building the correspondences, getting every frame convention right, handling packets with zero or one visible tag, and characterizing the measurement noise honestly, which means separating what is random (the covariance $\mathbf{R}$) from what is systematic (the bias). The theory and most of the code you need are in @sec-pnp; you may adapt that code with attribution (@sec-project1-logistics).
 
 ### Learning Outcomes
 
-By the end of Part B, you should be able to:
+By the end of Part B you should be able to:
 
-- construct the AprilTag world-corner map
-- recover pose from 2D-3D correspondences using `solvePnP`
-- convert the camera pose into a body pose using the mounting transform
-- estimate a usable visual measurement covariance from truth-referenced residuals
+- construct the AprilTag world-corner map;
+- recover pose from 2D-3D correspondences with `solvePnP`, and recognize when a planar target makes the answer ambiguous;
+- convert the camera pose into a body pose with the mounting transform;
+- estimate a measurement bias and covariance from truth-referenced residuals and decide what the filter should do with each.
 
 ### Starter Interfaces
 
-Use the starter package:
-
 ``` python
-from pathlib import Path
-
-from drone_pipeline.datasets import (
-    interpolate_vicon_truth,
-    load_drone_dataset,
-    load_drone_parameters,
-)
+from drone_pipeline.datasets import interpolate_vicon_truth, load_drone_dataset, load_drone_parameters
 from drone_pipeline.observation import (
     build_apriltag_corner_map,
     estimate_measurement_covariance,
     estimate_pose,
 )
+from drone_pipeline.types import PoseObservation
 ```
+
+The three functions in `observation.py` are yours to write; their docstrings repeat the contracts below. The Part B tests skip until each function exists.
 
 ## Visual Positioning {#sec-project1b-visual-positioning}
 
-The primary object of this project checkpoint is to develop the visual observation model that the resulting navigation filtering algorithm will use to bound and correct the error growth in the dead reckoning state propagation method.
+The point of this checkpoint is an observation model that the navigation filter can use to bound and correct the error growth you measured in Part A.
 
 ### Camera and Rig Parameters
 
-The drone's camera is mounted on the body with a known rigid transform as shown below:
-
-![Drone sensor mounting](../images/drone-mountings.png)
-
-The camera intrinsics and mounting transform are provided in `data/drone-data/parameters.txt`. Use the starter package to load them:
+The camera intrinsics, lens distortion, and mounting are in `data/drone-data/parameters.txt`, which the starter parses for you:
 
 ``` python
-params = load_drone_parameters()  # reads data/drone-data/parameters.txt
+params = load_drone_parameters()        # reads data/drone-data/parameters.txt
+camera_matrix = params.camera_matrix    # 3 x 3 intrinsic matrix K
+dist_coeffs = params.dist_coeffs        # [k1, k2, p1, p2, k3] as stated in the file
+T_camera_body = params.T_camera_body    # 4 x 4, body coordinates -> camera coordinates
 ```
 
-The key parameters are:
+Do not invent a checkerboard calibration workflow; the dataset already gives you the intrinsics and the mounting.
+
+**Distortion.** The file lists the lens's distortion coefficients, but the corner detections in the packets have *already been undistorted*: some corners even lie outside the $376 \times 240$ image, which only undistorted coordinates can do. Pass zero distortion to `solvePnP`:
 
 ``` python
-camera_matrix = params.camera_matrix
-dist_coeffs = params.dist_coeffs
-T_camera_body = params.T_camera_body
+zero_distortion = np.zeros(5)
 ```
 
-Do not invent a checkerboard calibration workflow. This dataset already gives you the intrinsics and mounting values.
+Do not take that on faith. As a required check, run your estimator over one development flight twice, once with `np.zeros(5)` and once with `params.dist_coeffs`, and report the median reprojection error and the mean position residual against Vicon for both. You should find sub-pixel reprojection error with zeros and several pixels with the coefficients. Explain in a paragraph why "correcting" coordinates that were already corrected produces a confident, biased pose instead of an error message.
+
+### Camera-to-Body Transform
+
+![Sensor mounting. Left: the IMU axes and the camera axes, rotated 45 degrees about the vertical. Right: the camera sits about 3 cm below the IMU board.](../images/drone-mountings.png){#fig-project1b-mountings}
+
+`T_camera_body` maps body coordinates into camera coordinates, $\mathbf{p}^c = \mathbf{C}_b^c\,\mathbf{p}^b + \mathbf{r}_{cb}^c$, where $\mathbf{C}_b^c = \mathbf{R}_z(-\pi/4)\,\mathbf{R}_x(\pi)$ (the camera looks down and is yawed by the file's `Yaw = pi/4`, @fig-project1b-mountings) and $\mathbf{r}_{cb}^c$ is the file's `XYZ = [-0.04, 0.0, -0.03]` m, the position of the IMU origin resolved in the camera frame. This convention was checked against Vicon on `studentdata1`-`7` and is the same one @sec-pnp-project-camera-parameters uses. `solvePnP` returns `T_camera_world`, so the body pose is
+
+``` python
+T_world_body = np.linalg.inv(T_camera_world) @ T_camera_body
+```
+
+If you prefer a different internal convention, hide the change at the boundary, document it once, and keep it consistent.
 
 ### AprilTag Map
 
-The tag mat is a `12 x 9` grid. The top-left corner of the top-left tag is world coordinate `(0, 0, 0)`. AprilTag ID numbers go from 0 to 107 incrementing along the x-axis first. We will relate the measurements provided in the information packets to this known map to derive a position fix.
+![The AprilTag mat, with the world $x$ axis down the page and $y$ to the right. Dimensions are in meters.](../images/april-tag-mat.png){#fig-project1b-tag-mat width=70%}
 
-![AprilTag mat](../images/april-tag-mat.png)
-
-Coordinate convention:
-
-- `x` increases down the mat
-- `y` increases to the right
-- `z = 0` for all corners
-
-Geometry:
-
-``` python
-tag_size = 0.152
-normal_gap = 0.152
-wide_gap = 0.178
-```
-
-Use `wide_gap` between columns `3-4` and `6-7`. Everywhere else use `normal_gap`.
+The mat is a `12 x 9` grid of tags (@fig-project1b-tag-mat). The top-left corner of the top-left tag (ID 0) is the world origin, `x` increases down the mat, `y` increases to the right, `z` points up out of the mat, and every corner has `z = 0`. Tag IDs increase down the first column (0 to 11), then continue in the next column; `params.tag_ids` holds the grid. Each tag is 0.152 m on a side, and neighbouring tags are 0.152 m apart, except between columns 3-4 and 6-7, where the gap is 0.178 m (`config.TAG_SIZE_M`, `NORMAL_GAP_M`, `WIDE_GAP_M`).
 
 Implement:
 
@@ -88,103 +78,65 @@ Implement:
 build_apriltag_corner_map() -> dict[int, np.ndarray]
 ```
 
-Each value must be a `4 x 3` array of world-frame corners in the same order used by the packet detections:
-
-1.  `p1`: bottom left
-2.  `p2`: bottom right
-3.  `p3`: top right
-4.  `p4`: top left
+Each value is a `4 x 3` array of world-frame corners in the same order as the packet detections: `p1` bottom-left, `p2` bottom-right, `p3` top-right, `p4` top-left, where top and bottom refer to the mat drawing (so the bottom corners have the larger `x`).
 
 ### Pose Estimation
 
 Implement:
 
 ``` python
-estimate_pose(packet, camera_matrix, dist_coeffs, tag_map, T_camera_body)
+estimate_pose(packet, camera_matrix, dist_coeffs, tag_map, T_camera_body)   # -> PoseObservation | None
 ```
 
 It must:
 
-1.  read `packet.id`, `packet.p1`, `packet.p2`, `packet.p3`, and `packet.p4`
-2.  assemble matching `object_points` and `image_points`
-3.  call `cv2.solvePnP`
-4.  convert OpenCV's world-to-camera output into a body pose in the world frame
-5.  return pose, reprojection error, and number of points used
-6.  return `None` when there are too few usable correspondences
+1.  read `packet.id` and the corner arrays `packet.p1` to `packet.p4` (each `(2, n)`, rows `u` and `v`);
+2.  assemble matching `object_points` (`N x 3`) and `image_points` (`N x 2`), using all four corners of every visible tag (never collapse tags to centroids);
+3.  call `cv2.solvePnP` with the `dist_coeffs` it was given (pass zeros, see above);
+4.  convert OpenCV's world-to-camera result into the body pose in the world frame with `T_camera_body`, and the rotation into Z-X-Y roll, pitch, yaw (`utils.rotation_matrix_to_rpy`);
+5.  return a `PoseObservation(t, position, rpy, reprojection_error, num_points)`, where `reprojection_error` is the RMS pixel distance between detected and reprojected corners and `num_points` the number of correspondences used;
+6.  return `None` when fewer than 4 correspondences are available or the solver fails.
 
-Required return shape:
+`PoseObservation.z` gives the 6-vector `[px, py, pz, roll, pitch, yaw]` that Part C fuses.
 
-``` python
-{
-    "t": packet_time,
-    "position": np.ndarray,
-    "rpy": np.ndarray,
-    "reprojection_error": float,
-    "num_points": int,
-}
-```
+### Single-Tag Frames
 
-Use all four corners of every visible tag. Do not collapse tags to centroids. In this assignment, `T_camera_body` maps body-frame coordinates into the camera frame:
+A frame with one visible tag gives four coplanar points. That is enough for a solution but not for a confident one: for a small planar target the PnP cost has two nearby minima, related roughly by a reflection of the target's tilt about the line of sight, and noise can make the wrong one win or pull the estimate between them (@sec-pnp-planar-ambiguity). `cv2.solvePnPGeneric` with `cv2.SOLVEPNP_IPPE_SQUARE` returns both candidate poses for a single square tag, which lets you see how ambiguous a given frame is. On this dataset single-tag poses are several times noisier than multi-tag poses and noticeably biased in tilt, and the validation flights contain a few dozen of them. Decide what to do (give them their own $\mathbf{R}$, inflate $\mathbf{R}$, or skip them), justify it with numbers, and keep that decision visible to Part C.
+
+### Measurement Bias and Covariance
+
+Once the perception model produces a pose, the filter needs to know how far to trust it. Implement:
 
 ``` python
-p_camera = T_camera_body @ p_body_homogeneous
+estimate_measurement_covariance(observations, truth_samples)   # -> (6, 6) R
 ```
 
-`solvePnP` returns the transform from world coordinates to camera coordinates. If you call that:
+from the residuals
 
 ``` python
-T_camera_world
+residual = z_pnp - z_truth          # z = [px, py, pz, roll, pitch, yaw]
 ```
 
-then a consistent baseline is:
+with the angle residuals wrapped into $[-\pi, \pi)$. Obtain `truth_samples` with `interpolate_vicon_truth(dataset, times)` at the observation times and drop any pair whose truth sample has `valid == False`. The function returns the sample covariance *about the mean* (what `np.cov` computes). Report the mean residual, the bias, separately: a covariance says nothing about bias, and a raw second moment $\frac{1}{n}\sum \boldsymbol{\nu}\boldsymbol{\nu}^T$ silently mixes the two (@sec-pnp-covariance-estimation-observation).
 
-``` python
-T_world_camera = np.linalg.inv(T_camera_world)
-T_world_body = T_world_camera @ T_camera_body
-```
-
-If you prefer a different internal convention, that is fine. Hide the convention change at the boundary, document it once, and keep it consistent.
-
-### Covariance Estimation
-
-Once we have developed a way to find the base measurement and related it to a global position, we must derive a way to calculate the certainty (or accuracy) of this measurement. You will implement:
-
-``` python
-estimate_measurement_covariance(observations, truth_samples)
-```
-
-Estimate a `6 x 6` covariance matrix from:
-
-``` python
-residual = z_pnp - z_truth
-```
-
-with:
-
-``` python
-z = [px, py, pz, roll, pitch, yaw]
-```
-
-which will give us a resulting measurement covariance matrix to be subsequently used in the filtering system. Note that angle residuals must be wrapped into `[-pi, pi)`.
+A Kalman filter assumes zero-mean measurement noise, so a bias must go somewhere. If it is consistent across flights (look for one that is), it is really a calibration error and you can subtract it; if it varies, you can inflate $\mathbf{R}$ to cover it (for example $\mathbf{R} + \mathbf{b}\mathbf{b}^T$); or you can leave it and show its consequences in Part C's consistency tests. Any of the three is defensible if you say which one you chose and why.
 
 Report:
 
-- number of valid PnP packets per dataset
-- median and 90th-percentile reprojection error
-- estimated `R`
-- any rounding, clipping, or inflation applied before filtering
+- the number of valid PnP packets per dataset, split into single-tag and multi-tag frames;
+- the median and 90th-percentile reprojection error, and the distortion check above;
+- the bias and $\mathbf{R}$ per development flight and pooled over the development split, with residual histograms;
+- any rounding, clipping, or inflation applied before filtering.
 
 ## Deliverables {#sec-project1b-deliverables}
 
-Submit:
+For this checkpoint you should have:
 
-- `build_apriltag_corner_map()`
-- `estimate_pose(...)`
-- `estimate_measurement_covariance(...)`
-- position and attitude plots against Vicon truth
-- a PnP RMSE table across all eight datasets
-- the estimated measurement covariance `R`
+- `build_apriltag_corner_map()`, `estimate_pose(...)`, and `estimate_measurement_covariance(...)`, passing the Part B tests;
+- position and attitude plots of the PnP poses against Vicon truth;
+- a PnP accuracy table (position RMSE, attitude RMSE, bias) for `studentdata1`-`7` (and `studentdata0` if you take on @sec-project1-studentdata0);
+- the distortion check, the single-tag analysis, and the bias and measurement covariance $\mathbf{R}$ you will hand to Part C.
 
 ## Notes {#sec-project1b-notes}
 
-Most PnP failures in this project are not caused by `solvePnP`. They are caused by incorrect corner ordering, incorrect world geometry, or a silent frame-convention mistake that survives just long enough to look persuasive.
+Most PnP failures in this project are not caused by `solvePnP`. They are caused by incorrect corner ordering, incorrect world geometry, the wrong distortion model, or a silent frame-convention mistake that survives just long enough to look persuasive. A sub-pixel reprojection error does not prove the body-frame convention is right; a multi-pixel one does prove something is wrong.

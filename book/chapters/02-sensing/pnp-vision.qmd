@@ -1,32 +1,25 @@
 # Perspective-n-Point Vision {#sec-pnp}
 
-Cameras are rich navigation sensors because an image contains many geometric clues about the world. They are also unforgiving. A camera reports pixel intensities, not position. To turn pixels into a navigation measurement, we need a camera model, feature correspondences, and a clear convention for coordinate frames.
+Cameras are rich navigation sensors because an image carries a great deal of geometry. They are also unforgiving: a camera reports pixel intensities, not position. Turning pixels into a navigation measurement takes a camera model, feature correspondences, a set of frame conventions that survive contact with real code, and an honest account of how wrong the result can be.
 
-This chapter starts with the minimum camera background needed for navigation and ends with a worked Perspective-n-Point (PnP) observation model for the drone project.
+In the navigation stack the camera sits at the top. A perception model turns an image into a measurement, a measurement model with a noise description tells the filter how to use it, and the filter hands a state estimate to guidance and control. This chapter walks down that path for one concrete sensor: a downward-looking camera on a quadrotor flying over a mat of AprilTags. It covers the minimum camera background needed for navigation, the Perspective-n-Point (PnP) problem, the frames of Project 1 (@sec-project1), and finally the measurement's bias and covariance, which is where the perception model becomes something a Kalman filter can trust.
+
+All of the code in this chapter runs on synthetic data, so it needs nothing but NumPy, OpenCV, and Matplotlib. One clearly marked cell at the end checks the conclusions against the real flight data when it is available.
 
 ## Camera Measurements {#sec-pnp-camera-measurements}
 
-A digital camera maps incoming light onto an image plane. In a pinhole camera model, a 3D point in camera coordinates:
+A digital camera maps incoming light onto an image plane. In the pinhole model a point with camera-frame coordinates $\mathbf{p}^c = [X, Y, Z]^T$ projects to the normalized image coordinates
 
 $$
-\mathbf{P}_c =
-\begin{bmatrix}
-X_c & Y_c & Z_c
-\end{bmatrix}^T
-$$
-
-projects to normalized image coordinates:
-
-$$
-x_n = \frac{X_c}{Z_c},
+x_n = \frac{X}{Z},
 \qquad
-y_n = \frac{Y_c}{Z_c}.
+y_n = \frac{Y}{Z}.
 $$
 
-The camera intrinsic matrix maps normalized coordinates to pixels:
+The camera frame $c$ here is the optical frame used throughout the book (@sec-frames-camera-transforms): $x$ to the right in the image, $y$ down, and $z$ out of the lens along the optical axis, so anything in front of the camera has $Z > 0$. The intrinsic matrix maps normalized coordinates to pixels:
 
 $$
-K =
+\mathbf{K} =
 \begin{bmatrix}
 f_x & \gamma & c_x \\
 0 & f_y & c_y \\
@@ -34,9 +27,7 @@ f_x & \gamma & c_x \\
 \end{bmatrix}.
 $$
 
-Here $f_x$ and $f_y$ are focal lengths in pixels, $(c_x, c_y)$ is the principal point, and $\gamma$ is skew. Most modern cameras have negligible skew, so $\gamma$ is often zero.
-
-In homogeneous coordinates:
+Here $f_x$ and $f_y$ are focal lengths in pixels, $(c_x, c_y)$ is the principal point, and $\gamma$ is the skew, which is zero for essentially every modern sensor. (Vision uses $\mathbf{K}$ for the intrinsics and filtering uses $\mathbf{K}$ for the Kalman gain. Context keeps them apart; this chapter only needs the first.) In homogeneous coordinates
 
 $$
 s
@@ -44,197 +35,274 @@ s
 u \\ v \\ 1
 \end{bmatrix}
 =
-K
-\begin{bmatrix}
-X_c \\ Y_c \\ Z_c
-\end{bmatrix},
-$$
+\mathbf{K}\,\mathbf{p}^c,
+$$ {#eq-pnp-pinhole}
 
-where $s = Z_c$ for the simple pinhole model.
-
-## From World Points to Pixels {#sec-pnp-from-world-points}
-
-If a point is known in world coordinates $\mathbf{P}_w$, then a camera pose maps it into camera coordinates:
-
-$$
-\mathbf{P}_c = R_{cw}\mathbf{P}_w + \mathbf{t}_{cw}.
-$$
-
-The full projection is:
-
-$$
-s
-\begin{bmatrix}
-u \\ v \\ 1
-\end{bmatrix}
-=
-K
-\begin{bmatrix}
-R_{cw} & \mathbf{t}_{cw}
-\end{bmatrix}
-\begin{bmatrix}
-X_w \\ Y_w \\ Z_w \\ 1
-\end{bmatrix}.
-$$
-
-This equation is the heart of PnP. Given known 3D points and their observed 2D pixel locations, estimate the camera pose.
-
-## Lens Distortion {#sec-pnp-lens-distortion}
-
-Real lenses are not perfect pinholes. The drone data provides distortion parameters in the order:
-
-$$
-[k_1, k_2, p_1, p_2, k_3],
-$$
-
-where $k_i$ are radial distortion coefficients and $p_i$ are tangential distortion coefficients. OpenCV uses this convention for the common five-parameter distortion model.
-
-If the image has already been rectified, the distortion may be close to zero for practical use. If not, pass the supplied distortion coefficients into `cv2.solvePnP` and `cv2.projectPoints`. Do not quietly ignore distortion unless the project data or calibration procedure says that is appropriate.
-
-## Basic Image Processing {#sec-pnp-basic-image-processing}
-
-A few classic image-processing operations come up constantly: thresholding, Gaussian filtering, color filtering, and edge filters such as Sobel and Canny. These are not full computer vision methods by themselves. They are building blocks.
-
-- **Thresholding** converts pixels into binary decisions.
-- **Gaussian filtering** suppresses high-frequency noise.
-- **Color filtering** selects pixels by color or intensity range.
-- **Sobel and Canny filters** emphasize image gradients and edges.
-
-For AprilTags, students do not need to implement a full tag detector for this project because the dataset already provides tag IDs and corner pixels. But the same idea remains: image processing extracts features, and navigation uses those features as measurements.
+with $s = Z$, the depth. Dividing by depth is what makes vision nonlinear, and what makes a single image unable to tell a small object nearby from a large one far away.
 
 ```{python}
-#| label: pnp-simple-image-processing
-#| eval: false
-
+#| label: pnp-camera-model
 import cv2
-
-
-def edge_image(gray_image):
-    """Small example of preprocessing before feature extraction."""
-    blurred = cv2.GaussianBlur(gray_image, ksize=(5, 5), sigmaX=1.0)
-    edges = cv2.Canny(blurred, threshold1=50, threshold2=150)
-    return edges
-```
-
-## The PnP Problem {#sec-pnp-problem}
-
-Perspective-n-Point estimates camera pose from:
-
-- known 3D world points $\mathbf{P}_w^i$;
-- observed 2D image points $\mathbf{p}^i = [u_i, v_i]^T$;
-- camera intrinsics $K$;
-- lens distortion parameters.
-
-The unknowns are rotation and translation. In OpenCV, `solvePnP` returns a rotation vector `rvec` and translation vector `tvec` such that:
-
-$$
-\mathbf{P}_c = R_{cw}\mathbf{P}_w + \mathbf{t}_{cw}.
-$$
-
-This is crucial:
-
-> OpenCV returns the transform from world/object coordinates to camera coordinates, not directly the camera position in world coordinates.
-
-To recover the camera pose in the world frame:
-
-$$
-R_{wc} = R_{cw}^T,
-$$
-
-$$
-\mathbf{t}_{wc} = -R_{cw}^T\mathbf{t}_{cw}.
-$$
-
-Many wrong PnP implementations are just this convention mistake wearing a fake mustache.
-
-## Project Camera Parameters {#sec-pnp-project-camera-parameters}
-
-The drone project provides the camera matrix:
-
-$$
-K =
-\begin{bmatrix}
-314.1779 & 0 & 199.4848 \\
-0 & 314.2218 & 113.7838 \\
-0 & 0 & 1
-\end{bmatrix}
-$$
-
-and distortion coefficients:
-
-$$
-\begin{bmatrix}
--0.438607 & 0.248625 & 0.00072 & -0.000476 & -0.0911
-\end{bmatrix}.
-$$
-
-In Python:
-
-```{python}
-#| label: pnp-camera-parameters
-#| eval: false
-
+import matplotlib.pyplot as plt
 import numpy as np
 
-
+# Project 1 camera intrinsics (data/drone-data/parameters.txt).
 K = np.array([
     [314.1779, 0.0, 199.4848],
     [0.0, 314.2218, 113.7838],
     [0.0, 0.0, 1.0],
-], dtype=np.float64)
+])
+IMAGE_WIDTH, IMAGE_HEIGHT = 376, 240
 
-dist_coeffs = np.array(
-    [-0.438607, 0.248625, 0.00072, -0.000476, -0.0911],
-    dtype=np.float64,
-)
+
+def project_camera_points(K: np.ndarray, p_c: np.ndarray) -> np.ndarray:
+    """Pinhole projection of (N, 3) camera-frame points to (N, 2) pixels."""
+    p_c = np.atleast_2d(p_c)
+    uvw = (K @ p_c.T).T
+    return uvw[:, :2] / uvw[:, 2:3]
+
+
+# A point 1.2 m in front of the lens, 10 cm right and 5 cm up in the image.
+print(project_camera_points(K, np.array([0.10, -0.05, 1.2])))
 ```
 
-The camera is mounted on the bottom of the drone. The parameter file gives the translation from the camera frame to the drone/IMU frame:
+## From World Points to Pixels {#sec-pnp-from-world-points}
+
+If a point is known in world coordinates $\mathbf{p}^w$, the camera pose maps it into camera coordinates,
 
 $$
-\mathbf{t}_{bc} =
+\mathbf{p}^c = \mathbf{C}_w^c\,\mathbf{p}^w + \mathbf{r}_{cw}^c,
+$$
+
+where $\mathbf{C}_w^c$ rotates world coordinates into camera coordinates and $\mathbf{r}_{cw}^c$ is the position of the world origin relative to the camera, resolved in the camera frame. With the homogeneous transform $\mathbf{T}_w^c$ (@sec-frames-camera-transforms) the full projection is
+
+$$
+s
 \begin{bmatrix}
--0.04 & 0.0 & -0.03
-\end{bmatrix}^T
+u \\ v \\ 1
+\end{bmatrix}
+=
+\mathbf{K}
+\begin{bmatrix}
+\mathbf{C}_w^c & \mathbf{r}_{cw}^c
+\end{bmatrix}
+\begin{bmatrix}
+\mathbf{p}^w \\ 1
+\end{bmatrix}.
+$$ {#eq-pnp-projection}
+
+This equation is the heart of PnP. Given known 3D points and their observed 2D pixels, estimate $\mathbf{C}_w^c$ and $\mathbf{r}_{cw}^c$. OpenCV's `cv2.projectPoints` evaluates the same equation, which makes a convenient cross-check:
+
+```{python}
+#| label: pnp-world-to-pixels
+def world_to_pixels(K, C_w_c, r_cw_c, p_w):
+    """Project (N, 3) world points through a camera with pose (C_w^c, r_cw^c)."""
+    p_c = (C_w_c @ np.atleast_2d(p_w).T).T + r_cw_c
+    return project_camera_points(K, p_c)
+
+
+rng = np.random.default_rng(2)
+rvec_demo = np.array([0.1, -0.2, 0.3])
+C_demo, _ = cv2.Rodrigues(rvec_demo)
+r_demo = np.array([0.05, -0.02, 1.5])
+p_w_demo = rng.uniform(-0.5, 0.5, size=(5, 3))
+
+ours = world_to_pixels(K, C_demo, r_demo, p_w_demo)
+theirs, _ = cv2.projectPoints(p_w_demo, rvec_demo, r_demo, K, np.zeros(5))
+print("max difference from cv2.projectPoints [px]:", np.abs(ours - theirs.reshape(-1, 2)).max())
+```
+
+## Lens Distortion {#sec-pnp-lens-distortion}
+
+Real lenses are not pinholes. Wide-angle lenses bend straight lines into curves, and the standard Brown-Conrady model describes this with radial coefficients $k_1, k_2, k_3$ and tangential coefficients $p_1, p_2$ acting on the normalized coordinates, with $r^2 = x_n^2 + y_n^2$:
+
+$$
+\begin{aligned}
+x_d &= x_n\left(1 + k_1 r^2 + k_2 r^4 + k_3 r^6\right) + 2p_1 x_n y_n + p_2\left(r^2 + 2x_n^2\right), \\
+y_d &= y_n\left(1 + k_1 r^2 + k_2 r^4 + k_3 r^6\right) + p_1\left(r^2 + 2y_n^2\right) + 2p_2 x_n y_n.
+\end{aligned}
 $$
 
-and a yaw offset of $\pi/4$. The project handout also describes an additional camera mounting rotation. The important implementation rule is to construct one explicit homogeneous transform for the camera-to-body calibration and use it consistently.
+OpenCV stores these as `[k1, k2, p1, p2, k3]`, which is also the order in the drone's `parameters.txt`. The drone's lens has strong barrel distortion ($k_1 \approx -0.44$), and @fig-pnp-distortion shows how far it moves points across the image.
+
+```{python}
+#| label: fig-pnp-distortion
+#| fig-cap: "Pixel displacement produced by the Project 1 lens model across the 376 x 240 image (arrows to scale). An ideal image point at a corner moves by more than 40 pixels."
+#| code-fold: true
+DIST_COEFFS = np.array([-0.438607, 0.248625, 0.00072, -0.000476, -0.0911])
+
+u_grid, v_grid = np.meshgrid(np.linspace(0, IMAGE_WIDTH, 13), np.linspace(0, IMAGE_HEIGHT, 9))
+ideal = np.column_stack([u_grid.ravel(), v_grid.ravel()])
+normalized = np.column_stack([(ideal[:, 0] - K[0, 2]) / K[0, 0], (ideal[:, 1] - K[1, 2]) / K[1, 1], np.ones(len(ideal))])
+distorted, _ = cv2.projectPoints(normalized, np.zeros(3), np.zeros(3), K, DIST_COEFFS)
+shift = distorted.reshape(-1, 2) - ideal
+
+fig, ax = plt.subplots(figsize=(6.5, 4.2))
+ax.quiver(ideal[:, 0], ideal[:, 1], shift[:, 0], shift[:, 1], angles="xy", scale_units="xy", scale=1, width=0.004)
+ax.set_xlim(-30, IMAGE_WIDTH + 30)
+ax.set_ylim(IMAGE_HEIGHT + 30, -30)
+ax.set_aspect("equal")
+ax.set_xlabel("u [px]")
+ax.set_ylabel("v [px]")
+ax.set_title(f"largest displacement {np.linalg.norm(shift, axis=1).max():.0f} px")
+plt.show()
+```
+
+Whether to use the coefficients depends on what has already been done to the pixels. If an image is rectified before features are detected, or the detector undistorts its own output, the coordinates are already pinhole coordinates and the distortion must be zero in `cv2.solvePnP`. Apply the coefficients a second time and the solver will happily fit a pose to a geometry that does not exist.
+
+The Project 1 detections are in exactly that situation: **the corner coordinates in the packets are already undistorted**, so pass `np.zeros(5)`. Three independent pieces of evidence agree. Some detected corners lie more than 10 px outside the $376 \times 240$ image, which only undistorted coordinates can do. Across `studentdata1`-`7` the median reprojection error is 0.65-0.89 px with zero distortion and 3.9-4.5 px with the file's coefficients. And the poses computed with the coefficients sit 8-12 cm too low compared with Vicon, with several times the horizontal scatter. The data check at the end of this chapter (@sec-pnp-real-data-check) reproduces these numbers. The general lesson is worth more than the specific answer: never pass distortion coefficients without knowing whether the pixels you hold were taken before or after undistortion.
+
+## Basic Image Processing {#sec-pnp-basic-image-processing}
+
+A few classic image-processing operations come up constantly: thresholding converts pixels into binary decisions, Gaussian filtering suppresses high-frequency noise, color filtering selects pixels by color or intensity range, and gradient filters such as Sobel and Canny emphasize edges. These are building blocks, not computer-vision methods by themselves.
+
+Project 1 does not ask you to write a tag detector, because the dataset already provides tag IDs and corner pixels from the AprilTag detector [@olson2011apriltag]. The idea underneath is the same, though: image processing extracts features, and navigation consumes those features as measurements. A detector finds a tag by looking for exactly the kind of high-contrast square border this small example produces:
+
+```{python}
+#| label: pnp-simple-image-processing
+def edge_image(gray_image: np.ndarray) -> np.ndarray:
+    """Blur, then Canny: the usual preprocessing before finding tag borders."""
+    blurred = cv2.GaussianBlur(gray_image, ksize=(5, 5), sigmaX=1.0)
+    return cv2.Canny(blurred, threshold1=50, threshold2=150)
+
+
+rng = np.random.default_rng(0)
+image = np.full((IMAGE_HEIGHT, IMAGE_WIDTH), 200, dtype=np.uint8)
+cv2.rectangle(image, (150, 80), (230, 160), color=30, thickness=-1)  # a dark "tag"
+noisy = np.clip(image + rng.normal(0.0, 12.0, image.shape), 0, 255).astype(np.uint8)
+
+edges = edge_image(noisy)
+rows, cols = np.nonzero(edges)
+print(f"{len(rows)} edge pixels; bounding box u {cols.min()}-{cols.max()}, v {rows.min()}-{rows.max()}")
+```
+
+## The PnP Problem {#sec-pnp-problem}
+
+Perspective-n-Point estimates a camera pose from $n$ known 3D world points $\mathbf{p}^w_i$, their observed pixels $[u_i, v_i]^T$, the intrinsics $\mathbf{K}$, and the distortion model. The unknowns are the rotation and translation in @eq-pnp-projection, six numbers in all. Three points give a finite set of up to four solutions (P3P), four or more general points give a unique one, and in practice we use many more and minimize the reprojection error,
+
+$$
+\min_{\mathbf{C}_w^c,\,\mathbf{r}_{cw}^c}
+\sum_{i=1}^{n}
+\left\|
+\begin{bmatrix} u_i \\ v_i \end{bmatrix}
+- \pi\!\left(\mathbf{K}, \mathbf{C}_w^c\mathbf{p}^w_i + \mathbf{r}_{cw}^c\right)
+\right\|^2,
+$$
+
+where $\pi$ is the projection of @eq-pnp-pinhole. This is a nonlinear least-squares problem; OpenCV's `SOLVEPNP_ITERATIVE` solves it with Levenberg-Marquardt from a closed-form starting guess, and `SOLVEPNP_IPPE` is a specialized solver for planar targets [@collins2014ippe].
+
+`cv2.solvePnP` returns a rotation vector `rvec` and a translation `tvec` such that
+
+$$
+\mathbf{p}^c = \mathbf{C}_w^c\,\mathbf{p}^w + \mathbf{r}_{cw}^c,
+\qquad
+\mathbf{C}_w^c = \texttt{Rodrigues(rvec)},
+\quad
+\mathbf{r}_{cw}^c = \texttt{tvec}.
+$$
+
+This is crucial:
+
+> OpenCV returns the transform from world coordinates to camera coordinates, not the camera's position in the world.
+
+The camera pose in the world is the inverse,
+
+$$
+\mathbf{C}_c^w = \left(\mathbf{C}_w^c\right)^T,
+\qquad
+\mathbf{r}_{wc}^w = -\left(\mathbf{C}_w^c\right)^T\mathbf{r}_{cw}^c.
+$$
+
+Many wrong PnP implementations are just this convention mistake wearing a fake mustache.
+
+## Project Frames and Camera Parameters {#sec-pnp-project-camera-parameters}
+
+Project 1 uses three frames. The world frame $w$ is the tag mat: $x$ runs down the mat, $y$ to the right, and $z$ up out of the mat, with the origin at the top-left corner of tag 0. The body frame $b$ is the drone's IMU frame, $z$ up, and the camera frame $c$ is the optical frame defined above, looking down at the mat. Project 1 attitudes use a Z-X-Y Euler sequence (@sec-pnp-euler-angles-project).
+
+The camera matrix and distortion coefficients are the ones used above,
+
+$$
+\mathbf{K} =
+\begin{bmatrix}
+314.1779 & 0 & 199.4848 \\
+0 & 314.2218 & 113.7838 \\
+0 & 0 & 1
+\end{bmatrix},
+$$
+
+$$
+[k_1, k_2, p_1, p_2, k_3] = [-0.438607,\ 0.248625,\ 0.00072,\ -0.000476,\ -0.0911].
+$$
+
+They live in `data/drone-data/parameters.txt` together with the camera-IMU calibration and the tag IDs, and the project package loads all of them with `load_drone_parameters()`. Remember that the distortion coefficients describe the lens, not the detections (@sec-pnp-lens-distortion).
+
+![Sensor mounting on the Project 1 drone. Left: IMU axes and camera axes, rotated 45 degrees about the vertical. Right: the camera sits about 3 cm below the IMU board.](../../images/drone-mountings.png){#fig-pnp-mountings}
+
+The camera-body calibration, verified against Vicon on `studentdata1`-`7`, is one transform: `T_camera_body` $= \mathbf{T}_b^c$ maps body coordinates into camera coordinates, $\mathbf{p}^c = \mathbf{C}_b^c\,\mathbf{p}^b + \mathbf{r}_{cb}^c$, with
+
+$$
+\mathbf{C}_b^c = \mathbf{R}_z(-\tfrac{\pi}{4})\,\mathbf{R}_x(\pi) =
+\begin{bmatrix}
+\tfrac{1}{\sqrt{2}} & -\tfrac{1}{\sqrt{2}} & 0 \\
+-\tfrac{1}{\sqrt{2}} & -\tfrac{1}{\sqrt{2}} & 0 \\
+0 & 0 & -1
+\end{bmatrix},
+$$
+
+$$
+\mathbf{r}_{cb}^c = \texttt{XYZ} = [-0.04,\ 0,\ -0.03]^T \text{ m},
+$$
+
+where $\mathbf{R}_x(\pi)$ turns the $z$-up body into a downward-looking camera, $\mathbf{R}_z(-\pi/4)$ undoes the file's `Yaw = pi/4` mounting angle (@fig-pnp-mountings), and `XYZ` is the position of the IMU origin resolved in the camera frame. The columns of $(\mathbf{C}_b^c)^T$ are the camera axes in body coordinates, which is the quickest way to check the matrix against the photograph: camera $x$ points along body $(+x, -y)$, camera $z$ points down.
+
+```{python}
+#| label: pnp-camera-parameters
+def Rx(angle):
+    c, s = np.cos(angle), np.sin(angle)
+    return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+
+
+def Ry(angle):
+    c, s = np.cos(angle), np.sin(angle)
+    return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
+
+
+def Rz(angle):
+    c, s = np.cos(angle), np.sin(angle)
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def make_transform(C: np.ndarray, r: np.ndarray) -> np.ndarray:
+    """T = [[C, r], [0, 1]]."""
+    T = np.eye(4)
+    T[:3, :3], T[:3, 3] = C, r
+    return T
+
+
+def invert_transform(T: np.ndarray) -> np.ndarray:
+    """Rigid-transform inverse using the rotation transpose."""
+    C, r = T[:3, :3], T[:3, 3]
+    return make_transform(C.T, -C.T @ r)
+
+
+YAW_OFFSET = np.pi / 4                      # parameters.txt: Yaw = pi/4
+XYZ = np.array([-0.04, 0.0, -0.03])         # parameters.txt: XYZ, IMU origin in camera coordinates
+T_camera_body = make_transform(Rz(-YAW_OFFSET) @ Rx(np.pi), XYZ)
+
+print("C_b^c =\n", np.round(T_camera_body[:3, :3], 4))
+print("camera origin in body coordinates [m]:", np.round(invert_transform(T_camera_body)[:3, 3], 4))
+```
+
+The last line confirms the photograph: the camera sits 3 cm below the IMU and about 4 cm off to the side, along the 45-degree diagonal.
 
 ## AprilTag Map Geometry {#sec-pnp-apriltag-map-geometry}
 
-The AprilTag map is a 12 by 9 grid. The top-left corner of the top-left tag is the world origin. The map coordinate convention for the project is:
+![The AprilTag mat. The world $x$ axis points down the page and $y$ to the right; dimensions are in meters.](../../images/april-tag-mat.png){#fig-pnp-tag-mat width=70%}
 
-- $x$ increases down the mat;
-- $y$ increases to the right;
-- $z = 0$ for all tag corners.
-
-Each tag is a square with side length:
-
-$$
-L = 0.152 \text{ m}.
-$$
-
-Most gaps between tags are:
-
-$$
-g = 0.152 \text{ m}.
-$$
-
-The wider column gaps, between columns 3-4 and 6-7, are:
-
-$$
-g_{\text{wide}} = 0.178 \text{ m}.
-$$
-
-The tag IDs are supplied in `data/drone-data/parameters.txt`. The matrix is written with 12 rows and 9 columns:
+The mat (@fig-pnp-tag-mat) is a 12 by 9 grid of tags. Each tag is a square of side $L = 0.152$ m, the gap between neighbouring tags is $g = 0.152$ m, and the two wider column gaps, between columns 3-4 and 6-7, are $g_\text{wide} = 0.178$ m. The tag IDs are listed in `parameters.txt` as a matrix with 12 rows (along $x$) and 9 columns (along $y$), so the IDs increase down the mat first:
 
 ```{python}
 #| label: pnp-tag-id-layout
-#| eval: false
-
-import numpy as np
-
-
 TAG_IDS = np.array([
     [0, 12, 24, 36, 48, 60, 72, 84, 96],
     [1, 13, 25, 37, 49, 61, 73, 85, 97],
@@ -248,536 +316,556 @@ TAG_IDS = np.array([
     [9, 21, 33, 45, 57, 69, 81, 93, 105],
     [10, 22, 34, 46, 58, 70, 82, 94, 106],
     [11, 23, 35, 47, 59, 71, 83, 95, 107],
-], dtype=int)
+])
+print(TAG_IDS.shape, "tags", TAG_IDS.min(), "to", TAG_IDS.max())
 ```
 
-The image data gives each detected tag's corners in this order:
+The detector reports each tag's corners in this order:
 
 1. `p1`: bottom left
 2. `p2`: bottom right
 3. `p3`: top right
 4. `p4`: top left
 
-Use the same order for the corresponding world points. If the image corners and world corners are not paired in the same physical order, PnP will estimate a pose for a different geometry. It may still return `success=True`, which is a polite way of making the bug harder to find.
+"Top" and "bottom" refer to the mat drawing, so the bottom corners have the larger $x$. Use the same order for the world points. If image corners and world corners are paired in different physical orders, PnP estimates a pose for a geometry that does not exist, and it may still return `success=True`, which is a polite way of making the bug harder to find.
 
 ## Constructing the Tag-Corner Map {#sec-pnp-constructing-tag-corner}
 
-The map can be built programmatically. The function below returns a dictionary from tag ID to four 3D world corners in the project corner order.
+The map can be built programmatically. The function below returns a dictionary from tag ID to the four world corners, in the detector's corner order.
 
 ```{python}
 #| label: pnp-build-tag-map
-#| eval: false
+TAG_SIZE = 0.152
+NORMAL_GAP = 0.152
+WIDE_GAP = 0.178
 
-import numpy as np
 
+def cumulative_offsets(count, size, normal_gap, wide_gap_after=(), wide_gap=None):
+    """Starting coordinate of each tag along one axis.
 
-def cumulative_offsets(count: int,
-                       size: float,
-                       normal_gap: float,
-                       wide_gap_after: set[int] | None = None,
-                       wide_gap: float | None = None) -> np.ndarray:
+    wide_gap_after holds zero-based indices after which the wide gap is used;
+    {2, 5} puts it between columns 3-4 and 6-7.
     """
-    Return starting coordinates for a row or column of tags.
-
-    wide_gap_after contains zero-based indices after which the wider gap
-    is inserted. For example, {2, 5} means wider gaps between columns
-    3-4 and 6-7.
-    """
-    wide_gap_after = wide_gap_after or set()
-    starts = np.zeros(count, dtype=np.float64)
-
+    starts = np.zeros(count)
     for i in range(1, count):
-        previous = i - 1
-        gap = wide_gap if previous in wide_gap_after else normal_gap
+        gap = wide_gap if (i - 1) in wide_gap_after else normal_gap
         starts[i] = starts[i - 1] + size + gap
-
     return starts
 
 
 def build_apriltag_corner_map() -> dict[int, np.ndarray]:
-    tag_size = 0.152
-    normal_gap = 0.152
-    wide_gap = 0.178
-
-    x_starts = cumulative_offsets(
-        count=12,
-        size=tag_size,
-        normal_gap=normal_gap,
-    )
-    y_starts = cumulative_offsets(
-        count=9,
-        size=tag_size,
-        normal_gap=normal_gap,
-        wide_gap_after={2, 5},
-        wide_gap=wide_gap,
-    )
-
-    tag_corners: dict[int, np.ndarray] = {}
-
+    """Map each tag ID to its (4, 3) world corners in p1..p4 order (BL, BR, TR, TL)."""
+    x_starts = cumulative_offsets(TAG_IDS.shape[0], TAG_SIZE, NORMAL_GAP)
+    y_starts = cumulative_offsets(TAG_IDS.shape[1], TAG_SIZE, NORMAL_GAP, wide_gap_after={2, 5}, wide_gap=WIDE_GAP)
+    tag_corners = {}
     for row in range(TAG_IDS.shape[0]):
         for col in range(TAG_IDS.shape[1]):
-            tag_id = int(TAG_IDS[row, col])
-            x0 = x_starts[row]
-            y0 = y_starts[col]
-            x1 = x0 + tag_size
-            y1 = y0 + tag_size
-
-            # Project corner order: bottom-left, bottom-right,
-            # top-right, top-left, in map coordinates.
-            tag_corners[tag_id] = np.array([
-                [x1, y0, 0.0],
-                [x1, y1, 0.0],
-                [x0, y1, 0.0],
-                [x0, y0, 0.0],
-            ], dtype=np.float64)
-
+            x0, y0 = x_starts[row], y_starts[col]
+            x1, y1 = x0 + TAG_SIZE, y0 + TAG_SIZE
+            tag_corners[int(TAG_IDS[row, col])] = np.array([
+                [x1, y0, 0.0],   # p1 bottom-left
+                [x1, y1, 0.0],   # p2 bottom-right
+                [x0, y1, 0.0],   # p3 top-right
+                [x0, y0, 0.0],   # p4 top-left
+            ])
     return tag_corners
-```
 
-Notice that the "top" and "bottom" labels refer to the map image orientation. Because $x$ increases down the mat, the bottom corners have larger $x$ than the top corners.
+
+tag_corners = build_apriltag_corner_map()
+print("tag 0:\n", tag_corners[0])
+print("tag 36 starts at y =", tag_corners[36][3, 1], "m (one wide gap after column 3)")
+```
 
 ## Assembling PnP Correspondences {#sec-pnp-assembling-pnp-correspondences}
 
-Each data element contains the detected tag IDs and the corner pixel arrays. Depending on how `scipy.io.loadmat(..., simplify_cells=True)` reads a file, a single tag's corner array may need shape cleanup. The helper below keeps that shape handling explicit.
+Each packet carries the detected tag IDs and four corner arrays. In the project package a packet is a `DronePacket` with attributes `id`, `p1`, ..., `p4`, and `t`; each corner array has shape `(2, n_tags)`, with $u$ in the first row and $v$ in the second. A single tag can arrive as a flat array of two numbers, so the helper below makes the shape explicit before indexing.
 
 ```{python}
 #| label: pnp-correspondence-assembly
-#| eval: false
-
-import numpy as np
-
-
 def as_corner_matrix(corners) -> np.ndarray:
-    """
-    Convert a p1/p2/p3/p4 field to shape (2, n_tags).
-    The project data stores pixel coordinates in columns.
-    """
+    """Return a p1/p2/p3/p4 field as shape (2, n_tags)."""
     arr = np.asarray(corners, dtype=np.float64)
+    if arr.size == 0:
+        return np.zeros((2, 0))
     if arr.ndim == 1:
         arr = arr.reshape(2, 1)
-    if arr.shape[0] != 2 and arr.shape[1] == 2:
-        arr = arr.T
     if arr.shape[0] != 2:
-        raise ValueError(f"expected corner field with shape (2, n), got {arr.shape}")
+        raise ValueError(f"expected a corner field of shape (2, n), got {arr.shape}")
     return arr
 
 
-def assemble_pnp_points(data_entry: dict,
-                        tag_corners: dict[int, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Build object_points and image_points for cv2.solvePnP.
-
-    object_points has shape (N, 3), in world/map coordinates.
-    image_points has shape (N, 2), in pixel coordinates.
-    """
-    ids = np.atleast_1d(np.asarray(data_entry["id"], dtype=int))
-    p_fields = [
-        as_corner_matrix(data_entry["p1"]),
-        as_corner_matrix(data_entry["p2"]),
-        as_corner_matrix(data_entry["p3"]),
-        as_corner_matrix(data_entry["p4"]),
-    ]
-
-    object_points = []
-    image_points = []
-
-    for tag_index, tag_id in enumerate(ids):
+def assemble_pnp_points(packet, tag_corners) -> tuple[np.ndarray, np.ndarray]:
+    """Stack (N, 3) world points and matching (N, 2) pixels for every mapped tag."""
+    ids = np.atleast_1d(np.asarray(packet.id)).astype(int)
+    corner_fields = [as_corner_matrix(getattr(packet, name)) for name in ("p1", "p2", "p3", "p4")]
+    object_points, image_points = [], []
+    for column, tag_id in enumerate(ids):
         if int(tag_id) not in tag_corners:
             continue
-
-        world_corners = tag_corners[int(tag_id)]
-        image_corners = np.array([
-            p_fields[0][:, tag_index],
-            p_fields[1][:, tag_index],
-            p_fields[2][:, tag_index],
-            p_fields[3][:, tag_index],
-        ], dtype=np.float64)
-
-        object_points.extend(world_corners)
-        image_points.extend(image_corners)
-
-    return (
-        np.asarray(object_points, dtype=np.float64),
-        np.asarray(image_points, dtype=np.float64),
-    )
+        object_points.extend(tag_corners[int(tag_id)])
+        image_points.extend(field[:, column] for field in corner_fields)
+    return np.asarray(object_points, dtype=np.float64).reshape(-1, 3), np.asarray(image_points, dtype=np.float64).reshape(-1, 2)
 ```
 
-PnP needs at least a few non-degenerate point correspondences. One AprilTag gives four coplanar corners, which can be enough for specialized planar methods, but more tags give better geometry and better outlier resistance. In practice, reject frames with too few points.
+PnP needs at least four non-degenerate correspondences. One AprilTag provides exactly four coplanar corners, which is enough for a solution but, as @sec-pnp-planar-ambiguity shows, not for a confident one. More tags give better geometry and better outlier resistance.
 
 ## Solving PnP and Inverting the Pose {#sec-pnp-solving-pnp-inverting}
 
-The core call is short:
+The core call is short. The function keeps OpenCV's world-to-camera convention in its name so that nobody has to guess.
 
 ```{python}
 #| label: pnp-solve-and-invert
-#| eval: false
-
-import cv2
-import numpy as np
-
-
-def solve_camera_pose_world_to_camera(object_points: np.ndarray,
-                                      image_points: np.ndarray,
-                                      K: np.ndarray,
-                                      dist_coeffs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Return OpenCV's R_cw, t_cw convention."""
+def solve_world_to_camera(object_points, image_points, K, dist_coeffs):
+    """Return OpenCV's (C_w^c, r_cw^c) plus rvec and tvec."""
     if len(object_points) < 4:
         raise ValueError("PnP needs at least four point correspondences")
-
-    success, rvec, tvec = cv2.solvePnP(
-        object_points,
-        image_points,
-        K,
-        dist_coeffs,
-        flags=cv2.SOLVEPNP_ITERATIVE,
-    )
-
-    if not success:
+    ok, rvec, tvec = cv2.solvePnP(object_points, image_points, K, dist_coeffs, flags=cv2.SOLVEPNP_ITERATIVE)
+    if not ok:
         raise RuntimeError("cv2.solvePnP failed")
-
-    R_cw, _ = cv2.Rodrigues(rvec)
-    t_cw = tvec.reshape(3)
-    return R_cw, t_cw
+    C_w_c, _ = cv2.Rodrigues(rvec)
+    return C_w_c, tvec.reshape(3), rvec, tvec
 
 
-def invert_camera_pose(R_cw: np.ndarray,
-                       t_cw: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Convert world-to-camera transform into camera pose in world.
-
-    OpenCV: P_c = R_cw P_w + t_cw
-    Desired: P_w = R_wc P_c + t_wc
-    """
-    R_wc = R_cw.T
-    t_wc = -R_wc @ t_cw
-    return R_wc, t_wc
-```
-
-Use reprojection error as a sanity check:
-
-```{python}
-#| label: pnp-reprojection-error
-#| eval: false
-
-import cv2
-import numpy as np
+def invert_camera_pose(C_w_c, r_cw_c):
+    """World-to-camera (C_w^c, r_cw^c) -> camera pose in the world (C_c^w, r_wc^w)."""
+    return C_w_c.T, -C_w_c.T @ r_cw_c
 
 
-def reprojection_rmse(object_points: np.ndarray,
-                      image_points: np.ndarray,
-                      rvec: np.ndarray,
-                      tvec: np.ndarray,
-                      K: np.ndarray,
-                      dist_coeffs: np.ndarray) -> float:
+def reprojection_rmse(object_points, image_points, rvec, tvec, K, dist_coeffs) -> float:
+    """RMS pixel distance between detected and reprojected points."""
     projected, _ = cv2.projectPoints(object_points, rvec, tvec, K, dist_coeffs)
-    projected = projected.reshape(-1, 2)
-    residuals = image_points - projected
-    return float(np.sqrt(np.mean(np.sum(residuals ** 2, axis=1))))
+    residuals = image_points - projected.reshape(-1, 2)
+    return float(np.sqrt(np.mean(np.sum(residuals**2, axis=1))))
 ```
 
-A low reprojection error does not guarantee the world/body-frame convention is correct, but a high reprojection error is a strong hint that something is wrong.
+A low reprojection error does not prove the world and body conventions are right, but a high one is a strong hint that something is wrong: the corner order, the map, the intrinsics, or the distortion.
 
 ## Camera Pose to Robot Pose {#sec-pnp-camera-pose-robot}
 
-The project asks for the robot pose, not just the camera pose. If $T_{wc}$ is the camera pose in world coordinates and $T_{cb}$ maps body-frame coordinates into camera-frame coordinates, then:
+The navigation filter wants the body pose, not the camera pose. With homogeneous transforms the index rule of @sec-frames-camera-transforms does the work:
 
 $$
-T_{wb} = T_{wc}T_{cb}.
+\mathbf{T}_b^w = \mathbf{T}_c^w\,\mathbf{T}_b^c = \left(\mathbf{T}_w^c\right)^{-1}\mathbf{T}_b^c,
 $$
 
-If instead you construct $T_{bc}$, the camera pose in the body frame, then:
-
-$$
-T_{wb} = T_{wc}T_{bc}^{-1}.
-$$
-
-Pick one convention and write it down in the code. Do not rely on variable names like `T_camera_to_body` unless the multiplication confirms the meaning.
-
-The helper below uses homogeneous transforms and names the direction explicitly.
+where $\mathbf{T}_w^c$ is what `solvePnP` returns and $\mathbf{T}_b^c$ is `T_camera_body`. In code the names follow the same pattern, `T_<to>_<from>`, so adjacent names must match when transforms are multiplied: `T_world_camera @ T_camera_body` reads correctly, and `T_camera_world @ T_camera_body` is a bug you can see without running it.
 
 ```{python}
 #| label: pnp-transform-composition
-#| eval: false
-
-import numpy as np
-
-
-def make_transform(R: np.ndarray, t: np.ndarray) -> np.ndarray:
-    T = np.eye(4, dtype=np.float64)
-    T[:3, :3] = R
-    T[:3, 3] = t
-    return T
-
-
-def invert_transform(T_ab: np.ndarray) -> np.ndarray:
-    """Invert transform that maps coordinates from b to a."""
-    R_ab = T_ab[:3, :3]
-    t_ab = T_ab[:3, 3]
-
-    T_ba = np.eye(4, dtype=np.float64)
-    T_ba[:3, :3] = R_ab.T
-    T_ba[:3, 3] = -R_ab.T @ t_ab
-    return T_ba
-
-
-def robot_pose_from_camera_pose(T_wc: np.ndarray,
-                                T_bc: np.ndarray) -> np.ndarray:
-    """
-    Compute body pose in world.
-
-    T_wc maps camera coordinates to world coordinates.
-    T_bc maps camera coordinates to body coordinates.
-    """
-    T_cb = invert_transform(T_bc)
-    return T_wc @ T_cb
+def body_pose_from_camera(T_camera_world: np.ndarray, T_camera_body: np.ndarray) -> np.ndarray:
+    """T_world_body from OpenCV's T_camera_world and the mounting T_camera_body."""
+    return invert_transform(T_camera_world) @ T_camera_body
 ```
-
-The exact camera-to-body rotation should match the project handout diagrams and frame definitions. The supplied yaw offset is not a decorative number. Use it.
 
 ## Euler Angles for the Project {#sec-pnp-euler-angles-project}
 
-The Project 1 handout uses roll, pitch, and yaw as the orientation output:
+Project 1 reports orientation as roll $\phi$, pitch $\theta$, and yaw $\psi$, but the dataset (Vicon and the onboard estimate alike) uses a **Z-X-Y** sequence rather than the book's usual Z-Y-X (@sec-frames-conventions):
 
 $$
-\mathbf{q} =
+\mathbf{C}_b^w = \mathbf{R}_z(\psi)\,\mathbf{R}_x(\phi)\,\mathbf{R}_y(\theta)
+=
 \begin{bmatrix}
-\phi & \theta & \psi
-\end{bmatrix}^T.
-$$
-
-The rotation matrix in the handout corresponds to a Z-X-Y Euler sequence:
-
-$$
-R(\phi, \theta, \psi) = R_z(\psi)R_x(\phi)R_y(\theta).
-$$
-
-Written out:
-
-$$
-R =
-\begin{bmatrix}
-c_\psi c_\theta - s_\phi s_\psi s_\theta
-& -c_\phi s_\psi
-& c_\psi s_\theta + c_\theta s_\phi s_\psi \\
-c_\theta s_\psi + c_\psi s_\phi s_\theta
-& c_\phi c_\psi
-& s_\psi s_\theta - c_\psi c_\theta s_\phi \\
--c_\phi s_\theta
-& s_\phi
-& c_\phi c_\theta
+c_\psi c_\theta - s_\phi s_\psi s_\theta & -c_\phi s_\psi & c_\psi s_\theta + c_\theta s_\phi s_\psi \\
+c_\theta s_\psi + c_\psi s_\phi s_\theta & c_\phi c_\psi & s_\psi s_\theta - c_\psi c_\theta s_\phi \\
+-c_\phi s_\theta & s_\phi & c_\phi c_\theta
 \end{bmatrix}.
-$$
+$$ {#eq-pnp-zxy}
 
-Euler angles are not universal; two libraries can use the same words and mean different multiplication orders. The safest approach is:
+This is not a matter of taste. Decomposing the PnP rotations from `studentdata1`-`4` both ways and comparing with Vicon, the Z-X-Y yaw residuals have a standard deviation of 0.004-0.007 rad against 0.008-0.013 rad for Z-Y-X. On the gentle flights the two sequences are indistinguishable, because roll and pitch are small, which is exactly how a wrong convention survives testing. Euler angles are not universal; two libraries can use the same words and mean different multiplication orders. Use the dataset's convention, validate it against truth, and keep the conversion in one function.
 
-1. Use the same convention as the handout.
-2. Validate against the ground truth orientation plots.
-3. Keep the conversion isolated in one function.
-
-For the Project 1 convention, the structure of the matrix gives:
+The structure of @eq-pnp-zxy gives the inverse directly:
 
 $$
-\phi = \sin^{-1}(R_{32}),
+\phi = \sin^{-1}(C_{32}),
+\qquad
+\theta = \operatorname{atan2}(-C_{31}, C_{33}),
+\qquad
+\psi = \operatorname{atan2}(-C_{12}, C_{22}).
 $$
 
-$$
-\theta = \operatorname{atan2}(-R_{31}, R_{33}),
-$$
-
-$$
-\psi = \operatorname{atan2}(-R_{12}, R_{22}).
-$$
-
-Using zero-based Python indexing:
+The decomposition fails at $\phi = \pm 90°$, the gimbal lock of this sequence; for Z-Y-X it is pitch that must stay away from $\pm 90°$.
 
 ```{python}
 #| label: pnp-euler-extraction
-#| eval: false
+def rpy_to_rotation_zxy(rpy) -> np.ndarray:
+    """C_b^w = Rz(yaw) Rx(roll) Ry(pitch) for Project 1 roll, pitch, yaw."""
+    roll, pitch, yaw = rpy
+    return Rz(yaw) @ Rx(roll) @ Ry(pitch)
 
-import numpy as np
+
+def rotation_to_rpy_zxy(C: np.ndarray) -> np.ndarray:
+    """Inverse of rpy_to_rotation_zxy (zero-based indices of the formulas above)."""
+    roll = np.arcsin(np.clip(C[2, 1], -1.0, 1.0))
+    if np.isclose(np.cos(roll), 0.0):
+        # Gimbal lock: only pitch + yaw is observable; report it as yaw.
+        return np.array([roll, 0.0, np.arctan2(C[1, 0], C[0, 0])])
+    return np.array([roll, np.arctan2(-C[2, 0], C[2, 2]), np.arctan2(-C[0, 1], C[1, 1])])
 
 
-def rotation_matrix_to_rpy_zxy(R: np.ndarray) -> np.ndarray:
-    """
-    Convert rotation matrix to Project 1 roll, pitch, yaw.
-
-    Convention:
-        R = Rz(yaw) Rx(roll) Ry(pitch)
-    """
-    roll = np.arcsin(np.clip(R[2, 1], -1.0, 1.0))
-    cos_roll = np.cos(roll)
-
-    if np.isclose(cos_roll, 0.0):
-        # Gimbal-lock case: roll is near +/- pi/2.
-        # Set pitch to zero and recover a combined yaw term.
-        pitch = 0.0
-        yaw = np.arctan2(R[1, 0], R[0, 0])
-    else:
-        pitch = np.arctan2(-R[2, 0], R[2, 2])
-        yaw = np.arctan2(-R[0, 1], R[1, 1])
-
-    return np.array([roll, pitch, yaw], dtype=np.float64)
+rng = np.random.default_rng(1)
+angles = rng.uniform([-1.4, -np.pi, -np.pi], [1.4, np.pi, np.pi], size=(1000, 3))
+worst = max(np.abs(rotation_to_rpy_zxy(rpy_to_rotation_zxy(a)) - a).max() for a in angles)
+print(f"Z-X-Y round trip over 1000 random attitudes: worst error {worst:.1e} rad")
 ```
 
-If your trajectory is mirrored, rotated by 90 degrees, or consistently upside down, do not tune the Kalman filter to hide it. Fix the frame convention.
+A gyro measures the body angular rate $\boldsymbol{\omega}_{wb}^b$, not Euler-angle rates, and Part A of the project needs the relation between the two. Differentiating $\mathbf{C}_b^w = \mathbf{R}_z\mathbf{R}_x\mathbf{R}_y$ and using $[\boldsymbol{\omega}_{wb}^b]_\times = (\mathbf{C}_b^w)^T\dot{\mathbf{C}}_b^w$, each elementary rate is rotated into the body frame through the rotations that follow it:
 
-## A Project-Ready `estimate_pose` Skeleton {#sec-pnp-project-ready-estimatepose}
+$$
+\boldsymbol{\omega}_{wb}^b
+= \mathbf{R}_y^T\mathbf{R}_x^T
+\begin{bmatrix} 0 \\ 0 \\ \dot\psi \end{bmatrix}
++ \mathbf{R}_y^T
+\begin{bmatrix} \dot\phi \\ 0 \\ 0 \end{bmatrix}
++
+\begin{bmatrix} 0 \\ \dot\theta \\ 0 \end{bmatrix}
+=
+\underbrace{\begin{bmatrix}
+c_\theta & 0 & -c_\phi s_\theta \\
+0 & 1 & s_\phi \\
+s_\theta & 0 & c_\phi c_\theta
+\end{bmatrix}}_{\mathbf{W}(\phi, \theta)}
+\begin{bmatrix} \dot\phi \\ \dot\theta \\ \dot\psi \end{bmatrix}.
+$$ {#eq-pnp-euler-rates}
 
-The function below shows the full observation-model structure without turning the assignment into a copy-paste exercise. Students still need to confirm the camera-to-body calibration convention and the Euler-angle convention required by their implementation.
+$\det\mathbf{W} = c_\phi$, so the inverse that Part A integrates exists everywhere except at the roll gimbal lock. A finite-difference check is cheap insurance before trusting a hand derivation:
 
 ```{python}
-#| label: pnp-estimate-pose-skeleton
-#| eval: false
+#| label: pnp-euler-rates
+def euler_rate_matrix_zxy(rpy) -> np.ndarray:
+    """W with omega_body = W @ [roll_dot, pitch_dot, yaw_dot] for the Z-X-Y sequence."""
+    roll, pitch, _ = rpy
+    cr, sr, cp, sp = np.cos(roll), np.sin(roll), np.cos(pitch), np.sin(pitch)
+    return np.array([[cp, 0.0, -cr * sp], [0.0, 1.0, sr], [sp, 0.0, cr * cp]])
 
-import cv2
-import numpy as np
+
+def body_rate_by_finite_difference(rpy, rpy_dot, h=1e-6) -> np.ndarray:
+    """omega from [omega]_x = C^T dC/dt with a central difference."""
+    C_dot = (rpy_to_rotation_zxy(rpy + h * rpy_dot) - rpy_to_rotation_zxy(rpy - h * rpy_dot)) / (2 * h)
+    Omega = rpy_to_rotation_zxy(rpy).T @ C_dot
+    return np.array([Omega[2, 1], Omega[0, 2], Omega[1, 0]])
 
 
-def estimate_pose(data_entry: dict,
-                  tag_corners: dict[int, np.ndarray],
-                  K: np.ndarray,
-                  dist_coeffs: np.ndarray,
-                  T_bc: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Estimate robot position and orientation from one project data entry.
-
-    Returns:
-        position: shape (3,), robot position in map/world coordinates
-        orientation: shape (3,), roll, pitch, yaw
-    """
-    object_points, image_points = assemble_pnp_points(data_entry, tag_corners)
-
-    if len(object_points) < 4:
-        raise ValueError("not enough AprilTag corners for PnP")
-
-    success, rvec, tvec = cv2.solvePnP(
-        object_points,
-        image_points,
-        K,
-        dist_coeffs,
-        flags=cv2.SOLVEPNP_ITERATIVE,
-    )
-    if not success:
-        raise RuntimeError("PnP failed")
-
-    R_cw, _ = cv2.Rodrigues(rvec)
-    t_cw = tvec.reshape(3)
-
-    R_wc, t_wc = invert_camera_pose(R_cw, t_cw)
-    T_wc = make_transform(R_wc, t_wc)
-
-    T_wb = robot_pose_from_camera_pose(T_wc, T_bc)
-    position = T_wb[:3, 3]
-    orientation = rotation_matrix_to_rpy_zxy(T_wb[:3, :3])
-
-    return position, orientation
+rng = np.random.default_rng(3)
+worst = 0.0
+for _ in range(200):
+    rpy, rpy_dot = rng.uniform(-1.2, 1.2, 3), rng.normal(size=3)
+    worst = max(worst, np.abs(body_rate_by_finite_difference(rpy, rpy_dot) - euler_rate_matrix_zxy(rpy) @ rpy_dot).max())
+print(f"W(rpy) vs finite differences over 200 random cases: worst error {worst:.1e} rad/s")
 ```
 
-This function is the observation model interface Project 1 needs: a data element goes in, and a robot pose measurement comes out.
+If your trajectory comes out mirrored, rotated by 90 degrees, or upside down, do not tune the Kalman filter to hide it. Fix the frame convention.
+
+## A Project-Ready `estimate_pose` {#sec-pnp-project-ready-estimatepose}
+
+Putting the pieces together gives the Project 1 perception model with the same signature as the starter package's `drone_pipeline.observation.estimate_pose`: a packet goes in, and a body pose measurement (or `None`) comes out. The `PoseObservation` record below mirrors the one in `drone_pipeline.types`; in the project, import that one instead.
+
+```{python}
+#| label: pnp-estimate-pose
+from dataclasses import dataclass
+
+
+@dataclass
+class PoseObservation:
+    """Body pose from one frame: world position (m) and Z-X-Y roll, pitch, yaw (rad)."""
+
+    t: float
+    position: np.ndarray
+    rpy: np.ndarray
+    reprojection_error: float
+    num_points: int
+
+
+def estimate_pose(packet, camera_matrix, dist_coeffs, tag_map, T_camera_body) -> PoseObservation | None:
+    """Body pose in the world frame from one packet's tag detections.
+
+    camera_matrix: K. dist_coeffs: what the pixels still need (zeros for the
+    Project 1 packets, which are already undistorted). tag_map: from
+    build_apriltag_corner_map(). T_camera_body: body -> camera transform.
+    Returns None with fewer than four correspondences or if the solver fails.
+    """
+    object_points, image_points = assemble_pnp_points(packet, tag_map)
+    if len(object_points) < 4:
+        return None
+    try:
+        C_w_c, r_cw_c, rvec, tvec = solve_world_to_camera(object_points, image_points, camera_matrix, dist_coeffs)
+    except RuntimeError:
+        return None
+    T_world_body = body_pose_from_camera(make_transform(C_w_c, r_cw_c), T_camera_body)
+    return PoseObservation(
+        t=float(packet.t),
+        position=T_world_body[:3, 3],
+        rpy=rotation_to_rpy_zxy(T_world_body[:3, :3]),
+        reprojection_error=reprojection_rmse(object_points, image_points, rvec, tvec, camera_matrix, dist_coeffs),
+        num_points=len(object_points),
+    )
+```
+
+To test it without the dataset, render a synthetic packet: pick a body pose, project every tag corner through the camera, keep the tags that land fully inside the image, and add half a pixel of noise. The packet is a `SimpleNamespace` with the same attribute names as a real `DronePacket`, which is all `estimate_pose` relies on.
+
+```{python}
+#| label: pnp-synthetic-packet
+from types import SimpleNamespace
+
+
+def make_synthetic_packet(T_world_body, tag_map, T_camera_body, K, pixel_sigma=0.5, rng=None, t=0.0):
+    """Project the mat into the camera at a known body pose; return a packet-like object."""
+    rng = rng or np.random.default_rng(0)
+    T_camera_world = invert_transform(T_world_body @ invert_transform(T_camera_body))
+    rvec, _ = cv2.Rodrigues(T_camera_world[:3, :3])
+    tvec = T_camera_world[:3, 3]
+    ids, corners = [], []
+    for tag_id, world in tag_map.items():
+        depth = (T_camera_world[:3, :3] @ world.T)[2] + tvec[2]
+        if np.any(depth <= 0.1):
+            continue
+        pixels, _ = cv2.projectPoints(world, rvec, tvec, K, np.zeros(5))
+        pixels = pixels.reshape(4, 2) + rng.normal(0.0, pixel_sigma, (4, 2))
+        inside = (pixels[:, 0] > 0) & (pixels[:, 0] < IMAGE_WIDTH) & (pixels[:, 1] > 0) & (pixels[:, 1] < IMAGE_HEIGHT)
+        if inside.all():
+            ids.append(tag_id)
+            corners.append(pixels)
+    corners = np.array(corners).reshape(-1, 4, 2)
+    fields = {f"p{k + 1}": corners[:, k, :].T for k in range(4)}
+    return SimpleNamespace(id=np.array(ids), t=t, **fields)
+
+
+true_rpy = np.array([0.05, -0.08, 0.30])
+true_position = np.array([1.80, 1.40, 1.20])
+T_world_body_true = make_transform(rpy_to_rotation_zxy(true_rpy), true_position)
+packet = make_synthetic_packet(T_world_body_true, tag_corners, T_camera_body, K, rng=np.random.default_rng(5), t=12.3)
+
+pose = estimate_pose(packet, K, np.zeros(5), tag_corners, T_camera_body)
+print(f"{packet.id.size} tags visible, {pose.num_points} points, reprojection {pose.reprojection_error:.2f} px")
+print("position error [cm]:", np.round(100 * (pose.position - true_position), 2))
+print("attitude error [deg]:", np.round(np.degrees(pose.rpy - true_rpy), 3))
+```
+
+Half a pixel of noise on nine tags gives errors of a few millimeters and about a tenth of a degree. The real flights do worse (about a centimeter and half a degree), and the gap between the two is what the next two sections are about.
+
+## Planar Targets and Pose Ambiguity {#sec-pnp-planar-ambiguity}
+
+Every tag on the mat lies in one plane, and a frame that sees a single tag gives four coplanar points spanning a few dozen pixels. For a small planar target the reprojection cost has two minima: the true pose and a second one in which the target's tilt is roughly reflected about the line of sight [@collins2014ippe]. When the target is large in the image the second minimum is clearly worse; when it is small, or the noise is larger, the two can be nearly equal, and noise drags the estimate toward or onto the wrong one. Multi-tag frames break the tie because the points span much more of the image.
+
+OpenCV exposes both solutions. `cv2.solvePnPGeneric` with `cv2.SOLVEPNP_IPPE_SQUARE` handles one square marker whose corners are given in the marker's own frame in a fixed order (top-left, top-right, bottom-right, bottom-left at $(\mp L/2, \pm L/2, 0)$), and it returns both candidate poses with their reprojection errors. For the mat, a tag-centred frame with $x$ along world $y$ and $y$ along world $-x$ has the same $z$ as the world, so the packet's corners go in as `[p4, p3, p2, p1]`.
+
+```{python}
+#| label: pnp-ippe-ambiguity
+SQUARE = 0.5 * TAG_SIZE * np.array([[-1, 1, 0], [1, 1, 0], [1, -1, 0], [-1, -1, 0]], dtype=np.float64)
+
+
+def single_tag_candidates(packet, column, tag_map, K):
+    """Both IPPE_SQUARE body poses for one tag: list of (position, rpy, reprojection error)."""
+    tag_id = int(packet.id[column])
+    pixels = np.array([as_corner_matrix(getattr(packet, f"p{k}"))[:, column] for k in (4, 3, 2, 1)])
+    _, rvecs, tvecs, errors = cv2.solvePnPGeneric(SQUARE, pixels, K, np.zeros(5), flags=cv2.SOLVEPNP_IPPE_SQUARE)
+    centre = tag_map[tag_id].mean(axis=0)
+    T_world_tag = make_transform(np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]), centre)
+    candidates = []
+    for rvec, tvec, error in zip(rvecs, tvecs, np.ravel(errors)):
+        C_camera_tag, _ = cv2.Rodrigues(rvec)
+        T_camera_tag = make_transform(C_camera_tag, tvec.ravel())
+        T_world_body = T_world_tag @ invert_transform(T_camera_tag) @ T_camera_body
+        candidates.append((T_world_body[:3, 3], rotation_to_rpy_zxy(T_world_body[:3, :3]), float(error)))
+    return candidates
+
+
+# Keep only the tag closest to the image centre, as if the detector had missed the rest.
+pixel_centres = np.mean([as_corner_matrix(getattr(packet, f"p{k}")) for k in range(1, 5)], axis=0)
+nearest = int(np.argmin(np.linalg.norm(pixel_centres.T - K[:2, 2], axis=1)))
+nearest_id = int(packet.id[nearest])
+side_px = np.linalg.norm(as_corner_matrix(packet.p2)[:, nearest] - as_corner_matrix(packet.p1)[:, nearest])
+print(f"tag {nearest_id} alone: {side_px:.0f} px on a side")
+for position, rpy, error in single_tag_candidates(packet, nearest, tag_corners, K):
+    print(f"reprojection {error:5.2f} px | position error {np.round(100 * (position - true_position), 1)} cm"
+          f" | roll/pitch error {np.round(np.degrees(rpy[:2] - true_rpy[:2]), 1)} deg")
+```
+
+The two candidates fit the four corners almost equally well, a fraction of a pixel each, so choosing the one with the lower reprojection error is close to a coin toss. They differ mainly in roll and pitch, with the sign of the tilt flipped, and in the horizontal position that a tilt error is confused with; both are far from the multi-tag answer. A short Monte Carlo makes the comparison quantitative:
+
+```{python}
+#| label: pnp-single-vs-multi
+rng = np.random.default_rng(11)
+errors = {"all visible tags": [], "one tag": []}
+for _ in range(300):
+    noisy_packet = make_synthetic_packet(T_world_body_true, tag_corners, T_camera_body, K, rng=rng)
+    errors["all visible tags"].append(estimate_pose(noisy_packet, K, np.zeros(5), tag_corners, T_camera_body).position - true_position)
+    column = int(np.flatnonzero(noisy_packet.id == nearest_id)[0])
+    one = SimpleNamespace(id=noisy_packet.id[[column]], t=0.0,
+                          **{f"p{k}": as_corner_matrix(getattr(noisy_packet, f"p{k}"))[:, [column]] for k in range(1, 5)})
+    errors["one tag"].append(estimate_pose(one, K, np.zeros(5), tag_corners, T_camera_body).position - true_position)
+
+for label, e in errors.items():
+    e = 100 * np.array(e)
+    print(f"{label:>16}: position std {np.round(e.std(axis=0), 2)} cm, worst |error| {np.linalg.norm(e, axis=1).max():.1f} cm")
+```
+
+A tag seen face-on in the middle of the image is the worst case for this ambiguity, so the numbers above are pessimistic, but the real data tells the same story. In `studentdata5`-`7` single-tag poses are off by 5-6 cm (and up to 6 degrees in pitch) against about 1.5 cm for multi-tag frames, with the second IPPE solution 45-85 cm away. A navigation filter should either skip such frames, give them their own, larger $\mathbf{R}$, or check both candidates against its prediction; what it must not do is treat them like any other measurement, and it should certainly not initialize from one.
 
 ## Covariance Estimation for the Observation Model {#sec-pnp-covariance-estimation-observation}
 
-Project 1 uses the PnP pose as a measurement:
+Project 1 uses the PnP pose as a direct measurement of part of the state,
 
 $$
 \mathbf{z} =
 \begin{bmatrix}
 \mathbf{p} \\
-\mathbf{q}
+\boldsymbol{\Theta}
 \end{bmatrix}
-+ \boldsymbol{\nu},
-$$
-
-where $\mathbf{p}$ is position and $\mathbf{q}$ is roll, pitch, yaw. The full state is:
-
-$$
++ \mathbf{v},
+\qquad
 \mathbf{x} =
 \begin{bmatrix}
-\mathbf{p} &
-\mathbf{q} &
-\dot{\mathbf{p}} &
-\mathbf{b}_g &
-\mathbf{b}_a
-\end{bmatrix}^T.
-$$
-
-The observation matrix for the direct pose measurement is:
-
-$$
-H =
+\mathbf{p} \\ \boldsymbol{\Theta} \\ \mathbf{v}^w \\ \mathbf{b}_g \\ \mathbf{b}_a
+\end{bmatrix},
+\qquad
+\mathbf{H} =
 \begin{bmatrix}
-I_3 & 0 & 0 & 0 & 0 \\
-0 & I_3 & 0 & 0 & 0
-\end{bmatrix}.
+\mathbf{I}_3 & \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} \\
+\mathbf{0} & \mathbf{I}_3 & \mathbf{0} & \mathbf{0} & \mathbf{0}
+\end{bmatrix},
 $$
 
-For each timestamp with ground truth state $\mathbf{x}_t$, compute:
+where $\mathbf{p}$ is the body position, $\boldsymbol{\Theta} = [\phi, \theta, \psi]^T$ the Z-X-Y attitude, and $\mathbf{v}$ the measurement noise. A Kalman filter assumes $\mathbf{v} \sim \mathcal{N}(\mathbf{0}, \mathbf{R})$: zero mean, known covariance. Ground truth lets us check both halves of that assumption. For each timestamp with truth $\mathbf{x}_t$ form the residual (angles wrapped into $[-\pi, \pi)$)
 
 $$
-\boldsymbol{\nu}_t = \mathbf{z}_t - H\mathbf{x}_t.
+\boldsymbol{\nu}_t = \mathbf{z}_t - \mathbf{H}\mathbf{x}_t,
 $$
 
-Then estimate:
+and then estimate the **bias** and the **covariance** separately:
 
 $$
-R =
-\frac{1}{n - 1}
-\sum_{t=1}^{n}
-\boldsymbol{\nu}_t \boldsymbol{\nu}_t^T.
+\hat{\mathbf{b}} = \frac{1}{n}\sum_{t=1}^{n}\boldsymbol{\nu}_t,
+\qquad
+\hat{\mathbf{R}} = \frac{1}{n-1}\sum_{t=1}^{n}\left(\boldsymbol{\nu}_t - \hat{\mathbf{b}}\right)\left(\boldsymbol{\nu}_t - \hat{\mathbf{b}}\right)^T.
+$$ {#eq-pnp-bias-covariance}
+
+`np.cov` computes $\hat{\mathbf{R}}$; it subtracts the mean for you. The raw second moment $\mathbf{M} = \frac{1}{n}\sum_t \boldsymbol{\nu}_t\boldsymbol{\nu}_t^T$ is a different quantity,
+
+$$
+\mathbf{M} = \frac{n-1}{n}\hat{\mathbf{R}} + \hat{\mathbf{b}}\hat{\mathbf{b}}^T,
 $$
 
-Ground truth is allowed here because the task is measurement characterization. It should not be used inside `estimate_pose`. If the observation model needs ground truth to work, it is not an observation model; it is an answer key with extra steps.
+the total mean-square error, bias included. Neither is wrong, but they answer different questions, and using one when you meant the other is a common way to hand a filter a noise model it cannot live with. A bias does not average down as measurements accumulate, so a filter told only $\hat{\mathbf{R}}$ grows steadily more confident about an answer that stays wrong by $\hat{\mathbf{b}}$. There are three honest responses: if the bias is consistent across flights it is really a calibration error, so estimate it and subtract it; if it varies, inflate $\mathbf{R}$ to cover it (for example $\hat{\mathbf{R}} + \hat{\mathbf{b}}\hat{\mathbf{b}}^T$, or a state that estimates it); or leave it and show its consequences in a consistency test (@sec-kf-consistency). Ground truth is allowed here because the task is measurement characterization. It must never appear inside `estimate_pose`: an observation model that needs ground truth to work is an answer key with extra steps.
 
 ```{python}
-#| label: pnp-covariance-skeleton
-#| eval: false
-
-import numpy as np
-
-
-def wrap_angle(angle: float) -> float:
-    """Wrap angle to [-pi, pi)."""
-    return (angle + np.pi) % (2.0 * np.pi) - np.pi
+#| label: pnp-covariance-functions
+def wrap_angles(angles):
+    """Wrap angles into [-pi, pi)."""
+    return np.mod(np.asarray(angles) + np.pi, 2.0 * np.pi) - np.pi
 
 
-def pose_residual(z_pose: np.ndarray,
-                  truth_pose: np.ndarray) -> np.ndarray:
-    """
-    Residual for [x, y, z, roll, pitch, yaw].
-    Angle residuals are wrapped to avoid artificial jumps at +/- pi.
-    """
-    residual = z_pose - truth_pose
-    residual[3:] = [wrap_angle(a) for a in residual[3:]]
-    return residual
+def pose_residuals(measured_poses: np.ndarray, truth_poses: np.ndarray) -> np.ndarray:
+    """(n, 6) residuals z - Hx for [x, y, z, roll, pitch, yaw], angles wrapped."""
+    residuals = np.asarray(measured_poses, dtype=np.float64) - truth_poses
+    residuals[:, 3:] = wrap_angles(residuals[:, 3:])
+    return residuals
 
 
-def estimate_observation_covariance(observed_poses: np.ndarray,
-                                    truth_poses: np.ndarray) -> np.ndarray:
-    """
-    Estimate R from pose residuals.
-
-    observed_poses: shape (n, 6)
-    truth_poses: shape (n, 6)
-    """
-    residuals = np.array([
-        pose_residual(z, truth)
-        for z, truth in zip(observed_poses, truth_poses)
-    ])
-
-    return np.cov(residuals, rowvar=False, ddof=1)
+def bias_and_covariance(residuals: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Mean residual (bias) and covariance about the mean, as in the equations above."""
+    return residuals.mean(axis=0), np.cov(residuals, rowvar=False, ddof=1)
 ```
 
-In a polished report, students should inspect residual histograms, report the covariance matrix, and compare filter behavior before and after tuning. If the residuals are strongly non-Gaussian, that is not a failure of statistics. It is the data trying to tell you something.
+Calibration errors are the usual source of bias. The simulation below flies a short trajectory over the mat, renders the tags through a camera whose true mounting yaw is 45.5 degrees and whose true lever arm is 1 cm longer than the calibration says, and then estimates poses with the nominal `T_camera_body`, exactly the situation of a slightly imperfect calibration.
+
+```{python}
+#| label: pnp-covariance-monte-carlo
+rng = np.random.default_rng(21)
+T_camera_body_actual = make_transform(Rz(-np.radians(45.5)) @ Rx(np.pi), XYZ + np.array([0.01, 0.0, 0.0]))
+
+measured, truth = [], []
+for k in range(300):
+    s = k / 300
+    rpy_k = np.array([0.04 * np.sin(6 * s), 0.04 * np.cos(5 * s), 0.30 + 0.05 * np.sin(2 * s)])
+    position_k = np.array([1.2 + 1.2 * s, 1.0 + 0.4 * np.sin(4 * s), 1.1 + 0.1 * np.cos(3 * s)])
+    T_world_body_k = make_transform(rpy_to_rotation_zxy(rpy_k), position_k)
+    packet_k = make_synthetic_packet(T_world_body_k, tag_corners, T_camera_body_actual, K, pixel_sigma=0.5, rng=rng)
+    pose_k = estimate_pose(packet_k, K, np.zeros(5), tag_corners, T_camera_body)
+    if pose_k is not None:
+        measured.append(np.concatenate([pose_k.position, pose_k.rpy]))
+        truth.append(np.concatenate([position_k, rpy_k]))
+
+residuals = pose_residuals(np.array(measured), np.array(truth))
+b_hat, R_hat = bias_and_covariance(residuals)
+M = residuals.T @ residuals / len(residuals)
+scale = np.array([100, 100, 100, *(3 * [np.degrees(1.0)])])  # cm and degrees
+print("            x [cm]  y [cm]  z [cm]  roll    pitch   yaw [deg]")
+print("bias      ", "  ".join(f"{v:6.2f}" for v in b_hat * scale))
+print("sqrt(R)   ", "  ".join(f"{v:6.2f}" for v in np.sqrt(np.diag(R_hat)) * scale))
+print("sqrt(M)   ", "  ".join(f"{v:6.2f}" for v in np.sqrt(np.diag(M)) * scale))
+```
+
+The mounting errors show up as biases: half a degree in yaw, eight times the yaw scatter, and about a centimeter of horizontal position, as large as the position scatter or larger. $\sqrt{\mathbf{R}}$ alone describes a yaw sensor eight times better than the one we actually have, and $\sqrt{\mathbf{M}}$ hides the fact that most of the error could be calibrated away. The lever-arm error lands in a fixed world direction only because yaw barely changes along this trajectory; on a flight that spins, the same error would trace a circle and inflate the covariance instead, so the same calibration mistake can masquerade as either bias or noise.
+
+The real flights show the same structure. Against Vicon on `studentdata1`-`7`, the PnP position residuals have standard deviations of 0.5-1.7 cm and the attitude residuals 0.1-0.8 degrees, while the means are not zero: yaw is biased by +0.3 to +0.5 degrees on every flight, and $y$ by about +1.3 cm on `studentdata1`-`3`. A yaw bias with the same sign on seven flights looks a lot like a mounting angle that is not exactly $\pi/4$. In a polished report, show residual histograms, report the bias and $\hat{\mathbf{R}}$ per flight and pooled, and compare filter behavior before and after you deal with the bias. If the residuals are strongly non-Gaussian, that is not a failure of statistics; it is the data trying to tell you something.
+
+### Checking Against the Flight Data {#sec-pnp-real-data-check}
+
+The cell below repeats the distortion and bias checks on `studentdata1` when the course data is present (`uv run python scripts/fetch_data.py drone-data`), and prints how to get it otherwise. It uses only SciPy's MAT-file reader and the functions defined above; the project package's `load_drone_dataset()` and `load_drone_parameters()` do the same loading with more care.
+
+```{python}
+#| label: pnp-real-data-check
+import os
+from pathlib import Path
+
+from scipy.io import loadmat
+
+
+def find_drone_data(root=None) -> Path:
+    """Locate data/drone-data the way the project package does."""
+    candidates = [Path(root)] if root else []
+    if os.environ.get("ADVNAV_DATA_DIR"):
+        candidates.append(Path(os.environ["ADVNAV_DATA_DIR"]) / "drone-data")
+    candidates += [base / "data" / "drone-data" for base in [Path.cwd(), *Path.cwd().parents]]
+    for candidate in candidates:
+        if (candidate / "studentdata1.mat").exists():
+            return candidate
+    raise FileNotFoundError("drone data not found; run `uv run python scripts/fetch_data.py drone-data`")
+
+
+try:
+    raw = loadmat(find_drone_data() / "studentdata1.mat", simplify_cells=True)
+except FileNotFoundError as error:
+    raw = None
+    print(error)
+
+if raw is not None:
+    packets = [SimpleNamespace(**p) for p in raw["data"] if np.asarray(p["id"]).size > 0]
+    corners = np.hstack([as_corner_matrix(getattr(p, f"p{k}")) for p in packets for k in range(1, 5)])
+    print(f"corner u range {corners[0].min():.1f} .. {corners[0].max():.1f} px (image width {IMAGE_WIDTH})")
+    for label, dist in (("zero distortion", np.zeros(5)), ("file coefficients", DIST_COEFFS)):
+        poses = [q for q in (estimate_pose(p, K, dist, tag_corners, T_camera_body) for p in packets) if q is not None]
+        times = np.array([pose.t for pose in poses])
+        truth_poses = np.column_stack([np.interp(times, raw["time"], raw["vicon"][row]) for row in range(6)])
+        res = pose_residuals(np.array([np.concatenate([q.position, q.rpy]) for q in poses]), truth_poses)
+        b, R = bias_and_covariance(res)
+        print(f"{label:>17}: median reprojection {np.median([q.reprojection_error for q in poses]):.2f} px,"
+              f" position bias {np.round(100 * b[:3], 1)} cm, std {np.round(100 * np.sqrt(np.diag(R)[:3]), 1)} cm,"
+              f" yaw bias {np.degrees(b[5]):+.2f} deg")
+```
 
 ## Practical Checks {#sec-pnp-practical-checks}
 
 Before using PnP output in a Kalman filter, check:
 
-- Do projected corners land back on the detected corners?
-- Does the estimated camera height have the right sign?
-- Does the trajectory have the same rough shape as ground truth?
+- Do the reprojected corners land on the detected corners, at sub-pixel level?
+- Does the estimated height have the right sign and roughly the right value?
+- Does the trajectory have the same shape as ground truth, without mirroring or a 90-degree rotation?
 - Are roll, pitch, and yaw continuous except at expected wrap points?
-- Does adding more tag corners improve stability?
-- Does the covariance estimate make physical sense?
+- How do single-tag frames compare with multi-tag frames?
+- Is the residual mean zero? If not, is the bias the same on every flight?
+- Does the covariance estimate make physical sense, and does it change between gentle and aggressive flights?
 
 The filter should be the last thing you debug, not the first. If the observation model is wrong, the filter will either reject useful measurements or confidently fuse bad ones.
+
+## Exercises {#sec-pnp-exercises}
+
+1. **Euler-rate kinematics.** (a) Starting from $\mathbf{C}_b^w = \mathbf{R}_z(\psi)\mathbf{R}_x(\phi)\mathbf{R}_y(\theta)$ and $[\boldsymbol{\omega}_{wb}^b]_\times = (\mathbf{C}_b^w)^T\dot{\mathbf{C}}_b^w$, derive $\mathbf{W}(\phi, \theta)$ in @eq-pnp-euler-rates and its inverse. (b) Compute $\det\mathbf{W}$ and state where the Z-X-Y sequence is singular. (c) Repeat (b) for the Z-Y-X sequence of @sec-frames-conventions. Why is the Z-X-Y choice harmless for a quadrotor over a tag mat, and which vehicle maneuver would make it a poor choice?
+
+2. **Bias, covariance, and second moment.** (a) Show that $\frac{1}{n}\sum_t\boldsymbol{\nu}_t\boldsymbol{\nu}_t^T = \frac{n-1}{n}\hat{\mathbf{R}} + \hat{\mathbf{b}}\hat{\mathbf{b}}^T$ with the definitions in @eq-pnp-bias-covariance. (b) On `studentdata5`, PnP yaw has a bias of about $+0.46°$ and a standard deviation of about $0.11°$. What fraction of the yaw mean-square error is bias? (c) A filter averages $N$ independent yaw measurements with this bias using $\hat{R}_{\psi\psi} = (0.11°)^2$ alone. Write its claimed yaw standard deviation as a function of $N$ and the expected NEES of the yaw state after $N = 100$ updates. What does the NEES test tell you that the NIS test cannot?
+
+3. **Undistorting twice.** Using the synthetic packet of @sec-pnp-project-ready-estimatepose, estimate the pose once with `np.zeros(5)` and once with the Project 1 distortion coefficients, for body heights from 0.6 m to 2.0 m. Plot the median reprojection error and the height error against true height. Explain the sign of the height error from the shape of @fig-pnp-distortion. Many camera drivers rectify images before the detector runs; describe one test you would run on a new vehicle to find out whether the detections you receive are raw or rectified.
+
+4. **When does a single marker flip?** Autonomous landing on a ship's helideck or a parcel locker often relies on one fiducial marker seen from shrinking range. Place a single tag at the origin and view it from a camera at distances of 0.5 m to 4 m and viewing angles of 0 to 40 degrees, with 0.5 px corner noise. For each case run 200 trials of `cv2.solvePnPGeneric(..., cv2.SOLVEPNP_IPPE_SQUARE)` and record how often the solution with the lower reprojection error is the wrong one. Plot the flip rate. What does the result suggest about using a single marker for the last meters of a landing, and how could an IMU-based prediction help pick the right candidate?
+
+5. **Lever arms rotate.** A 1 cm error in the camera-IMU translation $\mathbf{r}_{cb}^c$ produces a world-frame position error $\mathbf{C}_b^w\mathbf{C}_c^b\,\delta\mathbf{r}$. (a) Show analytically that for a level vehicle the error has constant magnitude and rotates with yaw. (b) Modify the Monte Carlo of @sec-pnp-covariance-estimation-observation so that yaw sweeps through a full turn, and show that the same calibration error now appears mostly in $\hat{\mathbf{R}}$ rather than in $\hat{\mathbf{b}}$. (c) The same effect appears on ships between a GNSS antenna on the mast and the IMU near the keel. Why does an INS/GNSS filter often estimate the lever arm as a state rather than treating it as noise?

@@ -1,180 +1,87 @@
 # Project 1: Drone Visual-Inertial Navigation Pipeline {#sec-project1}
 
-Project 1 is the main implementation project for the first part of the course. You will build a complete visual-inertial navigation pipeline around a real quadrotor dataset, starting from raw packets and ending with fused navigation estimates and an engineering report you can defend. This project is divided into three staged checkpoints, each building on the previous one. These three parts are not three unrelated mini-projects. They are staged build steps within one end-to-end system. Part A establishes the inertial propagation backbone, Part B builds the visual observation model that corrects it, and Part C fuses both into three nonlinear estimators that you will compare honestly. 
-
-You can find the individual checkpoints here:
-
-- [Project 1a: IMU Dead Reckoning](m1-drone-pipeline-a.qmd)
-- [Project 1b: PnP Observation Model](m1-drone-pipeline-b.qmd)
-- [Project 1c: EKF, UKF, and Particle Filters](m1-drone-pipeline-c.qmd)
-
-## Project summary {#sec-project1-project-summary}
-
-This is the main implementation project for the first part of the course. You will build a complete visual-inertial navigation pipeline around a real quadrotor dataset, starting from raw packets and ending with fused navigation estimates and an engineering report you can defend.
-
-The full workflow is:
+A small quadrotor flies over a floor mat covered in AprilTags. A downward-looking camera photographs the mat, an onboard detector finds the tags, and an IMU reports angular rate and specific force fifty times a second. Somewhere downstream a flight controller wants to know, at every one of those fifty ticks, where the vehicle is, how it is oriented, how fast it is moving, and how much it should believe those numbers. Project 1 builds everything in between.
 
 ``` text
-raw drone packets
-    -> dataset loading and time alignment
-    -> IMU forward propagation
-    -> AprilTag-based visual pose estimation
-    -> covariance estimation and tuning
-    -> EKF / UKF / particle-filter fusion
-    -> evaluation against truth
-    -> technical report and analysis
+camera image --> tag detector (given) --> corner pixels
+                                              |
+                             perception model: PnP (Part B)
+                                              |
+                       pose measurement z + noise model R (Part B)
+                                              |
+IMU (50 Hz) --> mechanization (Part A) --> navigation filter (Part C)
+                                              |
+                       x_hat, P at IMU rate --> what a controller needs
 ```
 
-The three project checkpoints are not three unrelated mini-projects. They are staged build steps within one end-to-end system. Part A establishes the inertial propagation backbone, Part B builds the visual observation model that corrects it, and Part C fuses both into three nonlinear estimators that you will compare honestly.
+The camera is the perception front end: it turns photons into a pose, and Part B asks you to build that perception model and, just as importantly, to characterize how wrong it is. Navigation lives in the middle of the stack, where a measurement model with honest noise statistics meets a motion model driven by the IMU. The controller at the bottom does not care how clever your filter is. It needs a smooth, high-rate, correctly-referenced state with a covariance it can trust, including during the stretches when the camera sees nothing. Keeping that consumer in mind is what separates a navigation engineer from someone who fits curves to data.
 
-The main engineering goals are:
+The project has three staged checkpoints that build one system, not three mini-projects:
 
-- correctness of the math and implementation
-- consistent frame and state conventions
-- uncertainty modeling that is explicit rather than guessed
-- evaluation that compares mechanization, visual observations, and fused estimates against truth
+- @sec-project1a: IMU dead reckoning, the inertial backbone and its error growth.
+- @sec-project1b: the AprilTag PnP perception model and its measurement noise.
+- @sec-project1c: three navigation filters (EKF, UKF, particle filter) that fuse A and B, compared honestly.
 
-The goal is not to collect a folder full of plausible-looking plots. The goal is to build a pipeline whose assumptions, interfaces, uncertainty models, and failure modes you can explain without hand waving.
+## Project Summary {#sec-project1-project-summary}
 
-Project 1 is worth **50% of the course grade**. It is divided into three staged checkpoints:
+Project 1 is the largest project in the course and is worth **50% of the course grade**. You will build a complete visual-inertial navigation pipeline around a real quadrotor dataset, starting from raw packets and ending with fused estimates and an engineering report you can defend.
 
-+-----------------------------------+------------------------------------------------------------------------+
-| Checkpoint                        | Focus                                                                  |
-+===================================+========================================================================+
-| Project 1a                        | IMU forward mechanization and dead reckoning                           |
-+-----------------------------------+------------------------------------------------------------------------+
-| Project 1b                        | AprilTag map geometry, PnP pose estimation, and observation covariance |
-+-----------------------------------+------------------------------------------------------------------------+
-| Project 1c                        | EKF, UKF, and particle-filter fusion                                   |
-+-----------------------------------+------------------------------------------------------------------------+
++------------------+--------------------------------------------------------------------------+------------------+
+| Checkpoint       | Focus                                                                    | Recommended pace |
++==================+==========================================================================+==================+
+| Project 1a       | IMU characterization, forward mechanization, and dead reckoning          | Week 3           |
++------------------+--------------------------------------------------------------------------+------------------+
+| Project 1b       | AprilTag map geometry, PnP pose estimation, and measurement noise        | Week 5           |
++------------------+--------------------------------------------------------------------------+------------------+
+| Project 1c       | EKF, UKF, and particle-filter fusion with consistency checks             | Week 8           |
++------------------+--------------------------------------------------------------------------+------------------+
+| Complete project | Cross-method evaluation and the written report                           | Week 9           |
++------------------+--------------------------------------------------------------------------+------------------+
+
+The engineering goals are correctness of the math and implementation, frame and state conventions that stay consistent from the first line of code to the last plot, uncertainty models that are measured rather than guessed, and an evaluation that compares dead reckoning, visual measurements, and fused estimates against truth. A folder full of plausible-looking plots is not the goal. A pipeline whose assumptions, interfaces, noise models, and failure modes you can explain without hand waving is.
+
+## Logistics {#sec-project1-logistics}
+
+**Pace and deadline.** The weeks in the table above are a recommended pace that lines up with the lectures, not deadlines. Everything is due by the **end of week 16** (@sec-syllabus-course-policies). Submitting a checkpoint early for feedback is encouraged; feedback in week 4 is worth more than feedback in week 16.
+
+**Submission.** Submit Project 1 once, on Canvas, as two files: a single-column **report PDF** (structure and expectations in @sec-intro-project-guidance) and a **code archive** (`.zip`) containing your `drone_pipeline` package with your implementations, any scripts or notebooks you used, and a short `README` that lists the exact commands that reproduce every figure and table in the report. If the grader cannot regenerate a number, it does not count as evidence.
+
+**Environment.** From the repository root:
+
+``` bash
+uv sync                                          # install Python and the packages
+uv run python scripts/fetch_data.py drone-data   # download the data (about 570 MB)
+uv run pytest projects/drone_pipeline            # starter tests: support code passes, your stubs skip
+uv run python -m drone_pipeline.cli 1            # quick look at studentdata1
+uv run python -m drone_pipeline.run_all          # run every stage you have implemented so far
+```
+
+**AI tools and libraries.** The course policy is in @sec-intro-ai-policy-and-dependencies, including the rule for pre-built filtering libraries such as `filterpy`.
+
+**Reusing book code.** You may adapt code from the course chapters (for example the PnP helpers in @sec-pnp or the filter skeletons in the filtering chapters) as long as you cite the section you adapted it from in a code comment and in the report. Grading rewards evidence and analysis: copied code that runs earns little; code you can justify, test, and break on purpose earns a lot.
 
 ## Project Architecture {#sec-project1-project-architecture}
 
 ``` text
-drone dataset packets
+load_drone_dataset(i), load_drone_parameters()
+        |
+        +--> Part A: propagate_state(...)          dead reckoning, IMU noise model
+        |
+        +--> Part B: build_apriltag_corner_map()   tag geometry
+        |            estimate_pose(...)            PnP -> PoseObservation per packet
+        |            estimate_measurement_covariance(...)  R (and the bias, separately)
+        v
+Part C: EKFNavigator / UKFNavigator / ParticleFilterNavigator
         |
         v
-load_drone_dataset(...)
-        |
-        +--> IMU mechanization / dead reckoning
-        |
-        +--> AprilTag map + solvePnP pose observations
-        |
-        v
-shared state and uncertainty model
-        |
-        v
-EKF / UKF / particle filter
-        |
-        v
-trajectory, diagnostics, comparison, report
+run_all: RMSE, NIS/NEES, runtime tables and plots -> your report
 ```
 
-All three checkpoints reuse the same dataset, the same timing conventions, and the same shared state definition. If those interfaces drift between Parts A, B, and C, you are no longer building one navigation pipeline. You are building three incompatible experiments.
+All three checkpoints share the same dataset, timing conventions, and state definition. If those interfaces drift between Parts A, B, and C you are no longer building one navigation pipeline; you are running three incompatible experiments.
 
 ## Shared Dataset {#sec-project1-shared-dataset}
 
-Download the data once from the repository root (about 570 MB):
-
-``` bash
-uv run python scripts/fetch_data.py drone-data
-```
-
-This places the following files in `data/drone-data/`:
-
-- `studentdata0.mat` through `studentdata7.mat`
-- `parameters.txt`
-
-Load a dataset by index (or pass a file path):
-
-``` python
-from drone_pipeline.datasets import load_drone_dataset
-
-dataset = load_drone_dataset(1)  # data/drone-data/studentdata1.mat
-```
-
-Each dataset contains:
-
-+-----------------------------------+---------------------------------------------------------------------+
-| Name                              | Meaning                                                             |
-+===================================+=====================================================================+
-| `vicon`                           | `12 x N` ground-truth reference sampled at about 100 Hz             |
-+-----------------------------------+---------------------------------------------------------------------+
-| `time`                            | Vicon timestamps in seconds                                         |
-+-----------------------------------+---------------------------------------------------------------------+
-| `data`                            | sensor packets containing images, IMU signals, and tag observations |
-+-----------------------------------+---------------------------------------------------------------------+
-
-Interpret the Vicon rows as:
-
-|   Rows | Quantity                       |
-|-------:|--------------------------------|
-|  `0:3` | position `[px, py, pz]`        |
-|  `3:6` | roll, pitch, yaw               |
-|  `6:9` | linear velocity `[vx, vy, vz]` |
-| `9:12` | angular velocity               |
-
-Each packet contains:
-
-+------------------------+------------------------------------------------+
-| Field                  | Meaning                                        |
-+========================+================================================+
-| `img`                  | grayscale camera image                         |
-+------------------------+------------------------------------------------+
-| `id`                   | AprilTag IDs observed in the image             |
-+------------------------+------------------------------------------------+
-| `p1`, `p2`, `p3`, `p4` | detected pixel coordinates for each tag corner |
-+------------------------+------------------------------------------------+
-| `t`                    | packet timestamp in seconds                    |
-+------------------------+------------------------------------------------+
-| `rpy`                  | onboard roll-pitch-yaw estimate                |
-+------------------------+------------------------------------------------+
-| `drpy`                 | body angular-rate input                        |
-+------------------------+------------------------------------------------+
-| `acc`                  | body-frame accelerometer input                 |
-+------------------------+------------------------------------------------+
-
-Some packets contain no visible tags. That is normal. Your filter and observation pipeline must skip missing visual measurements cleanly rather than treating them as a software emergency.
-
-## Shared State and Measurement Convention {#sec-project1-shared-state-measurement}
-
-Use this 15-state vector throughout Parts A, B, and C:
-
-``` python
-x = [
-    px, py, pz,
-    roll, pitch, yaw,
-    vx, vy, vz,
-    bgx, bgy, bgz,
-    bax, bay, baz,
-]
-```
-
-Use the roll-pitch-yaw rotation convention:
-
-``` python
-R_world_body = Rz(yaw) @ Ry(pitch) @ Rx(roll)
-```
-
-All angles must be in radians. Whenever you subtract two attitudes, wrap the residual into `[-pi, pi)`. If you do not, the filter will eventually produce very confident nonsense near angle discontinuities.
-
-The visual measurement used in Parts B and C is:
-
-``` python
-z = [px, py, pz, roll, pitch, yaw]
-```
-
-So the nominal measurement model in Part C is:
-
-``` python
-h(x) = x[:6]
-```
-
-## Starter Package Layout {#sec-project1-starter-package-layout}
-
-You are expected to work from the standardized starter package in `projects/drone_pipeline/` rather than building the project as a single notebook or one very large script.
-
-Relevant starter interfaces:
+`uv run python scripts/fetch_data.py drone-data` places `studentdata0.mat` through `studentdata7.mat` and `parameters.txt` in `data/drone-data/`. Load a dataset by index (or by path) and the parameters with:
 
 ``` python
 from drone_pipeline.datasets import (
@@ -182,75 +89,176 @@ from drone_pipeline.datasets import (
     load_drone_dataset,
     load_drone_parameters,
 )
+
+dataset = load_drone_dataset(1)      # data/drone-data/studentdata1.mat
+params = load_drone_parameters()     # parses data/drone-data/parameters.txt
+truth = interpolate_vicon_truth(dataset)
+```
+
+Each dataset holds a `vicon` array (`12 x N`, about 100 Hz), its timestamps `time`, and a list of sensor packets. The Vicon rows are:
+
+| Rows | Quantity |
+|---:|---|
+| `0:3` | position `[px, py, pz]` of the body origin in the world frame (m) |
+| `3:6` | roll, pitch, yaw in the dataset's Z-X-Y sequence (rad) |
+| `6:9` | velocity in the world frame (m/s) |
+| `9:12` | body angular rate (rad/s); it tracks the gyro |
+
+Each packet is a `DronePacket` with these fields:
+
++-----------------+----------------+-------------------------------------------------------------------------------------+
+| Field           | Shape          | Meaning                                                                             |
++=================+================+=====================================================================================+
+| `t`             | scalar         | packet timestamp (s), on the same clock as the Vicon `time`                         |
++-----------------+----------------+-------------------------------------------------------------------------------------+
+| `id`            | `(n,)`         | IDs of the `n` AprilTags detected in this frame (empty when none)                   |
++-----------------+----------------+-------------------------------------------------------------------------------------+
+| `p1` ... `p4`   | `(2, n)`       | corner pixels `[u; v]`: bottom-left, bottom-right, top-right, top-left;             |
+|                 |                | **already undistorted** (see @sec-project1b)                                        |
++-----------------+----------------+-------------------------------------------------------------------------------------+
+| `p0`            | `(2, n)`       | tag-centre pixels (the mean of the four corners); `None` in `studentdata0`          |
++-----------------+----------------+-------------------------------------------------------------------------------------+
+| `omg`           | `(3,)`         | gyro body angular rate (rad/s); in `studentdata0` this slot holds that file's       |
+|                 |                | `drpy` signal, whose meaning is unresolved                                          |
++-----------------+----------------+-------------------------------------------------------------------------------------+
+| `acc`           | `(3,)`         | accelerometer specific force, body frame (m/s^2); about `+9.8` on `z` in hover      |
++-----------------+----------------+-------------------------------------------------------------------------------------+
+| `rpy`           | `(3,)`         | the drone's *onboard* attitude estimate (Z-X-Y); see the truth-usage rules          |
++-----------------+----------------+-------------------------------------------------------------------------------------+
+| `img`           | `240 x 376`    | grayscale camera image; you do not need it, the detections are provided             |
++-----------------+----------------+-------------------------------------------------------------------------------------+
+| `is_ready`      | bool           | onboard ready flag (`studentdata1`-`7` only; always true)                           |
++-----------------+----------------+-------------------------------------------------------------------------------------+
+| `rate_field`    | str            | which raw field filled `omg`: `"omg"` or `"drpy"`                                   |
++-----------------+----------------+-------------------------------------------------------------------------------------+
+
+`packet.drpy` still works as a read-only alias of `packet.omg` for older code. In `studentdata1`-`7` packets arrive at about 50 Hz (median spacing 0.020 s, longest gap 0.04-0.08 s); never assume a constant time step. Several flights begin and end with a second or more in which no tag is visible, because the drone is parked beside the mat or sitting too close to it. That is normal, and your pipeline must handle missing visual measurements cleanly rather than treating them as a software emergency.
+
+`interpolate_vicon_truth` returns one `TruthSample` per requested time. Times outside the Vicon span come back as NaN with `valid=False` instead of a silently frozen copy of the first or last Vicon sample, so trim them before computing any error.
+
+## studentdata0: Bad Truth, Unknown Signal {#sec-project1-studentdata0}
+
+`studentdata0` is the odd one out, and it is excluded from the development split. Its packets arrive at 33 Hz with gaps up to 0.49 s, 75 of them fall outside the Vicon time span, its rate field is called `drpy` rather than `omg` (whether it holds Euler-angle rates, body rates in some other frame, or something else is an open question, GitHub issue #4), and its PnP poses disagree with Vicon by a nearly constant offset of about 12.6 cm in `x` and 0.09 rad in yaw. Some combination of a calibration change, a frame mix-up, and a timing problem is likely; nobody knows yet.
+
+Treat it as an optional forensic exercise. If you take it on, put it in an appendix: say what `drpy` is consistent with and what it is not, quantify the truth offset, and argue whether the problem is in the truth, the sensors, or the timestamps. Good work here can support an Excellent rating for dataset understanding, but it is not required, and it must not leak into your tuning.
+
+## Shared State and Measurement Convention {#sec-project1-shared-state-measurement}
+
+Project 1 uses its own frames, defined in @sec-pnp: the world frame $w$ is the tag mat ($x$ down the mat, $y$ to the right, $z$ up out of the mat, origin at the top-left corner of tag 0), the body frame $b$ is the drone's IMU frame with $z$ up, and the camera frame $c$ is the optical frame ($x$ right, $y$ down, $z$ along the optical axis, pointing at the mat). Use this 15-state vector in all three parts:
+
+``` python
+x = [
+    px, py, pz,          # position of the body origin, world frame (m)
+    roll, pitch, yaw,    # Z-X-Y Euler angles (rad)
+    vx, vy, vz,          # velocity, world frame (m/s)
+    bgx, bgy, bgz,       # gyro bias (rad/s)
+    bax, bay, baz,       # accelerometer bias (m/s^2)
+]
+```
+
+The dataset's attitude follows a Z-X-Y Euler sequence, the one documented exception to the book's Z-Y-X convention (@sec-frames-conventions, @sec-pnp-euler-angles-project):
+
+``` python
+C_world_body = Rz(yaw) @ Rx(roll) @ Ry(pitch)   # drone_pipeline.utils.rpy_to_rotation_matrix
+```
+
+`drone_pipeline.utils.rotation_matrix_to_rpy` inverts it. If you use Z-Y-X by habit, everything will look fine in hover and quietly fall apart once the drone banks, so check this early. All angles are radians. Whenever you subtract two attitudes, wrap the residual into $[-\pi, \pi)$ (`drone_pipeline.utils.wrap_angles`); skip that and the filter will eventually produce very confident nonsense near the wrap point.
+
+The visual measurement used in Parts B and C is the body pose
+
+``` python
+z = [px, py, pz, roll, pitch, yaw]   # PoseObservation.z
+```
+
+so the nominal measurement model in Part C is the linear selection `h(x) = x[:6]`.
+
+## Starter Package Layout {#sec-project1-starter-package-layout}
+
+Work in the starter package `projects/drone_pipeline/`, not in one heroic notebook:
+
+``` text
+src/drone_pipeline/
+  datasets.py       loaders, parameters.txt parser, Vicon interpolation (provided)
+  types.py          DronePacket, TruthSample, DroneParameters, PoseObservation (provided)
+  utils.py          Z-X-Y rotations, angle wrapping, transforms (provided)
+  config.py         documented defaults, tag geometry, dataset split (provided)
+  evaluation.py     RMSE, NEES, chi-square bounds so everyone measures the same way (provided)
+  mechanization.py  Part A: PropagationParams (provided), propagate_state (yours)
+  observation.py    Part B: build_apriltag_corner_map, estimate_pose,
+                    estimate_measurement_covariance (yours)
+  filters.py        Part C: EKFNavigator, UKFNavigator, ParticleFilterNavigator
+                    (constructors and accessors provided; predict/update yours)
+  run_all.py        runs every stage on a split and writes tables and plots
+tests/
+  test_drone_pipeline.py   support-code tests plus tests of your deliverables
+  test_handout_api.py      checks that this handout and the code agree
+```
+
+The public interfaces are:
+
+``` python
+from drone_pipeline.datasets import interpolate_vicon_truth, load_drone_dataset, load_drone_parameters
+from drone_pipeline.mechanization import PropagationParams, propagate_state
 from drone_pipeline.observation import (
     build_apriltag_corner_map,
     estimate_measurement_covariance,
     estimate_pose,
 )
-from drone_pipeline.mechanization import propagate_state
-from drone_pipeline.filters import (
-    EKFNavigator,
-    ParticleFilterNavigator,
-    UKFNavigator,
-)
+from drone_pipeline.filters import EKFNavigator, ParticleFilterNavigator, UKFNavigator
 ```
 
-You may add helper modules, notebooks, and analysis scripts, but keep your public project interfaces stable and keep the code organized enough that another engineer can run and inspect it without reverse-engineering your folder habits.
+Keep those signatures stable; add helpers and modules freely. The tests of your deliverables skip with a "not implemented yet" message until you write the corresponding function, then start checking it, so `uv run pytest projects/drone_pipeline` is a quick sanity check as you go. Passing tests are necessary, not sufficient: they check interfaces and simple cases, not whether your navigation solution is good. `uv run python -m drone_pipeline.run_all` runs whatever you have implemented on the development split and reports the rest as not implemented; its `TUNING` block is where your noise values go.
 
 ## Truth Usage Rules {#sec-project1-truth-usage-rules}
 
-The `vicon` data is the truth reference.
+The Vicon data is the truth reference. You may use it to evaluate error, to characterize sensors (IMU noise and bias in Part A, the PnP noise and bias in Part B), to study drift and consistency, and to compare filters. You may not use it as a recurring measurement inside the navigation solution. If your filter is secretly using Vicon as an update, that is not visual-inertial navigation; it is expensive cheating. The one sanctioned exception is the Vicon initialization that Part A allows; Part C filters must initialize from PnP alone.
 
-You may use it to:
-
-- evaluate error
-- estimate measurement covariance
-- study drift and consistency
-- compare filters
-
-You may not use it as a recurring measurement inside the navigation solution itself. If your filter is secretly using Vicon as an update, that is not visual-inertial navigation. That is expensive cheating.
+The packets' onboard `rpy` estimate is in a grey zone, so here is the rule: you may use it for sanity checks and to compare initialization strategies, but **never as a filter measurement**. Its roll and pitch agree with Vicon to about a degree, but its yaw is offset by an arbitrary amount (2 to 68 degrees, depending on the flight), and fusing it would also mean fusing somebody else's undocumented filter.
 
 ## Development Split {#sec-project1-development-split}
 
 Unless you justify another split, use:
 
-- development and tuning: `studentdata0.mat` through `studentdata4.mat`
-- validation and reporting: `studentdata5.mat` through `studentdata7.mat`
+- development and tuning: `studentdata1.mat` through `studentdata4.mat`;
+- validation and reporting: `studentdata5.mat` through `studentdata7.mat`;
+- `studentdata0.mat`: excluded (@sec-project1-studentdata0).
 
-You are trying to build a pipeline that generalizes, not one that was hand-tuned until it wins a beauty contest on one file.
+The two halves are deliberately different. The development flights are aggressive (speeds up to 2 m/s, roll and pitch up to about 22 degrees, tags visible throughout), while the validation flights are gentle, start beside the mat and (in two of the three) return there at the end, so they begin, and sometimes finish, without any tag in view. Sensor noise is a property of the sensor, not of the flight, so you may characterize the IMU on any dataset; tuning choices such as process-noise inflation, gates, and particle counts must be made on the development split. You are building a pipeline that generalizes, not one hand-tuned until it wins a beauty contest on one file.
 
 ## Grading Rubric {#sec-project1-grading-rubric}
 
-Project 1 is graded out of `100` project points.
+Project 1 is graded out of 100 project points, with the component weights fixed by the syllabus (@sec-syllabus-grading-policy).
 
-+-----------------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
-| Component                                           | Points   | Excellent (100%)                                                                                                                                                                 | Acceptable (\~85%)                                                                                                                              | Marginal (\~70%)                                                                                                        | Unacceptable (0%)                                                                               |
-+=====================================================+=========:+==================================================================================================================================================================================+=================================================================================================================================================+=========================================================================================================================+=================================================================================================+
-| Dataset understanding and loading                   | 10       | Loads the correct packet, truth, and parameter data; uses timestamps correctly; keeps truth out of the navigation update path; documents the data interfaces clearly.            | Loads the main data correctly with only minor issues in organization, validation, or explanation; truth separation is mostly handled correctly. | Partially loads or interprets the dataset, but with important mistakes in fields, timing, units, or truth usage.        | Dataset handling is missing, nonfunctional, or fundamentally incorrect.                         |
-|                                                     |          |                                                                                                                                                                                  |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
-|                                                     |          | ***10 points***                                                                                                                                                                  | ***8 points***                                                                                                                                  | ***7 points***                                                                                                          |                                                                                                 |
-+-----------------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
-| Part A: mechanization and dead reckoning            | 20       | Implements the 15-state propagation consistently, handles gravity and frames correctly, produces clear drift analysis, and explains the dominant error sources well.             | Mechanization mostly works and produces reasonable dead reckoning, but has minor weaknesses in tuning, diagnostics, or explanation.             | Propagation is only partially working or contains important frame, bias, or integration errors; drift analysis is weak. | Mechanization is missing, nonfunctional, or fundamentally incorrect.                            |
-|                                                     |          |                                                                                                                                                                                  |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
-|                                                     |          | ***20 points***                                                                                                                                                                  | ***16 points***                                                                                                                                 | ***14 points***                                                                                                         |                                                                                                 |
-+-----------------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
-| Part B: PnP observation model and covariance        | 20       | Correct AprilTag geometry, corner ordering, camera/body transform handling, robust pose estimation, and a well-justified covariance estimate with supporting evidence.           | Observation model works on the main cases with only minor weaknesses in convention handling, robustness, or covariance analysis.                | Pose estimation is only partially working or contains important geometry, ordering, transform, or covariance mistakes.  | Observation model is missing, nonfunctional, or fundamentally incorrect.                        |
-|                                                     |          |                                                                                                                                                                                  |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
-|                                                     |          | ***20 points***                                                                                                                                                                  | ***16 points***                                                                                                                                 | ***14 points***                                                                                                         |                                                                                                 |
-+-----------------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
-| Part C: EKF implementation and diagnostics          | 10       | EKF prediction and update are technically correct, angle-aware, numerically responsible, and supported by meaningful innovation or NIS diagnostics.                              | EKF is fundamentally working with only minor weaknesses in Jacobians, covariance handling, or diagnostic depth.                                 | EKF is only partially working or contains important implementation or consistency errors; evidence is limited.          | EKF is missing, nonfunctional, or fundamentally incorrect.                                      |
-|                                                     |          |                                                                                                                                                                                  |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
-|                                                     |          | ***10 points***                                                                                                                                                                  | ***8 points***                                                                                                                                  | ***7 points***                                                                                                          |                                                                                                 |
-+-----------------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
-| Part C: UKF implementation and diagnostics          | 10       | UKF implementation is technically sound, uses appropriate sigma-point handling, and includes clear evidence and sensitivity discussion.                                          | UKF is fundamentally working with only minor weaknesses in parameter choice, residual handling, or analysis.                                    | UKF is only partially working or contains important implementation or consistency errors; evidence is limited.          | UKF is missing, nonfunctional, or fundamentally incorrect.                                      |
-|                                                     |          |                                                                                                                                                                                  |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
-|                                                     |          | ***10 points***                                                                                                                                                                  | ***8 points***                                                                                                                                  | ***7 points***                                                                                                          |                                                                                                 |
-+-----------------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
-| Part C: Particle filter implementation and study    | 10       | Particle filter is correctly implemented with sensible weighting and resampling, and the particle-count study is clear, honest, and technically useful.                          | Particle filter works in the main cases with only minor weaknesses in runtime study, weighting, resampling, or analysis.                        | Particle filter is only partially working or contains important implementation or evaluation errors; the study is weak. | Particle filter is missing, nonfunctional, or fundamentally incorrect.                          |
-|                                                     |          |                                                                                                                                                                                  |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
-|                                                     |          | ***10 points***                                                                                                                                                                  | ***8 points***                                                                                                                                  | ***7 points***                                                                                                          |                                                                                                 |
-+-----------------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
-| Cross-method evaluation and technical communication | 20       | Plots, tables, comparisons, and written analysis are clear, reproducible, and technically grounded; the report compares mechanization, observations, and fused methods honestly. | Communication is generally clear and the comparisons are useful, but some evidence, clarity, or reproducibility details are limited.            | Evaluation is shallow, poorly organized, or weakly supported; comparisons are incomplete or unclear.                    | Evaluation and technical communication are missing, nonfunctional, or fundamentally inadequate. |
-|                                                     |          |                                                                                                                                                                                  |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
-|                                                     |          | ***20 points***                                                                                                                                                                  | ***16 points***                                                                                                                                 | ***14 points***                                                                                                         |                                                                                                 |
-+-----------------------------------------------------+----------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
++-----------------------------------------------------+--------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
+| Component                                           | Points | Excellent (100%)                                                                                                                                                                                             | Acceptable (\~85%)                                                                                                                              | Marginal (\~70%)                                                                                                        | Unacceptable (0%)                                                                               |
++=====================================================+=======:+==============================================================================================================================================================================================================+=================================================================================================================================================+=========================================================================================================================+=================================================================================================+
+| Dataset understanding and loading                   | 10     | Loads packets, truth, and parameters correctly; handles timestamps, gaps, and invalid truth; keeps truth out of the navigation update path; documents the data interfaces and their quirks clearly.          | Loads the main data correctly with only minor issues in organization, validation, or explanation; truth separation is mostly handled correctly. | Partially loads or interprets the dataset, but with important mistakes in fields, timing, units, or truth usage.        | Dataset handling is missing, nonfunctional, or fundamentally incorrect.                         |
+|                                                     |        |                                                                                                                                                                                                              |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
+|                                                     |        | ***10 points***                                                                                                                                                                                              | ***8 points***                                                                                                                                  | ***7 points***                                                                                                          |                                                                                                 |
++-----------------------------------------------------+--------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
+| Part A: mechanization and dead reckoning            | 20     | Characterizes IMU noise and bias with evidence, implements the 15-state propagation consistently (frames, Z-X-Y kinematics, gravity), propagates covariance, and explains the dominant drift sources well.   | Mechanization mostly works and produces reasonable dead reckoning, but has minor weaknesses in noise modelling, diagnostics, or analysis.       | Propagation is only partially working or contains important frame, bias, or integration errors; drift analysis is weak. | Mechanization is missing, nonfunctional, or fundamentally incorrect.                            |
+|                                                     |        |                                                                                                                                                                                                              |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
+|                                                     |        | ***20 points***                                                                                                                                                                                              | ***16 points***                                                                                                                                 | ***14 points***                                                                                                         |                                                                                                 |
++-----------------------------------------------------+--------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
+| Part B: PnP observation model and covariance        | 20     | Correct tag geometry, corner ordering, distortion handling, and camera/body transform; robust pose estimation including single-tag frames; bias and covariance estimated separately and well justified.      | Observation model works on the main cases with only minor weaknesses in convention handling, robustness, or covariance analysis.                | Pose estimation is only partially working or contains important geometry, ordering, transform, or covariance mistakes.  | Observation model is missing, nonfunctional, or fundamentally incorrect.                        |
+|                                                     |        |                                                                                                                                                                                                              |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
+|                                                     |        | ***20 points***                                                                                                                                                                                              | ***16 points***                                                                                                                                 | ***14 points***                                                                                                         |                                                                                                 |
++-----------------------------------------------------+--------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
+| Part C: EKF implementation and diagnostics          | 10     | EKF prediction and update are technically correct, angle-aware, and numerically responsible, with gating and NIS/NEES consistency evidence against chi-square bounds.                                        | EKF is fundamentally working with only minor weaknesses in Jacobians, covariance handling, or diagnostic depth.                                 | EKF is only partially working or contains important implementation or consistency errors; evidence is limited.          | EKF is missing, nonfunctional, or fundamentally incorrect.                                      |
+|                                                     |        |                                                                                                                                                                                                              |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
+|                                                     |        | ***10 points***                                                                                                                                                                                              | ***8 points***                                                                                                                                  | ***7 points***                                                                                                          |                                                                                                 |
++-----------------------------------------------------+--------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
+| Part C: UKF implementation and diagnostics          | 10     | UKF is technically sound, redraws (or augments) sigma points correctly, handles angles in means and residuals, and includes clear consistency evidence and an alpha sensitivity discussion.                  | UKF is fundamentally working with only minor weaknesses in parameter choice, residual handling, or analysis.                                    | UKF is only partially working or contains important implementation or consistency errors; evidence is limited.          | UKF is missing, nonfunctional, or fundamentally incorrect.                                      |
+|                                                     |        |                                                                                                                                                                                                              |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
+|                                                     |        | ***10 points***                                                                                                                                                                                              | ***8 points***                                                                                                                                  | ***7 points***                                                                                                          |                                                                                                 |
++-----------------------------------------------------+--------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
+| Part C: Particle filter implementation and study    | 10     | Particle filter is correctly implemented with sensible weighting and resampling, any weight-collapse remedy (including R or Q inflation) is reported with evidence, and the particle-count study is clear.   | Particle filter works in the main cases with only minor weaknesses in runtime study, weighting, resampling, or analysis.                        | Particle filter is only partially working or contains important implementation or evaluation errors; the study is weak. | Particle filter is missing, nonfunctional, or fundamentally incorrect.                          |
+|                                                     |        |                                                                                                                                                                                                              |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
+|                                                     |        | ***10 points***                                                                                                                                                                                              | ***8 points***                                                                                                                                  | ***7 points***                                                                                                          |                                                                                                 |
++-----------------------------------------------------+--------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
+| Cross-method evaluation and technical communication | 20     | Plots, tables, comparisons, and written analysis are clear, reproducible, and technically grounded; the report compares mechanization, observations, and fused methods honestly, including where they fail.  | Communication is generally clear and the comparisons are useful, but some evidence, clarity, or reproducibility details are limited.            | Evaluation is shallow, poorly organized, or weakly supported; comparisons are incomplete or unclear.                    | Evaluation and technical communication are missing, nonfunctional, or fundamentally inadequate. |
+|                                                     |        |                                                                                                                                                                                                              |                                                                                                                                                 |                                                                                                                         |                                                                                                 |
+|                                                     |        | ***20 points***                                                                                                                                                                                              | ***16 points***                                                                                                                                 | ***14 points***                                                                                                         |                                                                                                 |
++-----------------------------------------------------+--------+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------+
+
+Part C's three rows together make up the syllabus's 30 points for Part C.
