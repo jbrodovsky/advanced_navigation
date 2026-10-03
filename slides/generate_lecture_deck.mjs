@@ -234,7 +234,7 @@ function rule(slide, top, left = MARGIN, width = WIDTH - 2 * MARGIN, color = FAI
   });
 }
 
-function footer(slide, number, label = "Advanced Autonomous Navigation") {
+function footer(slide, number, label = "Advanced Robot Navigation") {
   textbox(slide, "footer-label", label, { left: MARGIN, top: 666, width: 800, height: 20 },
     { fontSize: 14, color: MUTED });
   textbox(slide, "footer-number", String(number).padStart(2, "0"),
