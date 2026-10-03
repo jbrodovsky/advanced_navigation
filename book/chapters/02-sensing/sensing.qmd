@@ -94,7 +94,7 @@ DVL, and a pressure depth sensor, and surfaces or uses acoustic beacons when the
 drift grows too large. A spacecraft pairs gyros with star trackers. IMU quality
 itself spans several orders of magnitude, from the MEMS chips in phones and drones
 to the ring-laser and fiber-optic gyros of airliners and ships, at prices that run
-from pocket change to that of a house. @sec-ins-errors quantifies those grades.
+from pocket change to that of a house. @sec-ins-errors-imu-grades quantifies those grades.
 
 ## From Hardware to an Estimator {#sec-sensing-from-hardware-estimator}
 

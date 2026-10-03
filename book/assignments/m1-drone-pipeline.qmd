@@ -44,7 +44,7 @@ The engineering goals are correctness of the math and implementation, frame and 
 
 **Pace and deadline.** The weeks in the table above are a recommended pace that lines up with the lectures, not deadlines. Everything is due by the **end of week 16** (@sec-syllabus-course-policies). Submitting a checkpoint early for feedback is encouraged; feedback in week 4 is worth more than feedback in week 16.
 
-**Submission.** Submit Project 1 once, on Canvas, as two files: a single-column **report PDF** (structure and expectations in @sec-intro-project-guidance) and a **code archive** (`.zip`) containing your `drone_pipeline` package with your implementations, any scripts or notebooks you used, and a short `README` that lists the exact commands that reproduce every figure and table in the report. If the grader cannot regenerate a number, it does not count as evidence.
+**Submission.** Submit Project 1 once, on Canvas: a single-column **report PDF** (structure and expectations in @sec-intro-project-guidance), the **source files** of your `drone_pipeline` package that you implemented or changed plus any scripts or notebooks you used, and a short `README` that lists the exact commands that reproduce every figure and table in the report. Following the course policy (@sec-intro-code-style-guide), upload each file individually rather than as a compressed archive. If the grader cannot regenerate a number, it does not count as evidence.
 
 **Environment.** From the repository root:
 

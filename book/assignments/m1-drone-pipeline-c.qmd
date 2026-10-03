@@ -109,7 +109,7 @@ Use one development flight and one validation flight for detailed figures, then 
 
 ## Deliverables {#sec-project1c-deliverables}
 
-Submit, as part of the final Project 1 report and code archive:
+Submit, as part of the final Project 1 report and code:
 
 - `EKFNavigator`, `UKFNavigator`, and `ParticleFilterNavigator`, passing the Part C tests;
 - trajectory plots showing truth, PnP poses, dead reckoning, and the filtered outputs;

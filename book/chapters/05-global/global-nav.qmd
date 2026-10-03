@@ -2,13 +2,13 @@
 
 Until now, most of our examples have lived in a friendly local world: a flat plane, a fixed Cartesian reference frame, and distances small enough that Earth's curvature is not the dominant problem. That approximation is useful. It is also limited.
 
-For global navigation, the vehicle moves over a rotating, curved Earth. The primary issue is that the curvature and rotation of the Earth affects the orientation and magnitude of the gravity vector. An incorrect understanding and removal of the gravitational acceleration bleeds into the presumed IMU outputs, which eventually integrates up into errors in position, attitude, and velocity.
+For global navigation, the vehicle moves over a rotating, curved Earth, and that changes the inertial bookkeeping in several ways at once. Gravity varies in magnitude with latitude and height, and its direction *defines* "down," which turns as the vehicle moves. A gyro senses Earth's rotation (about $15^\circ$/h) on top of the vehicle's own rotation. The local navigation frame itself rotates as the vehicle travels over the curved surface (the transport rate). Velocity expressed in a rotating frame picks up Coriolis terms. And latitude and longitude are angles, so turning velocity into position requires the Earth's radii of curvature. Get any one of these wrong and the mistake enters the integrators exactly like a sensor bias, growing into attitude, velocity, and position error. For a navigation-grade INS crossing an ocean, every term matters. For the smartphone IMU of Project 3, the gyro bias (hundreds to thousands of degrees per hour) swamps Earth rate, but a wrong gravity sign, a degree-for-radian slip, or a height in the wrong datum is never small.
 
 A local flat frame can still be useful, but only as a frame attached to a particular location. If the vehicle moves far enough, the meaning of north, east, and down changes with position. Gravity changes with latitude and height. The Earth rotates under inertial space. A navigation algorithm that ignores those facts will slowly turn geometry into error and then act surprised when the map does not forgive it.
 
-This chapter introduces global scale navigation and the external measurements that will bound that drift: satellite radio navigation from a Global Navigation Satellite System (GNSS). We will treat the GNSS receiver mostly as a black box that outputs timestamped position, velocity, and uncertainty. That is enough for loosely coupled INS/GNSS integration, which is the architecture used in the project.
+This chapter introduces global-scale navigation and the external measurements that will bound inertial drift: satellite radio navigation from a Global Navigation Satellite System (GNSS). We open the receiver box just far enough to see how four or more pseudoranges become a position and clock estimate, and why satellite geometry sets the quality of that estimate. After that, we treat the receiver mostly as a black box that outputs timestamped position, velocity, and uncertainty. That is enough for loosely coupled INS/GNSS integration, which is the architecture used in the project.
 
-The signal-processing and receiver-design details are important, but they are not the focus here. There is a entire branch of PNT engineering that is devoted to satellite radio signal processing, but that is beyond the scope of this class. Our goal is to understand what a GNSS receiver is estimating, why it needs multiple satellites, why its errors are not simple Gaussian noise, and how its position and velocity outputs become measurements in an INS/GNSS filter.
+The signal-processing and receiver-design details are important, but they are not the focus here. There is an entire branch of PNT (positioning, navigation, and timing) engineering devoted to satellite radio signal processing, and @sec-adv-gnss gives an optional tour of it. Our goal is to understand what a GNSS receiver is estimating, why it needs multiple satellites, why its errors are not simple Gaussian noise, and how its position and velocity outputs become measurements in an INS/GNSS filter.
 
 ## From Local Coordinates to Global Coordinates {#sec-global-nav-from-local-coordinates}
 
@@ -17,80 +17,403 @@ The flat-Earth approximation assumes that a local navigation frame can be treate
 Global navigation commonly uses three frames:
 
 - **Earth-centered inertial (ECI)**: centered at Earth, but not rotating with Earth. This is the cleanest frame for Newtonian inertial dynamics.
-- **Earth-centered Earth-fixed (ECEF)**: centered at Earth and rotating with Earth. Coordinates are fixed to the planet, so a point on Earth's surface has constant ECEF coordinates.
-- **Local navigation frame**: a tangent frame attached to the vehicle or a local reference point. In this course we usually use North-East-Down (NED), where position is represented by geodetic coordinates (latitude, longitude, and height), and velocity is resolved into northward, eastward, and downward components.
+- **Earth-centered Earth-fixed (ECEF)**: centered at Earth and rotating with Earth. Coordinates are fixed to the planet, so a point on Earth's surface has constant ECEF coordinates. GNSS satellite positions and receiver fixes are computed here.
+- **Local navigation frame**: a tangent frame attached to the vehicle. In this course we use North-East-Down (NED), where position is represented by geodetic coordinates (latitude, longitude, and height), and velocity is resolved into northward, eastward, and downward components.
 
-The body frame is attached to the vehicle. The IMU measures angular rate and specific force in this body frame. The navigation algorithm must transform those measurements into the navigation frame, integrate the state, and keep track of the fact that the navigation frame itself moves and rotates as the vehicle moves over the ellipsoid.
-
-```{mermaid}
-%%| label: fig-flat-tangent-wgs84
-%%| fig-cap: "A local tangent plane is a useful short-range approximation, not a second Earth."
-
-flowchart TB
-    E["WGS84 ellipsoid"] --- R["Reference point"]
-    R --- T["Local tangent NED plane"]
-    T --- V["Vehicle remains close to reference"]
-    E --- G["Long-range motion follows curved geometry"]
-```
+The body frame is attached to the vehicle. The IMU measures angular rate and specific force in this body frame. The navigation algorithm must transform those measurements into the navigation frame, integrate the state, and keep track of the fact that the navigation frame itself moves and rotates as the vehicle moves over the ellipsoid. @fig-global-navigation-frames shows the chain and the rotation rate between each link.
 
 ```{mermaid}
 %%| label: fig-global-navigation-frames
-%%| fig-cap: "Frame hierarchy for global navigation. ECI is inertial, ECEF rotates with Earth, NED is local, and body axes move with the vehicle."
+%%| fig-cap: "The frame chain for global navigation, labeled with the rotation rate between each pair of frames. A strapdown gyro measures the sum of all three rates, so the mechanization must subtract Earth rate and transport rate to recover the vehicle's rotation relative to the local navigation frame."
 
 flowchart LR
-    I["ECI: inertial frame"] --> E["ECEF: Earth-fixed frame"]
-    E --> N["Local NED frame"]
-    N --> B["Body / IMU frame"]
+    I["ECI (i)<br/>inertial"] -->|"Earth rate ω_ie<br/>about 15°/h"| E["ECEF (e)<br/>rotates with Earth"]
+    E -->|"transport rate ω_en<br/>about speed / radius"| N["NED (n)<br/>local level, moves with vehicle"]
+    N -->|"vehicle rotation ω_nb"| B["Body (b)<br/>IMU axes, FRD"]
 ```
 
-The WGS84 ellipsoid gives the standard geometric model used by GPS and most modern navigation systems. A geodetic position is normally written as latitude $\phi$, longitude $\lambda$, and height $h$ above the ellipsoid. Latitude and longitude are angular coordinates, not meters, so changes in latitude and longitude must be scaled by the local radii of curvature before they behave like distances.
+Written out, the gyro triad measures
 
-That detail matters in software. A filter state may store position errors in meters while the nominal state stores latitude and longitude in radians. Mixing those without an explicit conversion is a good way to create a bug that looks like a physics problem.
+$$
+\boldsymbol{\omega}_{ib}^b
+= \mathbf{C}_n^b\left(\boldsymbol{\omega}_{ie}^n + \boldsymbol{\omega}_{en}^n\right)
++ \boldsymbol{\omega}_{nb}^b ,
+$$
+
+and only the last term is the attitude change we want to track. @sec-ins-gnss builds the full mechanization around this decomposition.
+
+How far can a flat local frame stretch before it lies? @fig-flat-tangent-wgs84 answers with two numbers. The tangent plane rises above the curved surface by about $d^2/2R$ at a distance $d$ from its origin, and the true local vertical tilts away from the frozen one by $d/R$ radians. The second number is the more dangerous one for an INS. Navigators have known it for centuries: the nautical mile was originally defined as one minute of arc of latitude, so the vertical turns by one arcminute for every nautical mile traveled. An INS that kept a fixed "down" would misproject gravity into the horizontal accelerometer channels by $g \sin(d/R)$, about $0.3$ mg after a single nautical mile. That is a negligible error next to a smartphone accelerometer's bias, and a large one next to a navigation-grade accelerometer's. The transport rate exists to keep "down" pointing down.
+
+```{python}
+#| label: fig-flat-tangent-wgs84
+#| fig-cap: "What a frozen flat frame ignores, as a function of distance from its origin (spherical Earth, R = 6371 km). Left: height of the tangent plane above the surface. Right: tilt of the true local vertical relative to the frozen one, and the horizontal gravity error that tilt would create. One nautical mile tilts the vertical by one arcminute."
+#| code-fold: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+R_EARTH_MEAN = 6_371e3                       # mean Earth radius [m]
+distance_m = np.logspace(1, 6.3, 400)        # 10 m to 2000 km
+departure_m = distance_m**2 / (2.0 * R_EARTH_MEAN)
+tilt_arcmin = np.degrees(distance_m / R_EARTH_MEAN) * 60.0
+ARCMIN_TO_MG = 1e3 * np.radians(1.0 / 60.0)   # g sin(tilt) in milli-g, small angle
+
+landmarks = {"lab": 100.0, "1 nmi": 1852.0, "harbor": 10e3,
+             "coastal leg": 100e3, "ocean leg": 1e6}
+
+fig, (ax_h, ax_t) = plt.subplots(1, 2, figsize=(9, 3.6))
+ax_h.loglog(distance_m, departure_m, color="C0")
+ax_t.loglog(distance_m, tilt_arcmin, color="C3")
+for name, d in landmarks.items():
+    for ax, curve in ((ax_h, d**2 / (2 * R_EARTH_MEAN)),
+                      (ax_t, np.degrees(d / R_EARTH_MEAN) * 60)):
+        ax.plot(d, curve, "o", color="0.3", markersize=4)
+        ax.annotate(name, (d, curve), textcoords="offset points", xytext=(-4, 6),
+                    ha="right", fontsize=8)
+ax_h.set_xlabel("distance from frame origin [m]")
+ax_h.set_ylabel("tangent-plane height above surface [m]")
+ax_t.set_xlabel("distance from frame origin [m]")
+ax_t.set_ylabel("tilt of local vertical [arcmin]")
+secondary = ax_t.secondary_yaxis(
+    "right", functions=(lambda a: a * ARCMIN_TO_MG, lambda m: m / ARCMIN_TO_MG))
+secondary.set_ylabel("horizontal gravity error [mg]")
+for ax in (ax_h, ax_t):
+    ax.grid(True, which="both", alpha=0.25)
+fig.tight_layout()
+plt.show()
+```
+
+### Geodetic coordinates, briefly
+
+@sec-frames-earth-frames already develops the machinery we need, so here is only the reminder. Position on the WGS-84 ellipsoid is written as latitude $L$, longitude $\lambda$, and ellipsoidal height $h$, and it maps to ECEF through @eq-frames-geodetic-ecef,
+
+$$
+\mathbf{r}^e =
+\begin{bmatrix}
+(R_N + h)\cos L\cos\lambda \\
+(R_N + h)\cos L\sin\lambda \\
+\left(R_N(1 - e^2) + h\right)\sin L
+\end{bmatrix},
+$$
+
+with $R_N$ the prime-vertical radius of curvature. The rotation $\mathbf{C}_e^n$ of @eq-frames-cen resolves ECEF vectors in the local NED axes, and the inverse map from ECEF to geodetic coordinates is a short fixed-point iteration. Latitude and longitude are angles, not meters, so small changes must be scaled by the radii of curvature before they behave like distances: $\delta p_N = (R_M + h)\,\delta L$, $\delta p_E = (R_N + h)\cos L\,\delta\lambda$, and $\delta p_D = -\delta h$. A filter state that stores position *errors* in meters next to a nominal state in radians needs that conversion at every boundary. Mixing the two without it is a good way to create a bug that looks like a physics problem.
+
+::: {.callout-warning title="Which height did the receiver give you?"}
+The navigation equations use ellipsoidal height $h$. Many receivers and phone
+APIs report height above mean sea level instead, the orthometric height
+$H \approx h - N_g$, where $N_g$ is the geoid undulation (about $-28$ m in
+central Massachusetts, and anywhere from roughly $-106$ to $+85$ m worldwide).
+The NMEA `GGA` sentence reports mean-sea-level altitude with the geoid
+separation in a separate field. Apple's Core Location `altitude` is above mean
+sea level (a separate `ellipsoidalAltitude` gives $h$), while Android's
+`Location.getAltitude()` is above the WGS-84 ellipsoid. Feed $H$ into the
+filter as $h$ and every fix lands tens of meters too high or too low, while
+every horizontal plot still looks perfect. Worse, a constant offset is invisible
+to the innovation tests: the filter simply converges to the wrong height and
+reports consistent statistics while doing it (Exercise 3). Check the datum of
+every height field before it touches the state.
+:::
 
 ## What the GNSS Provides {#sec-global-nav-what-gnss-provides}
 
-The GNSS is the generic term for the satellite navigation constellations such as the Global Positioning System (USA), Galileo (EU), GLONASS (Russia), and BeiDou (China). A receiver estimates its position and clock offset by listening to radio signals transmitted by satellites whose positions and clock corrections are known from the broadcast navigation message.
+GNSS is the generic term for satellite navigation systems. Four have global coverage: the Global Positioning System (GPS, United States), GLONASS (Russia), Galileo (European Union), and BeiDou (China). Two regional systems augment them: Japan's Quasi-Zenith Satellite System (QZSS), whose inclined, eccentric orbits keep a satellite high over Japan where urban canyons hide low ones, and India's NavIC (formerly IRNSS). A modern receiver, including the one in your phone, tracks several systems at once. A receiver estimates its position and clock offset by listening to radio signals transmitted by satellites whose positions and clock corrections are known from the broadcast navigation message [@kaplanHegarty2017; @misraEnge2006].
 
-At a high level, each satellite transmits:
-
-- a time-tagged ranging signal;
-- satellite orbit information, often called ephemeris;
-- satellite clock correction information;
-- additional navigation data used by the receiver.
-
-The receiver compares the received signal timing against its own clock. If the satellite clock and receiver clock were perfectly synchronized, signal travel time would give range directly:
+Each satellite transmits a time-tagged ranging signal together with a navigation message: its own orbit (the ephemeris), corrections for its onboard atomic clock, health flags, and other parameters the receiver needs. The receiver compares the received signal timing against its own clock. If the satellite clock and receiver clock were perfectly synchronized, signal travel time would give range directly:
 
 $$\rho = c(t_r - t_s),$$
 
-where $c$ is the speed of light, $t_s$ is the transmit time, and $t_r$ is the receive time. The receiver clock is not perfect, so the measured quantity is a **pseudorange**:
+where $c$ is the speed of light, $t_s$ is the transmit time, and $t_r$ is the receive time. GPS satellites orbit about 26,560 km from Earth's center, so the travel time is 67 to 86 ms and a timing error of one microsecond is 300 m of range. The receiver clock is an inexpensive quartz oscillator and is never that good, so the measured quantity is a **pseudorange**:
 
 $$\tilde{\rho}_s =
-\left\|\mathbf{r}_u - \mathbf{r}_s\right\|
+\left\|\mathbf{r}_s - \mathbf{r}_u\right\|
 + c\,\delta t_u
 - c\,\delta t_s
-+ \epsilon_s.$$
++ \epsilon_s.$$ {#eq-global-nav-pseudorange}
 
-Here $\mathbf{r}_u$ is the receiver antenna position, $\mathbf{r}_s$ is the satellite position, $\delta t_u$ is the receiver clock offset, $\delta t_s$ is the satellite clock offset, and $\epsilon_s$ collects unmodeled errors such as atmospheric delay, multipath, receiver noise, and residual orbit or clock error.
+Here $\mathbf{r}_u$ is the receiver antenna position, $\mathbf{r}_s$ is the satellite position at transmit time, $\delta t_u$ is the receiver clock offset, $\delta t_s$ is the satellite clock offset (known from the navigation message), and $\epsilon_s$ collects unmodeled errors such as atmospheric delay, multipath, receiver noise, and residual orbit or clock error.
 
-The receiver has four basic unknowns in a standard single-antenna position fix: three position components and receiver clock offset. That is why a three-dimensional GNSS solution needs at least four satellites. More satellites make the solution overdetermined, which lets the receiver estimate a better solution and reject bad measurements when the geometry and integrity checks support it.
+The receiver has four basic unknowns in a standard single-antenna position fix: three position components and its own clock offset. That is why a three-dimensional GNSS solution needs at least four satellites. Each additional constellation adds one more unknown, the offset between that system's time scale and the others, unless the offset is broadcast. More satellites make the solution overdetermined, which lets the receiver average down noise and test for bad measurements when the geometry supports it.
+
+## Solving for Position: Least Squares and DOP {#sec-global-nav-dop-pvt}
+
+A receiver's position, velocity, and time (PVT) solution is an estimation problem we already know how to solve. Write the receiver clock offset in meters, $b = c\,\delta t_u$, and assume the satellite clock term of @eq-global-nav-pseudorange has been corrected. The unknown is $\mathbf{x} = [\mathbf{r}_u^T,\ b]^T$ in ECEF, and the model for satellite $s$ is
+
+$$
+\rho_s(\mathbf{x}) = \left\|\mathbf{r}_s - \mathbf{r}_u\right\| + b .
+$$
+
+Linearize about a guess $\hat{\mathbf{x}}$. The derivative of the range with respect to the receiver position is minus the unit line-of-sight vector
+
+$$
+\mathbf{u}_s = \frac{\mathbf{r}_s - \hat{\mathbf{r}}_u}{\left\|\mathbf{r}_s - \hat{\mathbf{r}}_u\right\|},
+$$
+
+which points from the receiver to the satellite: moving toward a satellite shortens its range. Stacking all $m$ satellites gives the linearized model $\Delta\boldsymbol{\rho} \approx \mathbf{G}\,\Delta\mathbf{x} + \boldsymbol{\epsilon}$, with the **geometry matrix**
+
+$$
+\mathbf{G} =
+\begin{bmatrix}
+-\mathbf{u}_1^T & 1 \\
+\vdots & \vdots \\
+-\mathbf{u}_m^T & 1
+\end{bmatrix},
+\qquad
+\Delta\boldsymbol{\rho} = \tilde{\boldsymbol{\rho}} - \boldsymbol{\rho}(\hat{\mathbf{x}}).
+$$ {#eq-global-nav-geometry-matrix}
+
+The least-squares correction is $\Delta\hat{\mathbf{x}} = (\mathbf{G}^T\mathbf{G})^{-1}\mathbf{G}^T\Delta\boldsymbol{\rho}$. Apply it, relinearize, and repeat: this is Gauss-Newton, the same iteration that @sec-ekf-iterated-ekf showed the iterated EKF to be. With unequal measurement variances $\mathbf{R}$, use the weighted form $(\mathbf{G}^T\mathbf{R}^{-1}\mathbf{G})^{-1}\mathbf{G}^T\mathbf{R}^{-1}\Delta\boldsymbol{\rho}$. The problem is so mildly nonlinear at satellite distances that a receiver with no idea where it is can start from the center of the Earth and converge in a handful of iterations.
+
+The code below builds a synthetic sky over Worcester: satellites placed at chosen azimuths and elevations on a sphere of GPS orbital radius, pseudoranges with a 90 km receiver clock offset and 3 m of noise, and a Gauss-Newton solver that starts at the Earth's center. It uses NumPy only.
+
+```{python}
+#| label: global-nav-pvt-solver
+#| echo: true
+
+import numpy as np
+
+C_LIGHT = 299_792_458.0           # speed of light [m/s]
+WGS84_A = 6_378_137.0             # semi-major axis [m]
+WGS84_E2 = 6.69437999014e-3       # first eccentricity squared
+GPS_ORBIT_RADIUS = 26_560e3       # GPS orbit radius from Earth's center [m]
+
+
+def radii(lat: float) -> tuple[float, float]:
+    """Meridian R_M and prime-vertical R_N radii of curvature [m]."""
+    den = 1.0 - WGS84_E2 * np.sin(lat) ** 2
+    return WGS84_A * (1.0 - WGS84_E2) / den**1.5, WGS84_A / np.sqrt(den)
+
+
+def geodetic_to_ecef(lat: float, lon: float, h: float) -> np.ndarray:
+    """Geodetic (rad, rad, m) to ECEF [m]; the frames chapter derives it."""
+    R_N = radii(lat)[1]
+    return np.array([(R_N + h) * np.cos(lat) * np.cos(lon),
+                     (R_N + h) * np.cos(lat) * np.sin(lon),
+                     (R_N * (1.0 - WGS84_E2) + h) * np.sin(lat)])
+
+
+def C_e_to_n(lat: float, lon: float) -> np.ndarray:
+    """C_e^n: resolve an ECEF vector in local NED axes."""
+    sL, cL, sl, cl = np.sin(lat), np.cos(lat), np.sin(lon), np.cos(lon)
+    return np.array([[-sL * cl, -sL * sl, cL],
+                     [-sl, cl, 0.0],
+                     [-cL * cl, -cL * sl, -sL]])
+
+
+def place_satellites(r_rx, lat, lon, az_deg, el_deg, radius=GPS_ORBIT_RADIUS):
+    """ECEF positions of satellites seen at (azimuth, elevation) from r_rx.
+
+    Each satellite sits where the line of sight from the receiver meets a
+    sphere of the given orbit radius.
+    """
+    az, el = np.radians(az_deg), np.radians(el_deg)
+    u_ned = np.column_stack([np.cos(el) * np.cos(az),     # north
+                             np.cos(el) * np.sin(az),     # east
+                             -np.sin(el)])                # down (up is negative)
+    u_ecef = u_ned @ C_e_to_n(lat, lon)                   # rows are (C_n^e u^n)^T
+    b = u_ecef @ r_rx
+    distance = -b + np.sqrt(b**2 - r_rx @ r_rx + radius**2)
+    return r_rx + distance[:, None] * u_ecef
+
+
+def geometry_matrix(sat_ecef: np.ndarray, r_rx: np.ndarray):
+    """Geometry matrix G (rows [-u^T, 1]) and ranges from r_rx to each satellite."""
+    diff = sat_ecef - r_rx
+    ranges = np.linalg.norm(diff, axis=1)
+    u = diff / ranges[:, None]                 # unit line of sight, receiver -> satellite
+    return np.column_stack([-u, np.ones(len(ranges))]), ranges
+
+
+def solve_pvt(sat_ecef, pseudoranges, x0=None, max_iter=10, tol_m=1e-4):
+    """Gauss-Newton single-point positioning.
+
+    Returns the estimate [x, y, z, b] (ECEF meters, clock offset in meters),
+    the geometry matrix at the solution, and the size of each correction step.
+    """
+    x = np.zeros(4) if x0 is None else np.array(x0, dtype=float)
+    steps = []
+    for _ in range(max_iter):
+        G, ranges = geometry_matrix(sat_ecef, x[:3])
+        residual = pseudoranges - (ranges + x[3])
+        dx = np.linalg.solve(G.T @ G, G.T @ residual)   # normal equations
+        x = x + dx
+        steps.append(float(np.linalg.norm(dx)))
+        if steps[-1] < tol_m:
+            break
+    G, _ = geometry_matrix(sat_ecef, x[:3])
+    return x, G, steps
+
+
+# Truth: a receiver near WPI with a 0.3 ms clock offset (about 90 km of range).
+lat0, lon0, h0 = np.radians(42.2742), np.radians(-71.8080), 150.0
+r_true = geodetic_to_ecef(lat0, lon0, h0)
+clock_true_m = C_LIGHT * 3.0e-4
+sigma_rho = 3.0                                   # pseudorange noise [m]
+rng = np.random.default_rng(2024)
+
+az_good = np.array([10.0, 60.0, 105.0, 150.0, 200.0, 245.0, 290.0, 330.0])
+el_good = np.array([72.0, 28.0, 45.0, 15.0, 60.0, 22.0, 38.0, 12.0])
+sats_good = place_satellites(r_true, lat0, lon0, az_good, el_good)
+
+rho = (np.linalg.norm(sats_good - r_true, axis=1) + clock_true_m
+       + sigma_rho * rng.standard_normal(len(az_good)))
+x_hat, G_good, steps = solve_pvt(sats_good, rho)          # start at Earth's center
+
+err_ned = C_e_to_n(lat0, lon0) @ (x_hat[:3] - r_true)
+print("satellite ranges [km]:", np.round(np.linalg.norm(sats_good - r_true, axis=1) / 1e3))
+print("Gauss-Newton step sizes [m]:", ", ".join(f"{s:.3g}" for s in steps))
+print(f"position error NED [m]: {np.round(err_ned, 2)},  "
+      f"clock error: {float(x_hat[3] - clock_true_m):.2f} m")
+```
+
+Five iterations take the estimate from the center of the Earth to the receiver; the first step alone covers more than 7000 km. The remaining error of a few meters is what 3 m of pseudorange noise buys with this sky.
+
+### Dilution of precision
+
+How much does that noise cost in position? If the pseudorange errors are independent with standard deviation $\sigma$, the least-squares covariance is
+
+$$
+\operatorname{cov}(\hat{\mathbf{x}}) = \sigma^2\,\mathbf{D},
+\qquad
+\mathbf{D} = (\mathbf{G}^T\mathbf{G})^{-1}.
+$$
+
+The matrix $\mathbf{D}$ depends only on geometry, which makes it a clean way to separate "how good are the measurements" from "how well placed are the satellites." Its diagonal, square-rooted, gives the **dilution of precision** (DOP) factors. Horizontal and vertical only make sense in local axes, so rotate the position block into NED first, $\mathbf{D}^n = \mathbf{C}_e^n\,\mathbf{D}_{rr}\,\mathbf{C}_n^e$:
+
+$$
+\begin{aligned}
+\text{GDOP} &= \sqrt{\operatorname{tr}\mathbf{D}}, &
+\text{PDOP} &= \sqrt{D^n_{NN} + D^n_{EE} + D^n_{DD}}, \\
+\text{HDOP} &= \sqrt{D^n_{NN} + D^n_{EE}}, &
+\text{VDOP} &= \sqrt{D^n_{DD}}, \\
+\text{TDOP} &= \sqrt{D_{bb}} .
+\end{aligned}
+$$
+
+So the expected horizontal error is roughly $\sigma\cdot\text{HDOP}$, and so on. (An ENU rotation gives the same numbers; only the axis order changes.) The rotation leaves the trace unchanged, so PDOP can be computed in either frame.
+
+```{python}
+#| label: global-nav-dop
+#| echo: true
+
+def dop(G: np.ndarray, lat: float, lon: float) -> tuple[dict, np.ndarray]:
+    """DOP factors from an ECEF geometry matrix; also returns the NED cofactor block."""
+    D = np.linalg.inv(G.T @ G)
+    C = C_e_to_n(lat, lon)
+    D_ned = C @ D[:3, :3] @ C.T
+    factors = {
+        "GDOP": np.sqrt(np.trace(D)),
+        "PDOP": np.sqrt(np.trace(D[:3, :3])),
+        "HDOP": np.sqrt(D_ned[0, 0] + D_ned[1, 1]),
+        "VDOP": np.sqrt(D_ned[2, 2]),
+        "TDOP": np.sqrt(D[3, 3]),
+    }
+    return {k: float(v) for k, v in factors.items()}, D_ned
+
+
+# Poor geometry: six satellites bunched in the north-east quadrant.
+az_poor = np.array([35.0, 50.0, 62.0, 75.0, 88.0, 100.0])
+el_poor = np.array([48.0, 62.0, 35.0, 55.0, 42.0, 66.0])
+sats_poor = place_satellites(r_true, lat0, lon0, az_poor, el_poor)
+
+
+def monte_carlo_errors(sats, n_trials=2000):
+    """NED position errors of the PVT solution over repeated noisy epochs."""
+    true_ranges = np.linalg.norm(sats - r_true, axis=1)
+    x_warm, _, _ = solve_pvt(sats, true_ranges + clock_true_m)   # receiver's last fix
+    errors = np.empty((n_trials, 3))
+    for k in range(n_trials):
+        rho_k = true_ranges + clock_true_m + sigma_rho * rng.standard_normal(len(sats))
+        x_k, _, _ = solve_pvt(sats, rho_k, x0=x_warm, max_iter=4)
+        errors[k] = C_e_to_n(lat0, lon0) @ (x_k[:3] - r_true)
+    return errors
+
+
+results = {}
+for name, sats in (("spread", sats_good), ("clustered", sats_poor)):
+    _, G_name, _ = solve_pvt(sats, np.linalg.norm(sats - r_true, axis=1) + clock_true_m)
+    factors, D_ned = dop(G_name, lat0, lon0)
+    errors = monte_carlo_errors(sats)
+    results[name] = (factors, D_ned, errors)
+    rms_h = np.sqrt(np.mean(errors[:, 0] ** 2 + errors[:, 1] ** 2))
+    rms_v = np.sqrt(np.mean(errors[:, 2] ** 2))
+    print(f"{name:>9} sky: " + "  ".join(f"{k} {v:5.2f}" for k, v in factors.items()))
+    print(f"{'':>15}horizontal RMS {rms_h:6.2f} m (sigma*HDOP {sigma_rho * factors['HDOP']:6.2f} m),"
+          f"  vertical RMS {rms_v:6.2f} m (sigma*VDOP {sigma_rho * factors['VDOP']:6.2f} m)")
+```
+
+The Monte Carlo errors land on $\sigma\cdot$DOP, as they should for a nearly linear problem with Gaussian noise. The same 3 m pseudoranges give about 3 m of horizontal error from the spread sky and more than 30 m from the clustered one. Nothing about the measurements changed; only where they came from. @fig-global-nav-skyplot shows the two skies, and @fig-global-nav-dop-scatter shows the resulting horizontal errors with the 95% ellipse predicted by $\sigma^2\mathbf{D}^n$. The clustered sky's ellipse is long and thin: the satellites all lie to the north-east, so they pin down position poorly along that direction, and because every line of sight also tilts upward, that weakness is shared with height and the clock.
+
+```{python}
+#| label: fig-global-nav-skyplot
+#| fig-cap: "Skyplots (north up, azimuth clockwise, zenith at the center) of the two synthetic skies over Worcester. Both have more than four satellites; only their spread differs."
+#| code-fold: true
+
+import matplotlib.pyplot as plt
+
+fig, axes = plt.subplots(1, 2, figsize=(8, 4), subplot_kw={"projection": "polar"})
+for ax, (name, az, el, color) in zip(
+        axes, [("spread", az_good, el_good, "C0"),
+               ("clustered", az_poor, el_poor, "C3")]):
+    ax.set_theta_zero_location("N")
+    ax.set_theta_direction(-1)
+    ax.scatter(np.radians(az), 90.0 - el, s=60, color=color, zorder=3)
+    for i, (a, e) in enumerate(zip(az, el)):
+        ax.annotate(str(i + 1), (np.radians(a), 90.0 - e), textcoords="offset points",
+                    xytext=(6, 4), fontsize=8)
+    ax.set_rlim(0, 90)
+    ax.set_rticks([0, 30, 60, 90])
+    ax.set_yticklabels(["90°", "60°", "30°", "0°"], fontsize=8)
+    ax.set_rlabel_position(157.5)
+    ax.set_title(f"{name} sky: HDOP {results[name][0]['HDOP']:.1f}")
+fig.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: fig-global-nav-dop-scatter
+#| fig-cap: "Horizontal position errors of 2000 single-epoch fixes with 3 m pseudorange noise, and the 95% ellipse predicted from sigma squared times the NED cofactor block. Same noise, different sky; note the tenfold change of scale."
+#| code-fold: true
+
+from math import sqrt
+
+
+def ellipse_points(cov2: np.ndarray, scale: float, n: int = 200) -> np.ndarray:
+    """Points on the ellipse x^T cov2^{-1} x = scale^2 (columns: north, east)."""
+    vals, vecs = np.linalg.eigh(cov2)
+    t = np.linspace(0.0, 2.0 * np.pi, n)
+    circle = np.vstack([np.cos(t), np.sin(t)])
+    return (vecs @ (scale * np.sqrt(vals)[:, None] * circle)).T
+
+
+k95 = sqrt(5.991)                     # chi-square, 2 dof, 95%
+fig, axes = plt.subplots(1, 2, figsize=(9, 4.5))
+for ax, name, color, half_width in ((axes[0], "spread", "C0", 12.0),
+                                    (axes[1], "clustered", "C3", 120.0)):
+    factors, D_ned, errors = results[name]
+    ax.plot(errors[:, 1], errors[:, 0], ".", color=color, alpha=0.25, markersize=3)
+    ell = ellipse_points(sigma_rho**2 * D_ned[:2, :2], k95)
+    ax.plot(ell[:, 1], ell[:, 0], color="k", linewidth=1.5, label="predicted 95%")
+    ax.set_xlim(-half_width, half_width)
+    ax.set_ylim(-half_width, half_width)
+    ax.set_aspect("equal")
+    ax.set_title(f"{name} sky: HDOP {factors['HDOP']:.1f}")
+    ax.set_xlabel("east error [m]")
+    ax.set_ylabel("north error [m]")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="upper left")
+fig.tight_layout()
+plt.show()
+```
+
+Notice also that VDOP exceeds HDOP even for the good sky. All satellites are above the horizon, so the vertical position and the receiver clock push the pseudoranges in similar ways and the least-squares solution struggles to separate them. That is why GNSS height is typically one and a half to two times worse than horizontal position, and why aircraft and survey users care about low-elevation satellites despite their larger atmospheric errors.
+
+Two simplifications in this synthetic example deserve a sentence each. A real receiver must account for Earth's rotation during the signal's 70-odd millisecond flight, by rotating each satellite's transmit-time position into the ECEF frame at receive time; this Sagnac correction is worth up to a few tens of meters and is covered in @sec-adv-gnss-tight-coupling. And a real receiver also solves for velocity and clock drift from Doppler measurements with exactly the same geometry matrix, because a range rate is the line-of-sight projection of relative velocity.
 
 ### Geometry and Reported Quality
 
-Satellite geometry determines how measurement error projects into a position solution. A receiver commonly summarizes that geometry with dilution of precision (DOP): lower values are generally better, but DOP is not an accuracy guarantee. It says nothing by itself about multipath, clock faults, bad atmospheric models, or a measurement that arrived at the wrong time. Treat satellite count, DOP, reported covariance, and receiver status as evidence to be checked together [@groves; @kaplanHegarty2017].
+DOP is a geometry statement, not an accuracy guarantee. It says nothing by itself about multipath, clock faults, bad atmospheric models, or a measurement that arrived at the wrong time. A receiver commonly summarizes the quality of its solution with satellite count, DOP, an estimated accuracy or covariance, and a fix-type flag. Treat these as evidence to be checked together, not as truth [@groves; @kaplanHegarty2017].
 
-```{mermaid}
-%%| label: fig-gnss-pseudorange-geometry
-%%| fig-cap: "A pseudorange combines geometric range with clock, atmosphere, and measurement errors."
-
-flowchart TB
-    S1["Satellite 1"] -->|"geometric range + clock terms"| R["Receiver antenna"]
-    S2["Satellite 2"] -->|"geometric range + clock terms"| R
-    S3["Satellite 3"] -->|"geometric range + clock terms"| R
-    S4["Satellite 4"] -->|"geometric range + clock terms"| R
-    R --> X["Estimate position and receiver clock offset"]
-```
-
-GNSS can also estimate velocity. A receiver often uses carrier Doppler or pseudorange-rate measurements to estimate range rate to each satellite. These range rates constrain the receiver velocity and receiver clock drift. For our loosely coupled treatment, the receiver output is simply:
+GNSS can also estimate velocity. A receiver uses carrier Doppler (pseudorange rate) to each satellite, which constrains the receiver velocity and clock drift through the same geometry. For our loosely coupled treatment, the receiver output is simply
 
 $$\mathbf{z}_{GNSS,k}
 =
@@ -99,26 +422,33 @@ $$\mathbf{z}_{GNSS,k}
 \mathbf{v}_{GNSS,k}
 \end{bmatrix},$$
 
-with a timestamp and some statement of uncertainty. The receiver may report that uncertainty as a covariance matrix, horizontal and vertical accuracy estimates, a dilution-of-precision value, or a vendor-specific quality flag. In real projects, the exact receiver interface matters. In this course, we will model it as a position and velocity measurement with covariance $\mathbf{R}_{GNSS,k}$.
+with a timestamp and some statement of uncertainty. The receiver may report that uncertainty as a covariance matrix, horizontal and vertical accuracy estimates, a DOP value, or a vendor-specific quality flag. In real projects, the exact receiver interface matters. In this course, we will model it as a position (and optionally velocity) measurement with covariance $\mathbf{R}_{GNSS,k}$.
 
 ## GNSS Error Sources {#sec-global-nav-gnss-error-sources}
 
-GNSS is an external reference, but it is not truth. A receiver solution is an estimate from radio measurements, and radio measurements are sensitive to the environment.
+GNSS is an external reference, but it is not truth. A receiver solution is an estimate from radio measurements, and radio measurements are sensitive to the environment. @tbl-global-nav-error-budget lists the main pseudorange error sources with representative magnitudes for a single-frequency code receiver; the numbers vary with solar activity, satellite elevation, receiver design, and surroundings, so read them as orders of magnitude [@kaplanHegarty2017; @misraEnge2006].
 
-Common GNSS error sources include:
+| Source | Typical size before correction | Typical residual | Character |
+|---|---|---|---|
+| Satellite clock and ephemeris | (broadcast values are the correction) | about 0.5 to 1 m | slowly varying, common to all users of a satellite |
+| Ionosphere | 1 to 15 m at zenith, several times more at low elevation or high solar activity | roughly half removed by the broadcast model; first order removed by dual-frequency | dispersive, varies with time of day and latitude |
+| Troposphere | about 2.4 m at zenith, about 25 m at 5° elevation | about 0.1 to 0.5 m with a standard model | non-dispersive, mostly predictable |
+| Multipath | 0.5 to a few m in open sky; tens of m in urban canyons | not removed by models | environment dependent, time-correlated |
+| Receiver noise | 0.1 to 1 m for code; millimeters for carrier phase | not removed by models | nearly white, grows as signal strength falls |
 
-- **Satellite geometry**: if all visible satellites are clustered in the same part of the sky, the position solution is weak in some directions.
-- **Atmospheric propagation**: ionospheric and tropospheric delays change the apparent signal travel time.
-- **Multipath**: signals can reflect off buildings, water, terrain, or vehicle structure before reaching the antenna.
-- **Non-line-of-sight reception**: the direct signal may be blocked, leaving only a reflected signal.
-- **Receiver noise and tracking limits**: weak signals, low carrier-to-noise ratio, and high dynamics can degrade the measurement.
-- **Outages and obstruction**: tunnels, indoor spaces, dense urban corridors, foliage, and vehicle body masking can remove satellites from view.
-- **Interference and jamming**: GNSS signals are weak by the time they reach the receiver, so interference can deny or corrupt measurements.
-- **Timing and synchronization error**: a GNSS measurement must be compared against the INS state at the same time of validity.
+: Representative pseudorange error budget for a single-frequency code receiver. Combined with HDOP, a user equivalent range error of a few meters explains the familiar few-meter open-sky phone fix. {#tbl-global-nav-error-budget}
 
-These errors are not all independent, zero-mean, or white. Multipath can be time-correlated. Receiver filtering can smooth noise but increase its correlation time. Satellite geometry changes slowly. A high-rate GNSS output does not automatically mean that every sample contains independent information.
+Several further error mechanisms do not fit neatly into a per-satellite budget. Non-line-of-sight reception happens when the direct signal is blocked and only a reflection arrives, which adds a positive range error that can be tens of meters and is not bounded the way multipath is. Outages and obstructions, from tunnels, indoor spaces, dense urban corridors, foliage, and the vehicle body itself, remove satellites and degrade geometry. Timing and synchronization errors are self-inflicted: a GNSS measurement must be compared against the INS state at the same time of validity, and a 100 ms mismatch at highway speed is a 3 m error before any radio physics enters.
 
-That point matters for Kalman filtering. If $\mathbf{R}_{GNSS}$ is too small, the filter will believe GNSS too aggressively and may inject jumps or multipath errors into the inertial solution. If $\mathbf{R}_{GNSS}$ is too large, the filter will fail to correct INS drift quickly enough. A practical implementation should adapt or gate GNSS measurements using receiver quality flags, innovation size, reported accuracy, satellite count, geometry, and knowledge of the operating environment.
+These errors are not all independent, zero-mean, or white. Multipath and atmospheric residuals are time-correlated over seconds to hours. Receiver filtering can smooth noise but lengthens its correlation time. Satellite geometry changes slowly. A high-rate GNSS output does not automatically mean that every sample contains independent information.
+
+That point matters for Kalman filtering. If $\mathbf{R}_{GNSS}$ is too small, the filter will believe GNSS too aggressively and may inject jumps or multipath errors into the inertial solution. If $\mathbf{R}_{GNSS}$ is too large, the filter will fail to correct INS drift quickly enough. A practical implementation should adapt or gate GNSS measurements using receiver quality flags, innovation size, reported accuracy, satellite count, geometry, and knowledge of the operating environment, and check the result with the consistency tools of @sec-kf-consistency.
+
+### Jamming and Spoofing
+
+GNSS signals arrive at the antenna at roughly $-128$ dBm, about $10^{-16}$ W, which is below the thermal noise floor of the receiver's bandwidth; the receiver digs them out only because it knows the spreading code. That makes the whole system easy to drown. A jammer of a few watts can deny GNSS over tens of kilometers on the ground, and much farther to an aircraft with line of sight. A spoofer is more insidious: it broadcasts counterfeit signals that the receiver accepts, so the output is a confident, smoothly moving, wrong position.
+
+These are operational realities, not thought experiments. Ships in the Black Sea reported GPS positions placing them inland in 2017, and later analysis documented systematic spoofing around sensitive sites [@c4ads2019]. Since 2023, airliners over parts of the Middle East have been spoofed in large numbers, and flights around the Baltic have met persistent jamming and, increasingly, spoofing, prompting aviation-safety bulletins and changes to operating procedures [@easaSib202202]. Every robot that leaves the lab with a GNSS receiver should be designed on the assumption that GNSS will sometimes be absent or lying. An INS is the natural detector and fallback: a spoofed position must also agree with what the inertial sensors felt, and the innovation tests of an integrated filter are the first line of defense. @sec-adv-gnss-raim develops receiver autonomous integrity monitoring, the classic residual test, and the cues receivers use to recognize interference.
 
 ### Accuracy, Availability, and Integrity
 
@@ -130,10 +460,10 @@ An inertial navigation system and a GNSS receiver fail in different ways. That i
 
 | Sensor | Strength | Weakness |
 |------------------------|------------------------|------------------------|
-| INS / IMU | high-rate, smooth, self-contained short-term motion | drifts over time because biases and noise are integrated |
-| GNSS | globally referenced position and velocity | lower rate, noisier short term, vulnerable to obstruction and interference |
+| INS / IMU | high-rate, smooth, self-contained, immune to jamming | drifts over time because biases and noise are integrated |
+| GNSS | globally referenced position and velocity with bounded error | lower rate, noisier short term, vulnerable to obstruction, interference, and spoofing |
 
-INS gives the filter a high-rate propagation model. GNSS gives the filter an external correction. During a short GNSS outage, the INS can coast. When GNSS returns, it can pull the inertial solution back toward the global reference frame. The system is not magic; it is a trade between short-term continuity and long-term bounded error.
+INS gives the filter a high-rate propagation model. GNSS gives the filter an external correction. During a short GNSS outage, the INS can coast while its uncertainty grows; when GNSS returns, it pulls the inertial solution back toward the global reference frame (@fig-gnss-outage-ins-drift). The system is not magic; it is a trade between short-term continuity and long-term bounded error. How long the coast can last depends on the IMU grade: a navigation-grade unit drifts on the order of a nautical mile per hour, while a smartphone IMU can be a kilometer off within about a minute.
 
 ```{mermaid}
 %%| label: fig-gnss-outage-ins-drift
@@ -153,7 +483,7 @@ sequenceDiagram
 
 In a loosely coupled architecture, the GNSS receiver computes its own navigation solution first. The INS/GNSS filter then uses that receiver solution as a measurement. The filter does not process raw satellite pseudoranges or carrier-phase observables.
 
-This is the architecture we will use:
+This is the architecture we will use (@fig-loose-ins-gnss-architecture):
 
 1.  The IMU drives high-rate strapdown propagation.
 2.  The GNSS receiver outputs timestamped position and velocity.
@@ -173,111 +503,243 @@ flowchart LR
     INJECT --> PROP
 ```
 
-The nominal inertial state may be represented as
+The nominal inertial state is
 
 $$\mathbf{x}_{nom}
 =
 \left[
-\mathbf{p},
-\mathbf{v},
-\mathbf{q},
-\mathbf{b}_a,
+L,\ \lambda,\ h,\
+\mathbf{v}^n,\
+\mathbf{q}_b^n,\
+\mathbf{b}_a,\
 \mathbf{b}_g
 \right],$$
 
-where $\mathbf{p}$ is position, $\mathbf{v}$ is velocity, $\mathbf{q}$ is attitude, $\mathbf{b}_a$ is accelerometer bias, and $\mathbf{b}_g$ is gyroscope bias. The error-state filter estimates small corrections:
+geodetic position, NED velocity, attitude, and the accelerometer and gyroscope biases. The error-state filter estimates small corrections
 
 $$\delta \mathbf{x}
 =
 \left[
-\delta \mathbf{p},
-\delta \mathbf{v},
-\delta \boldsymbol{\theta},
-\delta \mathbf{b}_a,
+\delta \mathbf{p},\
+\delta \mathbf{v},\
+\delta \boldsymbol{\theta},\
+\delta \mathbf{b}_a,\
 \delta \mathbf{b}_g
-\right]^T.$$
+\right]^T,$$
 
-For a basic loose position and velocity update, the measurement innovation is
+where, unlike the nominal position, the position error $\delta\mathbf{p}$ is in NED meters (@sec-ins-gnss-error-state-formulation).
 
-$$\mathbf{y}_k
-=
+### The position innovation and the lever arm
+
+That mismatch of units is where the first real bug usually hides. The receiver reports the antenna's latitude, longitude, and height; the INS carries the IMU's. Before anything can be subtracted, the GNSS fix is converted into NED meters relative to the current nominal position $(\hat{L}, \hat{\lambda}, \hat{h})$:
+
+$$
+\mathbf{z}_k =
 \begin{bmatrix}
-\mathbf{p}_{GNSS,k} - \mathbf{p}_{INS,k} \\
-\mathbf{v}_{GNSS,k} - \mathbf{v}_{INS,k}
-\end{bmatrix}.$$
+(R_M + \hat{h})(L_{GNSS} - \hat{L}) \\
+(R_N + \hat{h})\cos\hat{L}\,(\lambda_{GNSS} - \hat{\lambda}) \\
+-(h_{GNSS} - \hat{h})
+\end{bmatrix}.
+$$ {#eq-global-nav-gnss-ned-offset}
 
-If the GNSS antenna is not located at the same physical point as the IMU, this innovation must include a lever-arm correction. If $\boldsymbol{\ell}^b$ is the known vector from the IMU origin to the GNSS antenna expressed in body axes, then the antenna position is approximately
+If the GNSS antenna is not at the IMU, the receiver measures a different point. With $\boldsymbol{\ell}^b$ the vector from the IMU to the antenna in body axes, the antenna sits at $\mathbf{C}_b^n\boldsymbol{\ell}^b$ meters from the IMU in NED, so the predicted measurement is $\hat{\mathbf{z}}_k = \hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b$ and the innovation is
 
-$$\mathbf{p}_{ant}
-=
-\mathbf{p}_{INS}
-+ \mathbf{C}_b^n \boldsymbol{\ell}^b,$$
+$$
+\boldsymbol{\nu}_k = \mathbf{z}_k - \hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b .
+$$
 
-with an analogous velocity correction when angular motion of the lever arm is significant. Do not ignore the lever arm just because it is inconvenient. On a small ground robot it may be negligible. On an aircraft, ship, or high-dynamics vehicle, it can be the difference between a clean innovation and a self-inflicted residual.
+The tempting shortcut, adding $\mathbf{C}_b^n\boldsymbol{\ell}^b$ directly to $(L, \lambda, h)$, adds meters to radians; the conversion runs the other way with $\delta L = \delta p_N/(R_M + h)$, $\delta\lambda = \delta p_E/((R_N + h)\cos L)$, and $\delta h = -\delta p_D$. Because the lever-arm term depends on attitude, the measurement Jacobian gains an attitude block,
 
-The simplest measurement matrix for a position and velocity update is
-
-$$\mathbf{H}
-=
+$$
+\mathbf{H}_k =
 \begin{bmatrix}
-\mathbf{I}_3 & \mathbf{0}_3 & \mathbf{0}_3 & \mathbf{0}_3 & \mathbf{0}_3 \\
-\mathbf{0}_3 & \mathbf{I}_3 & \mathbf{0}_3 & \mathbf{0}_3 & \mathbf{0}_3
-\end{bmatrix}.$$
+\mathbf{I}_3 & \mathbf{0}_3 & -\left[\hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b\right]_\times & \mathbf{0}_3 & \mathbf{0}_3
+\end{bmatrix},
+$$
 
-Depending on sign convention, some texts write the innovation as INS-minus-GNSS and use negative identity blocks instead. Either convention is fine if it is used consistently. In this course, use GNSS-minus-INS for the innovation above.
+derived in @sec-ins-gnss-loose-gnss-measurement. Do not ignore the lever arm just because it is inconvenient. On a small ground robot it may be negligible. On a ship with the antenna at the masthead, every roll swings the antenna meters sideways (Exercise 4), and an ignored lever arm turns that motion into a self-inflicted residual. The same term is also a gift: it makes attitude errors visible in position measurements whenever the vehicle rotates.
+
+Velocity works the same way. The antenna velocity adds the lever arm's rotational motion, $\mathbf{C}_b^n(\boldsymbol{\omega}_{nb}^b\times\boldsymbol{\ell}^b)$, and the velocity rows of $\mathbf{H}$ select $\delta\mathbf{v}$ (@sec-ins-gnss-lever-arm-timing). A phone that reports only speed and course gives horizontal velocity only, so use two rows, not three. Some texts define the innovation as INS-minus-GNSS and flip the signs in $\mathbf{H}$; either works if used consistently, and this course uses GNSS-minus-INS with errors defined as true minus estimate.
+
+The code below implements @eq-global-nav-gnss-ned-offset and the lever-arm innovation, then checks both against an exact ECEF computation: a "true" IMU displaced from the nominal one by a known $\delta\mathbf{p}$, rotated by a known $\delta\boldsymbol{\theta}$, carrying an antenna on a 2 m mast.
 
 ```{python}
-#| label: loose-gnss-update-interface
+#| label: global-nav-loose-update
 #| echo: true
-#| eval: false
-import numpy as np
+
+def skew(a: np.ndarray) -> np.ndarray:
+    """[a]_x such that skew(a) @ b == np.cross(a, b)."""
+    return np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
 
 
-def loose_gnss_update(error_state_mean, P, ins_position, ins_velocity,
-                      gnss_position, gnss_velocity, R_gnss):
-    """One loose INS/GNSS Kalman update for position and velocity."""
-    innovation = np.concatenate([
-        gnss_position - ins_position,
-        gnss_velocity - ins_velocity,
-    ])
+def rotvec_to_dcm(phi: np.ndarray) -> np.ndarray:
+    """Rotation matrix of a rotation vector (Rodrigues formula)."""
+    angle = np.linalg.norm(phi)
+    if angle < 1e-12:
+        return np.eye(3) + skew(phi)
+    K = skew(phi / angle)
+    return np.eye(3) + np.sin(angle) * K + (1.0 - np.cos(angle)) * K @ K
 
-    H = np.zeros((6, 15))
-    H[0:3, 0:3] = np.eye(3)  # position error
-    H[3:6, 3:6] = np.eye(3)  # velocity error
 
-    S = H @ P @ H.T + R_gnss
-    K = np.linalg.solve(S, H @ P).T
+def ecef_to_geodetic(r_e: np.ndarray) -> tuple[float, float, float]:
+    """ECEF [m] to geodetic (rad, rad, m) by fixed-point iteration on latitude."""
+    x, y, z = r_e
+    p = np.hypot(x, y)
+    lat = np.arctan2(z, p * (1.0 - WGS84_E2))
+    for _ in range(10):
+        lat = np.arctan2(z + WGS84_E2 * radii(lat)[1] * np.sin(lat), p)
+    h = p * np.cos(lat) + z * np.sin(lat) - WGS84_A**2 / radii(lat)[1]
+    return lat, np.arctan2(y, x), h
 
-    delta_x = error_state_mean + K @ (innovation - H @ error_state_mean)
 
-    I = np.eye(P.shape[0])
-    P_updated = (I - K @ H) @ P @ (I - K @ H).T + K @ R_gnss @ K.T
+def gnss_position_innovation(nominal, C_bn_hat, lever_arm_b, fix):
+    """Loose GNSS position innovation and Jacobian for the 15-state error vector.
 
-    return delta_x, P_updated
+    nominal, fix: (lat, lon, h) in rad, rad, m. Returns nu (NED meters) and H (3x15).
+    """
+    lat, lon, h = nominal
+    R_M, R_N = radii(lat)
+    z = np.array([(R_M + h) * (fix[0] - lat),                     # GNSS fix in NED meters
+                  (R_N + h) * np.cos(lat) * (fix[1] - lon),       # relative to the nominal
+                  -(fix[2] - h)])                                 # IMU position
+    lever_n = C_bn_hat @ lever_arm_b
+    nu = z - lever_n
+    H = np.zeros((3, 15))
+    H[:, 0:3] = np.eye(3)
+    H[:, 6:9] = -skew(lever_n)                                    # attitude block
+    return nu, H
+
+
+def ned_to_geodetic_correction(dp_ned, lat, h):
+    """Convert an NED-meter position correction into (dL, dlambda, dh)."""
+    R_M, R_N = radii(lat)
+    return np.array([dp_ned[0] / (R_M + h),
+                     dp_ned[1] / ((R_N + h) * np.cos(lat)),
+                     -dp_ned[2]])
+
+
+def loose_gnss_update(P, nu, H, R):
+    """Error-state Kalman update (Joseph form). Returns delta_x_hat and P_{k|k}."""
+    S = H @ P @ H.T + R
+    K = np.linalg.solve(S, H @ P).T                     # P H^T S^{-1} without an inverse
+    delta_x = K @ nu                                    # error-state prior mean is zero
+    I_KH = np.eye(P.shape[0]) - K @ H
+    return delta_x, I_KH @ P @ I_KH.T + K @ R @ K.T
+
+
+# Nominal state, and a known error: dp = (4, -3, 1.5) m NED, dtheta = (2, -1, 3) deg.
+nominal = (lat0, lon0, h0)
+C_bn_hat = rotvec_to_dcm(np.radians([0.0, 4.0, 30.0]))  # some nominal attitude
+lever_arm_b = np.array([0.5, 0.0, -2.0])                 # antenna 2 m above the IMU (FRD)
+dp_true = np.array([4.0, -3.0, 1.5])
+dtheta_true = np.radians([2.0, -1.0, 3.0])
+
+# Exact truth through ECEF: true IMU position, true attitude, true antenna position.
+r_imu = geodetic_to_ecef(*nominal) + C_e_to_n(lat0, lon0).T @ dp_true
+C_bn_true = rotvec_to_dcm(dtheta_true) @ C_bn_hat       # C = (I + [dtheta]x) C_hat to 1st order
+r_ant = r_imu + C_e_to_n(lat0, lon0).T @ (C_bn_true @ lever_arm_b)
+fix = ecef_to_geodetic(r_ant)
+
+nu, H = gnss_position_innovation(nominal, C_bn_hat, lever_arm_b, fix)
+delta_x_true = np.concatenate([dp_true, np.zeros(3), dtheta_true, np.zeros(6)])
+print("innovation nu [m]:           ", np.round(nu, 4))
+print("H @ delta_x (linear model):  ", np.round(H @ delta_x_true, 4))
+print(f"linearization error: {1e3 * np.linalg.norm(nu - H @ delta_x_true):.1f} mm")
+
+# One update from a 10 m / 5 deg prior with a 3 m (horizontal) / 5 m (vertical) fix.
+P = np.diag(np.r_[np.full(3, 10.0**2), np.full(3, 1.0**2), np.full(3, np.radians(5.0)**2),
+                  np.full(3, 0.1**2), np.full(3, np.radians(0.1)**2)])
+R = np.diag([3.0**2, 3.0**2, 5.0**2])
+delta_x_hat, P_post = loose_gnss_update(P, nu, H, R)
+d_geo = ned_to_geodetic_correction(delta_x_hat[:3], lat0, h0)
+print("position correction [m]:     ", np.round(delta_x_hat[:3], 2))
+print(f"as (dL, dlambda) [arcsec]: ({np.degrees(d_geo[0]) * 3600:.4f}, "
+      f"{np.degrees(d_geo[1]) * 3600:.4f}), dh {d_geo[2]:.2f} m")
+assert np.allclose(P_post, P_post.T) and np.all(np.linalg.eigvalsh(P_post) > 0)
 ```
 
-The code above is not a complete INS/GNSS system. It is the measurement-update shape. A complete implementation also needs strapdown propagation, error-state propagation, measurement gating, timestamp handling, lever-arm compensation, error injection, and error-state reset.
+The linearized model reproduces the exact ECEF innovation to within a few millimeters, the size of the second-order attitude terms over a 2 m lever arm. The code above is not a complete INS/GNSS system. It is the measurement-update shape. A complete implementation also needs strapdown propagation, error-state propagation, measurement gating, timestamp handling, error injection, and error-state reset, which @sec-ins-gnss assembles.
 
 ## Loose, Tight, and Deep Coupling {#sec-global-nav-loose-tight-deep}
 
-The coupling terms describe where GNSS information enters the integrated navigation algorithm [@groves].
+The coupling terms describe where GNSS information enters the integrated navigation algorithm [@groves]. They are a statement about architecture, robustness, and integrity, not about accuracy.
 
-- **Loosely coupled**: use the GNSS receiver position and velocity solution. This is position-domain integration. It is straightforward and is typically one of the more standard simple implementations.
-- **Tightly coupled**: use raw or corrected satellite ranging measurements such as pseudorange and pseudorange rate. This is range-domain integration. It can keep using partial satellite information when a receiver-level position fix is unavailable, but it requires receiver measurements and more detailed models. This is typical for more precision-critical systems such as aerospace or maritime navigation systems (centimeter level accuracy).
-- **Deeply coupled**: integrate INS aiding directly with receiver tracking loops. This is receiver-design territory and is outside this course's implementation scope. This is the architecture for *highly* precise (sub centimeter accuracy).
+**Loosely coupled** integration works in the position domain: the receiver computes its own PVT solution, and the integration filter treats that solution as a measurement. It is modular and straightforward to validate, which is why the project uses it. It has two structural weaknesses. It needs a receiver fix, normally four or more satellites, so it gets nothing from the two or three satellites visible in an urban canyon. And the receiver's own navigation filter makes its output errors time-correlated, so a second Kalman filter that treats them as white noise becomes overconfident; this is the cascaded-filter problem, and it is managed by inflating $\mathbf{R}_{GNSS}$ or reducing the update rate.
 
-For this course, tight and deep coupling are comparison points only. They are worth knowing because they explain why professional GNSS/INS systems can look more complicated than the filter we implement here. They are not required for the assignment.
+**Tightly coupled** integration works in the range domain: the filter processes each satellite's pseudorange and pseudorange rate directly and carries the receiver clock bias and drift as extra states. The benefits follow from that. It keeps aiding the INS with fewer than four satellites, because the inertial prediction supplies the missing geometry and each pseudorange still constrains position along its own line of sight. It can test each satellite's residual against the INS prediction and exclude a faulty one, which is per-satellite fault detection and exclusion. And it avoids the cascaded filters, so the measurement errors are closer to the white noise the Kalman filter assumes. The price is a more detailed model: satellite positions, clocks, atmosphere, Earth rotation, and receiver clock dynamics all become the integrator's problem.
+
+**Deeply coupled** (or ultra-tight) integration goes inside the receiver: the INS-predicted line-of-sight dynamics aid, or replace, the receiver's code and carrier tracking loops. Because the INS removes the vehicle's motion from what the loops must follow, the loops can use narrower bandwidths. That buys tracking at lower carrier-to-noise ratios, tracking through higher dynamics, faster reacquisition after an outage, and better resistance to jamming. This is receiver-design territory and is outside this course's implementation scope.
+
+Centimeter-level accuracy comes from a different axis entirely: carrier-phase processing, such as real-time kinematic (RTK) or precise point positioning (PPP), with its integer ambiguities and correction streams (@sec-adv-gnss-carrier-phase-corrections). A carrier-phase solution can feed a loosely coupled filter as an RTK position fix, or its observables can enter a tightly coupled one. Either way, the centimeters come from the carrier, and the coupling determines how gracefully the system degrades when satellites disappear or misbehave.
+
+For this course, tight and deep coupling are comparison points only. They are worth knowing because they explain why professional GNSS/INS systems look more complicated than the filter we implement here, and @sec-adv-gnss-tight-coupling works through the tightly coupled measurement model for readers who want it. They are not required for the assignment.
 
 ## Practical Checklist for the Project {#sec-global-nav-practical-checklist-project}
 
 When using GNSS measurements in the INS/GNSS project, check the following:
 
 - Confirm the coordinate frame of the GNSS position and velocity.
-- Convert latitude and longitude errors to metric errors before filtering, or use an ECEF/local NED representation consistently.
+- Confirm whether the height is ellipsoidal or mean sea level, and convert to ellipsoidal height before it touches the state.
+- Convert latitude and longitude differences to NED meters before filtering (@eq-global-nav-gnss-ned-offset), and convert corrections back before injecting them.
 - Use the GNSS timestamp, not the time at which your code happened to process the message.
-- Account for the IMU-to-antenna lever arm when it is non-negligible.
+- Account for the IMU-to-antenna lever arm when it is non-negligible, including its attitude block in $\mathbf{H}$.
 - Gate large innovations before letting them update the filter.
 - Choose $\mathbf{R}_{GNSS}$ from reported uncertainty when available; otherwise choose conservative values and tune using innovation statistics.
 - Treat outages explicitly. Do not feed stale GNSS measurements as if they were current.
 
 @sec-ins-gnss develops the curved-Earth strapdown equations used for INS propagation. After that, @sec-ins-errors explains why the error-state model needs bias and noise states. Together, those pieces give us the loose INS/GNSS system used in the final project.
+
+## Exercises {#sec-global-nav-exercises}
+
+1. **DOP by hand, then by code.** One satellite is at the zenith and three are
+   at elevation $30^\circ$, spaced $120^\circ$ apart in azimuth. Working in local
+   NED axes (rows $[-\mathbf{u}^{nT}, 1]$), write $\mathbf{G}^T\mathbf{G}$ and
+   show that the horizontal and vertical-plus-clock blocks decouple. Compute
+   HDOP, VDOP, TDOP, PDOP, and GDOP by hand. Then lower the three satellites to
+   $5^\circ$ elevation and recompute. Explain in one sentence each why VDOP
+   improves and why the clock and height are correlated. Confirm both answers
+   with `place_satellites`, `solve_pvt`, and `dop` from this chapter.
+
+2. **Weighted least squares.** Low-elevation satellites suffer more
+   atmospheric delay and multipath. Model this as
+   $\sigma_s = \sigma_0/\sin(\text{el}_s)$ with $\sigma_0 = 1.5$ m. Modify
+   `solve_pvt` to use weighted least squares, generate Monte Carlo data from the
+   spread sky with this elevation-dependent noise, and compare the horizontal and
+   vertical RMS errors of the unweighted and weighted solvers against their
+   predicted covariances, $\sigma^2(\mathbf{G}^T\mathbf{G})^{-1}$ (wrong for the
+   unweighted case; why?) and $(\mathbf{G}^T\mathbf{R}^{-1}\mathbf{G})^{-1}$.
+   Then apply a $15^\circ$ elevation mask instead of weighting. Which do you
+   prefer, and what does the mask cost in DOP?
+
+3. **What the receiver's MSL height does to your filter.** A receiver near
+   Worcester reports altitude above mean sea level; the local geoid undulation
+   is $N_g \approx -28$ m. You feed that altitude to the loosely coupled filter
+   as ellipsoidal height. (a) Which way, and by how much, is the GNSS
+   measurement biased? Where does the filter's height estimate converge, and
+   will the NIS test flag the problem? (b) How large is the resulting gravity
+   error from the free-air gradient (about $3.1\ \mu$m/s² per meter), and does it
+   matter for a smartphone IMU? (c) Halfway through a run, the logger switches
+   to a source that reports ellipsoidal height. Describe the innovation sequence,
+   and what a $\chi^2$ gate at 99% on the 3-D position innovation (with a 5 m
+   vertical $\sigma$) does next. (d) Name two other sensors or data sets whose
+   agreement with the filter would expose the error.
+
+4. **The masthead antenna.** A survey ship's GNSS antenna is 25 m above and 10 m
+   aft of the IMU, $\boldsymbol{\ell}^b = [-10, 0, -25]^T$ m in FRD axes. The
+   ship rolls sinusoidally with $15^\circ$ amplitude and a 10 s period. (a) Find
+   the amplitude of the antenna's sideways displacement and sideways velocity
+   relative to the IMU. (b) If the filter ignores the lever arm and uses GNSS
+   position with $\sigma = 1$ m and velocity with $\sigma = 0.1$ m/s, what
+   innovations does it see? (c) Use the attitude block of $\mathbf{H}$ to explain
+   why, with the lever arm modeled, the GNSS position measurements carry
+   information about roll error, and why a rooftop antenna 0.2 m above the IMU of
+   a car carries almost none.
+
+5. **Where the centimeters come from.** A delivery robot in a downtown street
+   sees only three GNSS satellites for 40 s. (a) What does a loosely coupled
+   filter receive during that time? What does a tightly coupled filter receive,
+   and along which directions does it constrain position? (b) Why does the
+   receiver clock model matter for the tightly coupled filter in this situation?
+   (c) A vendor brochure claims "centimeter accuracy thanks to tight coupling."
+   Write the two questions you would ask the vendor, and explain what actually
+   produces centimeter-level accuracy.

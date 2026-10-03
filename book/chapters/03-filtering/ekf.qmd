@@ -1085,18 +1085,18 @@ $$
 +
 \delta \mathbf{p}
 +
-\mathbf{v}_\text{GNSS},
+\boldsymbol{\epsilon}_\text{GNSS},
 $$
 
-where $\mathbf{v}_\text{GNSS}$ is the GNSS measurement noise. In error-state
-form, the innovation is
+where $\boldsymbol{\epsilon}_\text{GNSS}$ is the GNSS measurement noise (not a
+velocity). In error-state form, the innovation is
 
 $$
 \boldsymbol{\nu}
 =
 \mathbf{z}_\text{GNSS} - \hat{\mathbf{p}}_\text{INS}
 =
-\delta \mathbf{p} + \mathbf{v}_\text{GNSS}.
+\delta \mathbf{p} + \boldsymbol{\epsilon}_\text{GNSS}.
 $$
 
 The measurement matrix simply selects the position-error portion of the error
@@ -1114,9 +1114,10 @@ $$
 \end{bmatrix}.
 $$
 
-The full implementation becomes more involved once Earth rotation, transport
-rate, gravity, lever arms, time synchronization, and attitude error definitions
-are included. The process noise comes from the IMU noise densities entering
+This simple form assumes the antenna sits at the IMU. The full implementation
+becomes more involved once Earth rotation, transport rate, gravity, lever arms,
+time synchronization, and attitude error definitions are included; with a lever
+arm, $\mathbf{H}$ gains an attitude block (@sec-ins-gnss-loose-gnss-measurement). The process noise comes from the IMU noise densities entering
 through the inputs, exactly as in @sec-kf-input-noise. The important filtering
 idea is simple: use the high-rate inertial system for propagation and slower
 external measurements to bound drift.

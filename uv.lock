@@ -674,12 +674,14 @@ source = { editable = "projects/ins_gnss" }
 dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
+    { name = "scipy" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "matplotlib", specifier = ">=3.10.9" },
     { name = "numpy", specifier = ">=2.4.6" },
+    { name = "scipy", specifier = ">=1.17.1" },
 ]
 
 [[package]]
