@@ -17,8 +17,8 @@
 description = "Project 1: quadrotor IMU, AprilTag corner detections, camera images and Vicon truth"
 provider = "auto"
 url = "REPLACE_ME"
-sha256 = "0cb5969dbe6b0ccfad54e5215887353e54035a28c830a7733549cbbeef5eb8a8"
-size_bytes = 571590551
+sha256 = "2f944a3984b4de97cfba6a1a84c2913fa5a6ff0a3b62d310e2cb1cd571ad02d2"
+size_bytes = 571590643
 archive = "drone-data.zip"
 expected_files = [
     "parameters.txt",

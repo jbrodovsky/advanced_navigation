@@ -34,12 +34,16 @@ DRONE_README = """Advanced Robot Navigation - Project 1 drone dataset
 
 studentdata0.mat ... studentdata7.mat
     Quadrotor flights over an AprilTag mat. Each file holds:
-      data   - onboard packets: t, rpy, acc, angular rate (omg; drpy in
-               studentdata0), detected tag ids and corner pixels (p0-p4),
-               and the raw camera image (img)
+      data   - onboard packets: t, rpy, acc, detected tag ids, corner
+               pixels, and the raw camera image (img)
       vicon  - 12 x N motion-capture truth: position, roll/pitch/yaw,
                velocity, angular velocity
       time   - Vicon timestamps (s)
+
+    The packet layout differs between files:
+      studentdata1-7  omg (body angular rate), is_ready, corners p0-p4
+      studentdata0    drpy (a rate signal whose meaning is unconfirmed;
+                      it may be Euler-angle rates), corners p1-p4, no p0
 parameters.txt
     Camera intrinsics, camera-to-body mounting, and the tag layout.
 

@@ -30,7 +30,7 @@ def main() -> None:
     dataset = load_drone_dataset(args.dataset)
     params = load_drone_parameters(args.parameters)
     print(f"loaded {dataset.path} with {len(dataset.packets)} packets")
-    print(f"angular-rate field: {dataset.packets[0].rate_field}")
+    print(f"rate field: {dataset.packets[0].rate_field}")
     print(f"camera fx = {params.camera_matrix[0, 0]:.4f}")
 
 
