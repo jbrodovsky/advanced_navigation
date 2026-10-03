@@ -1,268 +1,996 @@
 # Probability Theory Refresher {#sec-probability}
 
-This chapter refreshes the probability concepts required to model uncertainty in state estimation. Students should already know these ideas; this chapter aligns notation and emphasizes navigation-specific usage. The other major underlying component of state estimation and modern navigation system is probability theory, which provides the mathematical framework for modeling uncertainty in state estimation. This chapter serves as a refresher on key probability concepts, with a focus on their application to navigation problems. It is assumed that students are already familiar with these ideas from prior coursework, but this chapter will align notation and emphasize the aspects most relevant to navigation.
+Every navigation system is a machine for managing uncertainty. Sensors are
+noisy, models are approximate, and the vehicle never tells you where it really
+is. Probability theory is the language we use to say how wrong we might be and,
+more usefully, how to become less wrong when a new measurement arrives. You have
+met these ideas before, so this chapter moves quickly: it aligns notation with
+the rest of the book, builds the Gaussian toolkit that every Kalman-family filter
+is assembled from, and closes with a case study in what happens when you bet
+against someone whose probability model is better than yours.
 
 ## Random Variables {#sec-probability-random-variables}
 
-A random variable is a function that maps outcomes of a random process to numerical values. For example, the position of a robot at time $t$ can be modeled as a random variable $\mathbf{x}_t$. Random variables can be discrete (taking on countable values) or continuous (taking on values in a continuum). In modern inertial navigation, we typically use some sort of digital computer to estimate state work with discrete time intervals. Digital computers are also discrete, so we often model states as discrete random variables. However, the underlying physical processes are continuous, and we often use continuous probability distributions derived, simplified, or discretized to model uncertainty in state estimation.
+A random variable is a function that maps the outcomes of a random experiment to
+numbers. The position of a robot at time $t$, the bias of a gyroscope when it
+powers on, and the range a lidar reports to a wall are all random variables. We
+write a scalar random variable as $X$ with realizations $x$. For vectors the
+book's convention of bold lowercase symbols takes over, so the state of a robot
+is the random vector $\mathbf{x}_k$.
 
-For our purposes, we will give a brief refresher on both continuous and discrete random variables, but the focus and assumption in the course materials will be on discrete random variables, since that is the most common case in modern navigation systems. Let $X$ be a random variable with density $p(x)$.
+Random variables come in two flavors. A **discrete-valued** random variable takes
+values in a countable set: the face of a die, the index of the grid cell a robot
+occupies, the number of satellites in view. It is described by a probability
+mass function (PMF) $p(x) = P(X = x)$ with $\sum_x p(x) = 1$. A
+**continuous-valued** random variable takes values in a continuum and is
+described by a probability density function (PDF) $p(x) \ge 0$ with
+$\int p(x)\,dx = 1$. For a continuous variable, probabilities are areas,
+$P(a \le X \le b) = \int_a^b p(x)\,dx$, and the density itself can exceed one
+because it carries units of one over the units of $x$.
 
-Some basic properties of a random variable are based around the concept of **expectation** or **expected value** which is a weighted average of the possible values of the random variable, where the weights are given by the probability density function. Plainly, the expectation of a random variable is the value you would expect to see most often or on average.
+It is easy to confuse that distinction with a different one: discrete *time*. A
+navigation computer runs at discrete time steps $k = 0, 1, 2, \ldots$ because it
+samples sensors and updates its estimate at a finite rate. That says nothing
+about the values the state can take. The position, velocity, and attitude
+estimated by a Kalman filter are continuous-valued random variables evaluated at
+discrete instants, $\mathbf{x}_k \in \mathbb{R}^n$, and most of this course lives
+in that world. Discrete-valued states appear when we deliberately chop a
+continuous state space into cells, as histogram and grid filters (@sec-bayes) and
+occupancy maps do, or when the quantity really is categorical, such as which
+landmark produced a measurement (@sec-feature-association). Particle filters
+(@sec-pf) sit in between: a continuous-valued state represented by a finite set
+of weighted samples.
 
-For a continuous random variable the expectation is defined as:
-$$
-\mathbb{E}[X] = \int_{-\infty}^{\infty} x p(x) dx \approx \mu
-$$
+### Expectation, Mean, Median, and Mode {#sec-probability-expectation}
 
-For a discrete random variable, the expectation is defined as:
-$$
-\mathbb{E}[X] = \sum_{x} x p(x) \approx \mu
-$$
-
-The expected value or expectation is analogous to the **statistical mean** of a dataset. In fact, in engineering literature, the terms "mean" and "expected value" are often used interchangeably. However, the mathematicians and statisticians will look at you with disapproving looks if you mix up the terms: expected value is a theoretical concept defined in terms of the probability distribution, while mean is often used to refer to the sample average computed from data. In practice, we often use the sample mean as an estimate of the expected value when we have data.
-
-From the expected value, we can define the variance of a random variable, which measures the spread or dispersion of the values around the mean. The variance is defined as:
-$$
-\text{Var}(X) = \mathbb{E}[(X - \mathbb{E}[X])^2] = \mathbb{E}[X^2] - (\mathbb{E}[X])^2 \approx \sigma^2
-$$
-
-The variance is analogous to the **statistical variance** of a dataset, which measures how much the data points deviate from the mean. It is also related to the **standard deviation**, which is the square root of the variance and has the same units as the random variable itself. The standard deviation is often more interpretable than the variance, since it is in the same units as the data.
-
-For a multivariate random variable $\mathbf{x} \in \mathbb{R}^n$, we can define the mean vector ($\boldsymbol{\mu}$) and covariance matrix ($\mathbf{\Sigma}$) as follows:
+The **expectation** or **expected value** of a random variable is the
+probability-weighted average of its possible values. For a continuous random
+variable,
 
 $$
-\boldsymbol{\mu} = \mathbb{E}[\mathbf{x}]
+\mu = \mathbb{E}[X] = \int_{-\infty}^{\infty} x\, p(x)\, dx,
 $$
+
+and for a discrete random variable,
+
 $$
-\mathbf{\Sigma} = \mathbb{E}\left[(\mathbf{x}-\boldsymbol{\mu})(\mathbf{x}-\boldsymbol{\mu})^T\right]
+\mu = \mathbb{E}[X] = \sum_{x} x\, p(x).
 $$
+
+Think of the expectation as the center of mass of the distribution: repeat the
+experiment many times, average the results, and the average converges to
+$\mathbb{E}[X]$ (the law of large numbers). It is *not* the value you should
+expect to see most often. That is the **mode**, the location of the peak of
+$p(x)$. A third notion of "center" is the **median**, the value with half the
+probability on each side. For a symmetric, single-peaked distribution such as the
+Gaussian, all three coincide, which is one reason engineers get away with being
+sloppy about them. For a skewed or multimodal distribution they do not. The
+expected roll of a fair die is 3.5, a value you will never roll. If the north and
+east errors of a GNSS fix are independent zero-mean Gaussians with standard
+deviation $\sigma$, the horizontal error magnitude has its mode at $\sigma$, its
+median at about $1.18\sigma$, and its mean at about $1.25\sigma$; the median is
+what receiver data sheets call the circular error probable (CEP). And for a robot
+that is either near the first door or near the third
+(@sec-bayes-1d-hallway-example), the mean of its belief can sit in a stretch of
+hallway where it almost certainly is not.
+
+Expectation is linear, $\mathbb{E}[aX + bY + c] = a\,\mathbb{E}[X] + b\,\mathbb{E}[Y] + c$,
+whether or not $X$ and $Y$ are independent. The expectation of a function of a
+random variable is $\mathbb{E}[g(X)] = \int g(x)\,p(x)\,dx$, and in general
+$\mathbb{E}[g(X)] \neq g(\mathbb{E}[X])$ unless $g$ is linear. That inequality
+will haunt us in the extended Kalman filter (@sec-ekf) and motivate the unscented
+one (@sec-ukf).
+
+The expected value is analogous to the **statistical mean** of a dataset, and in
+engineering literature the two terms are often used interchangeably.
+Mathematicians and statisticians will give you disapproving looks if you mix them
+up: the expected value is a property of the probability distribution, while the
+mean usually refers to the sample average computed from data. In practice we use
+the sample mean as an estimate of the expected value whenever we have data.
+
+From the expected value we define the **variance**, which measures the spread of
+values around the mean:
+
+$$
+\sigma^2 = \text{Var}(X) = \mathbb{E}\left[(X - \mathbb{E}[X])^2\right] = \mathbb{E}[X^2] - (\mathbb{E}[X])^2 .
+$$
+
+The **standard deviation** $\sigma$ is the square root of the variance. It has
+the same units as the random variable itself, which makes it the more
+interpretable of the two: "the altimeter is good to 2 m (one sigma)" means
+something to a pilot, whereas "4 m$^2$" mostly means something to a filter.
+
+For a random vector $\mathbf{x} \in \mathbb{R}^n$, the mean vector
+$\boldsymbol{\mu}$ and covariance matrix $\boldsymbol{\Sigma}$ are
+
+$$
+\boldsymbol{\mu} = \mathbb{E}[\mathbf{x}],
+\qquad
+\boldsymbol{\Sigma} = \mathbb{E}\left[(\mathbf{x}-\boldsymbol{\mu})(\mathbf{x}-\boldsymbol{\mu})^T\right].
+$$
+
+The covariance matrix is symmetric and positive semidefinite. Its diagonal holds
+the variances of the individual components, and its off-diagonal entries hold
+the covariances between them. In a filter, the covariance of the state estimate
+is written $\mathbf{P}$; we use $\boldsymbol{\Sigma}$ in this chapter when
+talking about distributions in general.
+
+## Cross-Covariance, Independence, and Correlation {#sec-probability-cross-covariance-independence}
+
+We compare two random variables $X$ and $Y$ using the **cross-covariance**,
+which measures how much they vary together:
+
+$$
+\text{Cov}(X,Y) = \mathbb{E}\left[(X - \mathbb{E}[X])(Y - \mathbb{E}[Y])\right].
+$$
+
+Dividing by the standard deviations gives the dimensionless **correlation
+coefficient** $\rho = \text{Cov}(X,Y)/(\sigma_X \sigma_Y)$, which always lies in
+$[-1, 1]$. For random vectors, the cross-covariance matrix is
+$\boldsymbol{\Sigma}_{xy} = \mathbb{E}[(\mathbf{x}-\boldsymbol{\mu}_x)(\mathbf{y}-\boldsymbol{\mu}_y)^T]$,
+and it is exactly the off-diagonal block of the covariance of the stacked vector
+$[\mathbf{x}^T, \mathbf{y}^T]^T$.
+
+**Independent** variables have zero cross-covariance. The converse fails in
+general: zero covariance does not imply independence, except when the variables
+are jointly Gaussian, a special case we will lean on heavily below. Correlation
+also arises naturally in navigation. A dead-reckoned position is integrated
+velocity, so an error in the velocity estimate becomes an error in position, and
+the two errors become correlated over time. That off-diagonal term is not a
+nuisance: it is the channel through which a position fix later corrects velocity.
+
+In navigation systems we often assume that process and measurement noise are
+independent for simplicity. In reality there may be correlations due to shared
+environmental factors or sensor characteristics: two GNSS antennas on the same
+mast see the same multipath, and two accelerometers on the same board feel the
+same temperature swing. Ignoring such correlations leads to inconsistent
+estimates and overconfident uncertainty bounds, so the covariance structure of
+the noise deserves as much care as its magnitude.
 
 ## Conditional Probability and Bayes' Rule {#sec-probability-conditional-probability-bayes}
 
-Conditional probability is the probability of an event occurring given that another event has already occurred. Put more generally, conditional probability allows us to update our *belief* about something based on new evidence or measurements. Mathematically, this is formulated as Bayes' rule:
+Two random vectors $\mathbf{x}$ and $\mathbf{z}$ are described jointly by the
+density $p(\mathbf{x}, \mathbf{z})$. Integrating one of them out gives the
+**marginal** density of the other,
 
 $$
-p(\mathbf{x}|\mathbf{z}) = \frac{p(\mathbf{z}|\mathbf{x})p(\mathbf{x})}{p(\mathbf{z})}
+p(\mathbf{x}) = \int p(\mathbf{x}, \mathbf{z})\, d\mathbf{z},
 $$
 
-Each of these terms represent a probability, or probability distribution, and they have specific interpretations in the context of state estimation. Again, we tend to use the term *belief* to describe the probability distribution over the state, but also has the quite literal meaning of *belief* in the sense of "what we believe to be true about the state of the system". In this context, Bayes' rule can be interpreted as follows:
+with a sum in place of the integral for discrete variables. The **conditional**
+density of $\mathbf{x}$ given $\mathbf{z}$ is the joint density with
+$\mathbf{z}$ held fixed at its observed value, renormalized:
+$p(\mathbf{x} \mid \mathbf{z}) = p(\mathbf{x}, \mathbf{z}) / p(\mathbf{z})$.
+Writing the joint density both ways,
+$p(\mathbf{x}, \mathbf{z}) = p(\mathbf{z} \mid \mathbf{x})\,p(\mathbf{x}) = p(\mathbf{x} \mid \mathbf{z})\,p(\mathbf{z})$,
+and combining the marginal with the conditional gives the **law of total
+probability**,
+$p(\mathbf{z}) = \int p(\mathbf{z} \mid \mathbf{x})\,p(\mathbf{x})\,d\mathbf{x}$.
+Two variables are independent when $p(\mathbf{x}, \mathbf{z}) = p(\mathbf{x})\,p(\mathbf{z})$,
+or equivalently when learning $\mathbf{z}$ tells you nothing about $\mathbf{x}$:
+$p(\mathbf{x} \mid \mathbf{z}) = p(\mathbf{x})$.
 
-- Prior belief $p(\mathbf{x})$: model-based belief before seeing new measurement
-- Posterior belief $p(\mathbf{x}|\mathbf{z})$: updated belief
-- Likelihood $p(\mathbf{z}|\mathbf{x})$: measurement consistency with candidate state (the likelihood of observing the measurement given the state)
-- Evidence $p(\mathbf{z})$: normalization constant, the probability of observing the measurement under all possible states
+Conditional probability lets us update our *belief* about something based on new
+evidence. Rearranging the two factorizations of the joint density gives Bayes'
+rule:
 
-Pragmatically speaking, the belief is simply just a probability distribution over the range of possible states. You can look at this like a histogram (or curve for continuous distributions) that shows how likely each state is where the total distribution sums to one. Practically, when implementing a Bayesian filter, we often break out Bayes' rule into two steps: prediction and update. The prediction step uses the state transition model (motion model in navigation) to predict the next state based on the previous state and inputs, while the update step uses the measurement model to update the belief based on new measurements. When formulated this way we typically refer to the state-belief probability distribution as $\text{bel}(\mathbf{x})$. Frequently you'll see this denoted with a subscript $k$ to indicate the time step (for discrete systems) and $t$ for continuous systems. 
+$$
+p(\mathbf{x}\mid\mathbf{z}) = \frac{p(\mathbf{z}\mid\mathbf{x})\,p(\mathbf{x})}{p(\mathbf{z})}
+$$ {#eq-probability-bayes-rule}
 
-For continuous systems, the prediction and update steps can be expressed as:
+Each term has a specific interpretation in state estimation. We use the word
+*belief* for the probability distribution over the state, and it also carries its
+literal meaning of "what we believe to be true about the system":
 
-1. Prediction: $\text{bel}(\mathbf{x}_k) = \int p(\mathbf{x}_k|\mathbf{x}_{k-1}, \mathbf{u}_k) \text{bel}(\mathbf{x}_{k-1}) d\mathbf{x}_{k-1}$
-2. Update: $\text{bel}(\mathbf{x}_k) = \eta p(\mathbf{z}_k|\mathbf{x}_k) \text{bel}(\mathbf{x}_k)$
+- Prior belief $p(\mathbf{x})$: the model-based belief before seeing the new measurement.
+- Likelihood $p(\mathbf{z}\mid\mathbf{x})$: how consistent the measurement is with each candidate state.
+- Evidence $p(\mathbf{z})$: the normalizing constant, computed by the law of total probability as the probability of the measurement averaged over all possible states.
+- Posterior belief $p(\mathbf{x}\mid\mathbf{z})$: the updated belief.
 
-For discrete systems, the prediction and update steps can be expressed as:
+Pragmatically, a belief is a probability distribution over the range of possible
+states. Picture it as a histogram (or a curve, for continuous states) showing how
+likely each state is, with total area one. When implementing a Bayesian filter we
+split the recursion into two steps. The **prediction** step uses the state
+transition model (the motion model, in navigation) and the inputs to push the
+belief forward in time. The **update** step uses the measurement model to fold in
+a new measurement. Following the conventions in @sec-frames-conventions, the
+predicted belief is $\overline{\text{bel}}(\mathbf{x}_k)$ and the updated belief
+is $\text{bel}(\mathbf{x}_k)$, where $k$ indexes discrete time steps. For
+continuous-valued states,
 
-1. Prediction: $\text{bel}(\mathbf{x}_k) = \sum_{\mathbf{x}_{k-1}} p(\mathbf{x}_k|\mathbf{x}_{k-1}, \mathbf{u}_k) \text{bel}(\mathbf{x}_{k-1})$
-2. Update: $\text{bel}(\mathbf{x}_k) = \eta p(\mathbf{z}_k|\mathbf{x}_k) \text{bel}(\mathbf{x}_k)$
+1. Prediction: $\overline{\text{bel}}(\mathbf{x}_k) = \int p(\mathbf{x}_k\mid\mathbf{x}_{k-1}, \mathbf{u}_k)\, \text{bel}(\mathbf{x}_{k-1})\, d\mathbf{x}_{k-1}$
+2. Update: $\text{bel}(\mathbf{x}_k) = \eta\, p(\mathbf{z}_k\mid\mathbf{x}_k)\, \overline{\text{bel}}(\mathbf{x}_k)$
 
-Where $\eta$ is a normalization constant to ensure that the belief sums to one. The prediction step propagates the belief forward in time based on the motion model and control inputs, while the update step incorporates new measurements to refine the belief. This recursive process allows the filter to maintain an updated estimate of the state over time, accounting for both process and measurement uncertainties.
+and for discrete-valued states the integral becomes a sum:
+
+1. Prediction: $\overline{\text{bel}}(\mathbf{x}_k) = \sum_{\mathbf{x}_{k-1}} p(\mathbf{x}_k\mid\mathbf{x}_{k-1}, \mathbf{u}_k)\, \text{bel}(\mathbf{x}_{k-1})$
+2. Update: $\text{bel}(\mathbf{x}_k) = \eta\, p(\mathbf{z}_k\mid\mathbf{x}_k)\, \overline{\text{bel}}(\mathbf{x}_k)$
+
+Here $\eta$ is the normalization constant (one over the evidence) that makes the
+belief integrate or sum to one. The prediction step is the law of total
+probability applied to the previous state; the update step is Bayes' rule. In a
+Kalman-family filter, $\overline{\text{bel}}(\mathbf{x}_k)$ is summarized by
+$\hat{\mathbf{x}}_{k|k-1}$ and $\mathbf{P}_{k|k-1}$, and
+$\text{bel}(\mathbf{x}_k)$ by $\hat{\mathbf{x}}_{k|k}$ and $\mathbf{P}_{k|k}$.
+@sec-bayes develops the recursion in full.
 
 ### Bayesian Filters in Python {#sec-probability-bayesian-filters-python}
 
-The update step is the easiest place to see Bayes' rule directly in code. In one dimension, suppose we have a prior belief about position and then receive a noisy position measurement. The likelihood tells us which states are consistent with the measurement, and the posterior is the normalized product of the prior and likelihood.
+The easiest place to see Bayes' rule in code is a one-dimensional grid. Suppose a
+robot on a 1 m track is equally likely to be near 0.30 m or near 0.60 m (it has
+seen one of two identical-looking markers but does not know which). It then moves
+0.05 m to the right with a motion uncertainty of 0.01 m, and a position sensor
+reports $z = 0.37$ m with a standard deviation of 0.02 m. We discretize the track
+into 1 mm cells, which turns the continuous-valued position into a
+discrete-valued approximation: each belief array below is a PMF whose entries
+sum to one.
 
 ```{python}
-#| label: bayesian-filter-1d-update
-#| fig-cap: "One-dimensional Bayesian filter update. The posterior is the normalized product of the prior belief and the measurement likelihood."
-#| code-fold: true
+#| label: bayes-1d-update-code
 
 import numpy as np
 import matplotlib.pyplot as plt
 
+
 def normal_pdf(x: np.ndarray, mean: float, std: float) -> np.ndarray:
     """Evaluate a one-dimensional normal probability density."""
     variance = std**2
-    scale = 1.0 / np.sqrt(2.0 * np.pi * variance)
-    return scale * np.exp(-0.5 * (x - mean)**2 / variance)
+    return np.exp(-0.5 * (x - mean) ** 2 / variance) / np.sqrt(2.0 * np.pi * variance)
 
-# Candidate positions along a one-dimensional track, in meters.
-dx = 1 / 1000   # Discretization step size
-x = np.linspace(0.0, 1.0, int(1/dx)) # state space
 
-# Prior belief with two candidate positions.
-prior = normal_pdf(x, mean=0.6, std=0.02)
-prior += normal_pdf(x, mean=0.3, std=0.01)  # add a second mode
-prior /= np.sum(prior)
+def to_pmf(weights: np.ndarray) -> np.ndarray:
+    """Normalize nonnegative cell weights so they sum to one."""
+    return weights / np.sum(weights)
 
-# Prediction update, sensed motion of 0.05 meters to the right with uncertainty of 0.01 meters. 
-# This is a simple convolution of the prior with the motion model, which is a Gaussian centered 
-# at 0.05 meters with std of 0.01 meters.
-def predict(prior: np.ndarray, motion_mean: float, motion_std: float) -> np.ndarray:
-    x_ = np.linspace(-0.5, 0.5, int(1/dx))  # motion model kernel state space
-    
-    kernel = np.exp(-0.5 * (np.linspace(-0.5, 0.5, int(1/dx)) / motion_std)**2)
-    kernel /= np.sum(kernel)  # normalize kernel to sum to 1
 
-    prediction = np.roll(prior, int(motion_mean/dx))  # shift prior by motion mean
-    prediction = np.convolve(prediction, kernel, mode='same')  # convolve with motion model
+# Discretize a 1 m track into 1 mm cells. Entry i of each PMF below is the
+# probability that the robot is in cell i.
+dx = 0.001                          # cell width (m)
+x = np.arange(0.0, 1.0, dx)         # cell positions (m)
 
-    return prediction
+# Prior: two equally likely hypotheses, one per look-alike marker.
+prior = to_pmf(normal_pdf(x, 0.30, 0.01) + normal_pdf(x, 0.60, 0.02))
 
-prediction = predict(prior, motion_mean=0.05, motion_std=0.01)
-prediction /= np.sum(prediction)  # normalize to sum to 1
 
-# Measurement update, sensed position of 0.45 meters with uncertainty of 0.01 meters. This is the likelihood of the measurement given the candidate positions.
-likelihood = normal_pdf(x, mean=0.45, std=0.01)
-likelihood /= np.sum(likelihood)
+def predict(belief: np.ndarray, motion_mean: float, motion_std: float,
+            dx: float) -> np.ndarray:
+    """Shift a gridded belief by the commanded motion and blur it by the motion noise."""
+    shift = int(round(motion_mean / dx))
+    # np.roll wraps circularly: probability pushed off the right end of the track
+    # reappears at the left end. That is harmless here because the belief is far
+    # from both ends; a real grid filter would pad the track or use an explicit
+    # transition matrix (see the Bayes filter chapter).
+    shifted = np.roll(belief, shift)
+    half_width = int(np.ceil(5 * motion_std / dx))
+    offsets = dx * np.arange(-half_width, half_width + 1)  # odd length, centered on zero
+    kernel = to_pmf(np.exp(-0.5 * (offsets / motion_std) ** 2))
+    return np.convolve(shifted, kernel, mode="same")
 
-# Bayes update: posterior is proportional to likelihood * prediction.
-unnormalized_posterior = likelihood * prediction
-dx = x[1] - x[0]
-posterior = unnormalized_posterior / np.sum(unnormalized_posterior * dx)
-posterior = posterior / np.sum(posterior)  # normalize to sum to 1  
+
+prediction = predict(prior, motion_mean=0.05, motion_std=0.01, dx=dx)
+
+# The likelihood is a function of the state x for the fixed measurement z.
+# It is not a distribution over x, so it does not need to sum to one.
+z, sigma_z = 0.37, 0.02
+likelihood = normal_pdf(x, z, sigma_z)
+
+# Bayes' rule: posterior is proportional to likelihood times prediction.
+# Normalize once, at the end.
+posterior = to_pmf(likelihood * prediction)
+
+print(f"Prediction mass near 0.65 m : {prediction[x >= 0.5].sum():.3f}")
+print(f"Posterior mass near 0.65 m  : {posterior[x >= 0.5].sum():.1e}")
+print(f"Posterior mean              : {np.sum(x * posterior):.4f} m")
+print(f"Posterior std               : {np.sqrt(np.sum((x - np.sum(x * posterior))**2 * posterior)) * 1000:.1f} mm")
+```
+
+```{python}
+#| label: fig-probability-bayes-update
+#| fig-cap: "One-dimensional Bayesian filter step on a 1 mm grid. The prediction shifts and broadens both hypotheses; the measurement at 0.37 m is consistent with only the left one, so the posterior keeps that hypothesis and discards the other. The likelihood is scaled to unit sum for display only."
+#| code-fold: true
 
 fig, ax = plt.subplots(figsize=(8, 4))
 ax.plot(x, prior, label="Prior belief", linewidth=2)
-ax.plot(x, prediction, label="Prediction belief", linewidth=2)
-ax.plot(x, likelihood, label="Measurement likelihood", linewidth=2)
+ax.plot(x, prediction, label="Predicted belief", linewidth=2)
+ax.plot(x, to_pmf(likelihood), label="Measurement likelihood (scaled)", linewidth=2, linestyle="--")
 ax.plot(x, posterior, label="Posterior belief", linewidth=2)
-
 ax.set_xlabel("Position along track (m)")
-ax.set_ylabel("Probability density")
-ax.set_title("One-Dimensional Bayesian Filter Update")
+ax.set_ylabel("Probability per 1 mm cell")
+ax.set_title("One-Dimensional Bayesian Filter Step")
+ax.set_xlim(0.2, 0.8)
 ax.legend()
 ax.grid(True, alpha=0.3)
 plt.show()
 ```
 
-## Cross-Covariance, Independence, and Correlation {#sec-probability-cross-covariance-independence}
+@fig-probability-bayes-update shows three things worth internalizing. First,
+prediction only ever moves and broadens the belief; motion without measurement
+loses information. Second, the measurement is less precise than the left-hand
+hypothesis and yet it is decisive. Measured in units of the combined prediction
+and measurement spread, it sits less than one standard deviation from the left
+mode and more than nine from the right. The right-hand hypothesis
+does not merely shrink, it vanishes. Third, the posterior is narrower than either
+the predicted left mode or the likelihood: combining two independent sources of
+information beats either one alone.
 
-We can compare two random variables $X$ and $Y$ using the **cross-covariance** which measures how much the two variables vary together. The cross-covariance is defined as:
+A 1000-cell grid is perfectly fine in one dimension. A 15-state inertial error
+model at the same resolution would need $1000^{15} = 10^{45}$ cells, which is
+more memory than exists. The rest of this chapter is about the one distribution
+that lets us carry a belief around with nothing more than a mean vector and a
+covariance matrix.
+
+## The Gaussian Distribution {#sec-probability-gaussian}
+
+The Gaussian (normal) distribution earns its place in navigation for two
+reasons. The respectable reason is the central limit theorem, which we meet at
+the end of this section: sums of many small, independent errors tend toward a
+Gaussian. The practical reason is closure. If you start with Gaussians and apply
+linear transformations, multiply densities, marginalize, or condition, you get
+Gaussians back, and each operation reduces to a few lines of matrix algebra on
+the mean and covariance. Every Kalman filter you will write is the four
+operations in this section performed in a particular order.
+
+### The Univariate Gaussian {#sec-probability-gaussian-univariate}
+
+A scalar Gaussian random variable $X \sim \mathcal{N}(\mu, \sigma^2)$ has density
+
 $$
-\text{Cov}(X,Y) = \mathbb{E}[(X - \mathbb{E}[X])(Y - \mathbb{E}[Y])]
+\mathcal{N}(x;\, \mu, \sigma^2) = \frac{1}{\sqrt{2\pi\sigma^2}} \exp\left(-\frac{(x-\mu)^2}{2\sigma^2}\right).
+$$ {#eq-probability-gaussian-1d}
+
+Its mean, median, and mode are all $\mu$, and its variance is $\sigma^2$. The
+familiar 68-95-99.7 rule gives the probability of landing within one, two, and
+three standard deviations of the mean. It is worth turning those percentages into
+rates, because sensors sample quickly: a "rare" three-sigma excursion happens
+about once every 370 samples, which for a 100 Hz sensor is every few seconds. A
+fault detector that flags every three-sigma measurement as a sensor failure will
+spend its life crying wolf.
+
+```{python}
+#| label: gaussian-sigma-bounds
+
+import math
+
+print(f"{'k':>3}  {'P(|X - mu| < k sigma)':>22}  {'1 in N samples outside':>23}  {'seconds at 100 Hz':>18}")
+for k in (1, 2, 3, 4):
+    p_inside = math.erf(k / math.sqrt(2.0))      # Gaussian CDF identity
+    one_in_n = 1.0 / (1.0 - p_inside)
+    print(f"{k:>3}  {p_inside:>22.5f}  {one_in_n:>23.1f}  {one_in_n / 100.0:>18.2f}")
+```
+
+### Products of Gaussians: The Update in Disguise {#sec-probability-gaussian-product}
+
+Suppose our prior belief about a scalar state is
+$\mathcal{N}(x;\, \mu_1, \sigma_1^2)$ and a sensor measures the state directly,
+$z = x + v$ with $v \sim \mathcal{N}(0, \sigma_2^2)$. Viewed as a function of
+$x$ for the received $z$, the likelihood is $\mathcal{N}(z;\, x, \sigma_2^2) = \mathcal{N}(x;\, z, \sigma_2^2)$:
+a Gaussian bump centered on the measurement. Bayes' rule says the posterior is
+proportional to their product, so we need to multiply two Gaussians. Writing
+$\mu_2 = z$, the sum of the two exponents is quadratic in $x$,
+
+$$
+-\frac{1}{2}\left[\frac{(x-\mu_1)^2}{\sigma_1^2} + \frac{(x-\mu_2)^2}{\sigma_2^2}\right]
+= -\frac{1}{2}\left[\left(\frac{1}{\sigma_1^2} + \frac{1}{\sigma_2^2}\right)x^2 - 2\left(\frac{\mu_1}{\sigma_1^2} + \frac{\mu_2}{\sigma_2^2}\right)x\right] + \text{const},
 $$
 
-**Independent** variables have zero cross-covariance. However, zero covariance does not necessarily imply independence unless the variables are jointly Gaussian. In navigation systems, we often assume that process and measurement noise are independent for simplicity, but in reality, there may be correlations due to shared environmental factors or sensor characteristics. Ignoring these correlations can lead to inconsistent estimates and overconfident uncertainty bounds. Therefore, it is important to carefully consider the covariance structure of the noise when designing filters and interpreting their outputs.
+and completing the square shows that the product is another Gaussian (times a
+constant), $\mathcal{N}(x;\, \mu_1, \sigma_1^2)\,\mathcal{N}(x;\, \mu_2, \sigma_2^2) = c\,\mathcal{N}(x;\, \mu, \sigma^2)$, with
+
+$$
+\mu = \frac{\sigma_2^2\,\mu_1 + \sigma_1^2\,\mu_2}{\sigma_1^2 + \sigma_2^2},
+\qquad
+\frac{1}{\sigma^2} = \frac{1}{\sigma_1^2} + \frac{1}{\sigma_2^2}.
+$$ {#eq-probability-gaussian-product}
+
+The precisions (inverse variances) add, and the mean is a precision-weighted
+average. The leftover constant is $c = \mathcal{N}(\mu_1;\, \mu_2, \sigma_1^2 + \sigma_2^2)$,
+which is the evidence $p(z)$: how plausible the measurement was before we saw it.
+
+Now define $K = \sigma_1^2 / (\sigma_1^2 + \sigma_2^2)$ and rewrite
+@eq-probability-gaussian-product:
+
+$$
+\mu = \mu_1 + K\,(\mu_2 - \mu_1),
+\qquad
+\sigma^2 = (1 - K)\,\sigma_1^2 .
+$$ {#eq-probability-scalar-update}
+
+Rename the prior $\mu_1 \to \hat{x}_{k|k-1}$, $\sigma_1^2 \to P_{k|k-1}$, the
+measurement $\mu_2 \to z_k$, $\sigma_2^2 \to R$, and you are looking at the
+scalar Kalman filter update with $H = 1$: the gain $K = P_{k|k-1}/(P_{k|k-1} + R)$
+lies between zero and one, the innovation $z_k - \hat{x}_{k|k-1}$ is the surprise,
+and the gain decides how much of the surprise to believe. Two other features are
+worth noticing. The posterior variance is smaller than both input variances, and
+it does not depend on the value of $z_k$ at all, so you can compute how uncertain
+you will be before the measurement arrives. That is the basis of covariance
+analysis, which navigation engineers use to size sensors before anyone buys one.
+
+As a navigation example, take a coastal vessel whose dead-reckoned along-track
+position since its last fix is $\mathcal{N}(1000, 50^2)$ m. A radar range to a
+charted headland places it at 1060 m with a standard deviation of 20 m.
+
+```{python}
+#| label: gaussian-product-code
+
+def gaussian_multiply(mean1: float, var1: float,
+                      mean2: float, var2: float) -> tuple[float, float]:
+    """Mean and variance of the normalized product of two 1D Gaussian densities."""
+    gain = var1 / (var1 + var2)
+    mean = mean1 + gain * (mean2 - mean1)
+    var = (1.0 - gain) * var1
+    return mean, var
+
+
+prior_mean, prior_var = 1000.0, 50.0**2     # dead reckoning (m, m^2)
+z_radar, r_radar = 1060.0, 20.0**2          # radar fix (m, m^2)
+post_mean, post_var = gaussian_multiply(prior_mean, prior_var, z_radar, r_radar)
+print(f"Gain K             : {prior_var / (prior_var + r_radar):.3f}")
+print(f"Posterior          : mean {post_mean:.1f} m, std {np.sqrt(post_var):.2f} m")
+
+# Cross-check against brute-force Bayes on a fine grid.
+s = np.linspace(700.0, 1300.0, 60001)
+grid_post = to_pmf(normal_pdf(s, prior_mean, 50.0) * normal_pdf(s, z_radar, 20.0))
+grid_mean = np.sum(s * grid_post)
+grid_std = np.sqrt(np.sum((s - grid_mean) ** 2 * grid_post))
+print(f"Grid check         : mean {grid_mean:.1f} m, std {grid_std:.2f} m")
+```
+
+```{python}
+#| label: fig-probability-gaussian-product
+#| fig-cap: "The product of two Gaussians is a Gaussian. The posterior (dead reckoning fused with a radar fix) lies between the two, closer to the more precise radar, and is narrower than either."
+#| code-fold: true
+
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.plot(s, normal_pdf(s, prior_mean, 50.0), linewidth=2, label="Prior: dead reckoning, N(1000, 50²)")
+ax.plot(s, normal_pdf(s, z_radar, 20.0), linewidth=2, linestyle="--", label="Likelihood: radar fix, N(1060, 20²)")
+ax.plot(s, normal_pdf(s, post_mean, np.sqrt(post_var)), linewidth=2,
+        label=f"Posterior: N({post_mean:.1f}, {np.sqrt(post_var):.1f}²)")
+ax.set_xlabel("Along-track position (m)")
+ax.set_ylabel("Probability density (1/m)")
+ax.set_xlim(850, 1200)
+ax.set_title("Fusing Dead Reckoning with a Radar Fix")
+ax.legend(loc="upper left")
+ax.grid(True, alpha=0.3)
+plt.show()
+```
+
+@fig-probability-gaussian-product makes the point visually. The update is exact
+here only because both inputs really are Gaussian. Feed it the bimodal prior of
+@fig-probability-bayes-update and it cannot represent "either here or there"; it
+will report a single confident answer somewhere in between.
+
+### The Multivariate Gaussian and Covariance Ellipses {#sec-probability-gaussian-multivariate}
+
+A Gaussian random vector $\mathbf{x} \sim \mathcal{N}(\boldsymbol{\mu}, \boldsymbol{\Sigma})$
+in $\mathbb{R}^n$ has density
+
+$$
+\mathcal{N}(\mathbf{x};\, \boldsymbol{\mu}, \boldsymbol{\Sigma}) = \frac{1}{\sqrt{(2\pi)^n \det\boldsymbol{\Sigma}}}
+\exp\left(-\frac{1}{2}(\mathbf{x}-\boldsymbol{\mu})^T \boldsymbol{\Sigma}^{-1} (\mathbf{x}-\boldsymbol{\mu})\right).
+$$ {#eq-probability-gaussian-nd}
+
+The quadratic form in the exponent,
+$d^2 = (\mathbf{x}-\boldsymbol{\mu})^T \boldsymbol{\Sigma}^{-1} (\mathbf{x}-\boldsymbol{\mu})$,
+is the squared **Mahalanobis distance**: distance measured in units of standard
+deviation along each direction. Surfaces of constant density are surfaces of
+constant $d^2$, which are ellipsoids. The eigendecomposition
+$\boldsymbol{\Sigma} = \mathbf{V}\boldsymbol{\Lambda}\mathbf{V}^T$
+(@sec-linalg-eigenvalues-eigenvectors) gives their geometry: the axes point along
+the eigenvectors, and the "$k$-sigma" ellipsoid has semi-axis lengths
+$k\sqrt{\lambda_i}$.
+
+Here is a trap that has caught many a chart plotter. If $\mathbf{x}$ is Gaussian,
+$d^2$ follows a chi-square distribution with $n$ degrees of freedom, so the
+probability inside the $k$-sigma ellipse depends on the dimension. In two
+dimensions it is $1 - e^{-k^2/2}$: the one-sigma ellipse contains only 39% of the
+probability, two sigma 86%, and three sigma 99% (@fig-probability-covariance-ellipses). A 95% horizontal error ellipse
+needs $k \approx 2.45$. When someone hands you a "one-sigma ellipse" on a
+navigation display, the vessel is outside it more often than inside.
+
+```{python}
+#| label: covariance-ellipse-code
+
+def covariance_ellipse(mean: np.ndarray, cov: np.ndarray, k: float,
+                       n_points: int = 200) -> np.ndarray:
+    """Points on the k-sigma ellipse of a 2D Gaussian, as a 2 x n_points array."""
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+    angle = np.linspace(0.0, 2.0 * np.pi, n_points)
+    unit_circle = np.vstack([np.cos(angle), np.sin(angle)])
+    # Stretch the unit circle by k*sqrt(eigenvalue) and rotate onto the eigenvectors.
+    return mean[:, None] + k * eigenvectors @ np.diag(np.sqrt(eigenvalues)) @ unit_circle
+
+
+def mahalanobis_sq(points: np.ndarray, mean: np.ndarray, cov: np.ndarray) -> np.ndarray:
+    """Squared Mahalanobis distance of each row of `points` from `mean`."""
+    diff = points - mean
+    return np.einsum("ij,ij->i", diff, np.linalg.solve(cov, diff.T).T)
+
+
+# Horizontal position error [north, east] with sigma_N = 4 m, sigma_E = 3 m, rho = 0.8.
+mean_ne = np.zeros(2)
+cov_ne = np.array([[16.0, 9.6],
+                   [9.6, 9.0]])
+rng = np.random.default_rng(2024)
+samples_ne = rng.multivariate_normal(mean_ne, cov_ne, size=5000)
+d2 = mahalanobis_sq(samples_ne, mean_ne, cov_ne)
+
+print(f"{'k':>3}  {'theory 1 - exp(-k^2/2)':>23}  {'fraction of samples inside':>27}")
+for k in (1, 2, 3):
+    print(f"{k:>3}  {1 - np.exp(-k**2 / 2):>23.3f}  {np.mean(d2 <= k**2):>27.3f}")
+```
+
+```{python}
+#| label: fig-probability-covariance-ellipses
+#| fig-cap: "Samples from a correlated 2D Gaussian horizontal position error with its 1-, 2-, and 3-sigma covariance ellipses. East is plotted horizontally and north vertically, as on a chart. Only about 39% of the samples fall inside the 1-sigma ellipse."
+#| code-fold: true
+
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.scatter(samples_ne[:, 1], samples_ne[:, 0], s=3, alpha=0.3, color="0.4", label="Samples")
+for k, style in zip((1, 2, 3), ("-", "--", ":")):
+    ellipse = covariance_ellipse(mean_ne, cov_ne, k)
+    ax.plot(ellipse[1], ellipse[0], linestyle=style, linewidth=2, color="C0", label=f"{k}-sigma ellipse")
+ax.set_xlabel("East error (m)")
+ax.set_ylabel("North error (m)")
+ax.set_aspect("equal")
+ax.set_title("Covariance Ellipses of a Horizontal Position Error")
+ax.legend(loc="upper left")
+ax.grid(True, alpha=0.3)
+plt.show()
+```
+
+### Linear Transformations: The Propagation Step {#sec-probability-gaussian-linear}
+
+If $\mathbf{x} \sim \mathcal{N}(\boldsymbol{\mu}, \boldsymbol{\Sigma})$ and
+$\mathbf{y} = \mathbf{A}\mathbf{x} + \mathbf{b}$, then
+
+$$
+\mathbf{y} \sim \mathcal{N}\left(\mathbf{A}\boldsymbol{\mu} + \mathbf{b},\; \mathbf{A}\boldsymbol{\Sigma}\mathbf{A}^T\right).
+$$ {#eq-probability-gaussian-linear}
+
+The mean follows from linearity of expectation. The covariance follows in one
+line:
+$\mathbb{E}[(\mathbf{y} - \mathbb{E}[\mathbf{y}])(\mathbf{y} - \mathbb{E}[\mathbf{y}])^T] = \mathbb{E}[\mathbf{A}(\mathbf{x}-\boldsymbol{\mu})(\mathbf{x}-\boldsymbol{\mu})^T\mathbf{A}^T] = \mathbf{A}\boldsymbol{\Sigma}\mathbf{A}^T$.
+Both of those statements hold for *any* distribution with a finite covariance;
+the special Gaussian property is that $\mathbf{y}$ is again exactly Gaussian. If
+we also add noise $\mathbf{w} \sim \mathcal{N}(\mathbf{0}, \mathbf{Q})$ that is
+independent of $\mathbf{x}$, covariances of independent terms add:
+$\mathbf{A}\mathbf{x} + \mathbf{w} \sim \mathcal{N}(\mathbf{A}\boldsymbol{\mu}, \mathbf{A}\boldsymbol{\Sigma}\mathbf{A}^T + \mathbf{Q})$.
+With $\mathbf{A} = \mathbf{F}$ this is the Kalman filter's prediction step,
+
+$$
+\hat{\mathbf{x}}_{k|k-1} = \mathbf{F}\hat{\mathbf{x}}_{k-1|k-1},
+\qquad
+\mathbf{P}_{k|k-1} = \mathbf{F}\mathbf{P}_{k-1|k-1}\mathbf{F}^T + \mathbf{Q},
+$$
+
+and @sec-kf-process-noise explains where a sensible $\mathbf{Q}$ comes from.
+
+To see what $\mathbf{F}\mathbf{P}\mathbf{F}^T$ does geometrically, take a
+constant-velocity model with state $[p, v]^T$ and
+$\mathbf{F} = \begin{bmatrix} 1 & \Delta t \\ 0 & 1 \end{bmatrix}$, start with
+uncorrelated position and velocity errors, and propagate for a few seconds with
+no process noise.
+
+```{python}
+#| label: gaussian-propagation-code
+
+dt = 1.0
+F_cv = np.array([[1.0, dt],
+                 [0.0, 1.0]])
+mean_pv = np.array([0.0, 1.0])               # [position (m), velocity (m/s)]
+cov_pv = np.diag([1.0**2, 0.5**2])           # uncorrelated to start
+
+means, covs = [mean_pv], [cov_pv]
+for _ in range(3):
+    means.append(F_cv @ means[-1])
+    covs.append(F_cv @ covs[-1] @ F_cv.T)    # Q = 0 to isolate the shear
+
+# Monte Carlo check: push samples through the same model.
+rng = np.random.default_rng(11)
+samples_pv = rng.multivariate_normal(mean_pv, cov_pv, size=20000)
+samples_t3 = samples_pv @ np.linalg.matrix_power(F_cv, 3).T
+
+print("Analytic P at t = 3 s:\n", covs[-1])
+print("Sample covariance at t = 3 s:\n", np.cov(samples_t3.T).round(3))
+rho = covs[-1][0, 1] / np.sqrt(covs[-1][0, 0] * covs[-1][1, 1])
+print(f"Position-velocity correlation at t = 3 s: {rho:.3f}")
+```
+
+```{python}
+#| label: fig-probability-propagation
+#| fig-cap: "Propagating a constant-velocity covariance through F P F^T with no process noise. The ellipse shears as velocity error accumulates into position error, so position and velocity become strongly correlated."
+#| code-fold: true
+
+fig, ax = plt.subplots(figsize=(8, 4))
+for step, (m, P) in enumerate(zip(means, covs)):
+    ellipse = covariance_ellipse(m, P, k=1.0)
+    ax.plot(ellipse[0], ellipse[1], linewidth=2, label=f"t = {step * dt:.0f} s")
+    ax.plot(*m, "k+")
+ax.set_xlabel("Position (m)")
+ax.set_ylabel("Velocity (m/s)")
+ax.set_title("1-Sigma Ellipses Under Constant-Velocity Propagation")
+ax.legend()
+ax.grid(True, alpha=0.3)
+plt.show()
+```
+
+In @fig-probability-propagation, position uncertainty grows, velocity
+uncertainty stays put, and the off-diagonal term appears from nothing because the position error at three seconds is mostly
+accumulated velocity error. Process noise would fatten every ellipse on top of
+the shear. The correlation is exactly what the next operation exploits.
+
+### Marginals and Conditionals: The Measurement Update in Disguise {#sec-probability-gaussian-conditioning}
+
+Partition a jointly Gaussian vector into two blocks:
+
+$$
+\begin{bmatrix} \mathbf{x} \\ \mathbf{y} \end{bmatrix}
+\sim \mathcal{N}\left(
+\begin{bmatrix} \boldsymbol{\mu}_x \\ \boldsymbol{\mu}_y \end{bmatrix},
+\begin{bmatrix} \boldsymbol{\Sigma}_{xx} & \boldsymbol{\Sigma}_{xy} \\ \boldsymbol{\Sigma}_{yx} & \boldsymbol{\Sigma}_{yy} \end{bmatrix}
+\right).
+$$
+
+The **marginal** of $\mathbf{x}$ is $\mathcal{N}(\boldsymbol{\mu}_x, \boldsymbol{\Sigma}_{xx})$:
+marginalizing a Gaussian in covariance form means reading off a block. (The
+information form of @sec-information-filter reverses the difficulty: there
+conditioning is easy and marginalizing takes work.) The **conditional** of
+$\mathbf{x}$ given an observed value of $\mathbf{y}$ is also Gaussian, with
+
+$$
+\boldsymbol{\mu}_{x|y} = \boldsymbol{\mu}_x + \boldsymbol{\Sigma}_{xy}\boldsymbol{\Sigma}_{yy}^{-1}(\mathbf{y} - \boldsymbol{\mu}_y),
+\qquad
+\boldsymbol{\Sigma}_{x|y} = \boldsymbol{\Sigma}_{xx} - \boldsymbol{\Sigma}_{xy}\boldsymbol{\Sigma}_{yy}^{-1}\boldsymbol{\Sigma}_{yx}.
+$$ {#eq-probability-gaussian-conditional}
+
+The conditional covariance is the **Schur complement** of
+$\boldsymbol{\Sigma}_{yy}$ in the joint covariance. There is a short derivation
+that uses only facts from this chapter. Define the residual
+$\mathbf{e} = \mathbf{x} - \boldsymbol{\mu}_x - \boldsymbol{\Sigma}_{xy}\boldsymbol{\Sigma}_{yy}^{-1}(\mathbf{y} - \boldsymbol{\mu}_y)$.
+It is a linear function of jointly Gaussian variables, so $\mathbf{e}$ and
+$\mathbf{y}$ are jointly Gaussian, and its cross-covariance with $\mathbf{y}$ is
+$\boldsymbol{\Sigma}_{xy} - \boldsymbol{\Sigma}_{xy}\boldsymbol{\Sigma}_{yy}^{-1}\boldsymbol{\Sigma}_{yy} = \mathbf{0}$.
+Uncorrelated and jointly Gaussian means independent, so observing $\mathbf{y}$
+tells us nothing about $\mathbf{e}$. Writing
+$\mathbf{x} = \boldsymbol{\mu}_x + \boldsymbol{\Sigma}_{xy}\boldsymbol{\Sigma}_{yy}^{-1}(\mathbf{y} - \boldsymbol{\mu}_y) + \mathbf{e}$,
+conditioning on $\mathbf{y}$ fixes the first two terms and leaves $\mathbf{e}$
+alone, with zero mean and covariance
+$\boldsymbol{\Sigma}_{xx} - \boldsymbol{\Sigma}_{xy}\boldsymbol{\Sigma}_{yy}^{-1}\boldsymbol{\Sigma}_{yx}$
+(apply @eq-probability-gaussian-linear to the definition of $\mathbf{e}$).
+
+Now apply this to a measurement $\mathbf{z} = \mathbf{H}\mathbf{x} + \mathbf{v}$,
+with $\mathbf{v} \sim \mathcal{N}(\mathbf{0}, \mathbf{R})$ independent of the
+predicted state $\mathbf{x} \sim \mathcal{N}(\hat{\mathbf{x}}_{k|k-1}, \mathbf{P}_{k|k-1})$.
+The stacked vector $[\mathbf{x}^T, \mathbf{z}^T]^T$ is a linear function of
+$\mathbf{x}$ and $\mathbf{v}$, so it is jointly Gaussian with
+
+$$
+\boldsymbol{\mu}_z = \mathbf{H}\hat{\mathbf{x}}_{k|k-1},
+\qquad
+\boldsymbol{\Sigma}_{xz} = \mathbf{P}_{k|k-1}\mathbf{H}^T,
+\qquad
+\boldsymbol{\Sigma}_{zz} = \mathbf{H}\mathbf{P}_{k|k-1}\mathbf{H}^T + \mathbf{R} = \mathbf{S}_k .
+$$
+
+Substituting into @eq-probability-gaussian-conditional gives
+
+$$
+\hat{\mathbf{x}}_{k|k} = \hat{\mathbf{x}}_{k|k-1} + \mathbf{K}_k(\mathbf{z}_k - \mathbf{H}\hat{\mathbf{x}}_{k|k-1}),
+\qquad
+\mathbf{P}_{k|k} = (\mathbf{I} - \mathbf{K}_k\mathbf{H})\mathbf{P}_{k|k-1},
+\qquad
+\mathbf{K}_k = \mathbf{P}_{k|k-1}\mathbf{H}^T\mathbf{S}_k^{-1},
+$$
+
+which is the Kalman filter measurement update. @sec-kf-derivation derives it
+again from the minimum-mean-square-error point of view and shows why it is
+optimal. In the scalar case with $H = 1$ it collapses to
+@eq-probability-scalar-update: multiplying Gaussian densities and conditioning a
+joint Gaussian are the same operation seen from two sides.
+
+The formula also explains how unmeasured states get corrected. Continue the
+constant-velocity example: at $t = 3$ s we measure position only, with a 0.5 m
+standard deviation, and the off-diagonal term $\boldsymbol{\Sigma}_{xz} = \mathbf{P}\mathbf{H}^T$
+carries part of the correction into velocity. Conditioning is literally slicing
+the joint distribution at the observed value, which we can check by brute force:
+draw joint samples of $(\mathbf{x}, z)$ and keep only those whose $z$ landed
+within a hair of the measurement.
+
+```{python}
+#| label: gaussian-conditioning-code
+
+def gaussian_condition(mu_x: np.ndarray, mu_y: np.ndarray, S_xx: np.ndarray,
+                       S_xy: np.ndarray, S_yy: np.ndarray,
+                       y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Mean and covariance of x given y for jointly Gaussian (x, y)."""
+    gain = np.linalg.solve(S_yy, S_xy.T).T           # S_xy S_yy^{-1} without an explicit inverse
+    return mu_x + gain @ (y - mu_y), S_xx - gain @ S_xy.T
+
+
+P_pred = covs[-1]                     # sheared covariance at t = 3 s
+x_pred = means[-1]
+H_pos = np.array([[1.0, 0.0]])        # measure position only
+R_pos = np.array([[0.5**2]])
+z_obs = np.array([4.5])
+
+S = H_pos @ P_pred @ H_pos.T + R_pos
+x_post, P_post = gaussian_condition(x_pred, H_pos @ x_pred, P_pred, P_pred @ H_pos.T, S, z_obs)
+print("Posterior mean [p, v]  :", x_post.round(3))
+print("Posterior covariance   :\n", P_post.round(4))
+print(f"Velocity std           : {np.sqrt(P_pred[1, 1]):.3f} -> {np.sqrt(P_post[1, 1]):.3f} m/s (never measured)")
+
+# Brute force: sample the joint (x, z) and slice it at z = z_obs.
+rng = np.random.default_rng(3)
+x_s = rng.multivariate_normal(x_pred, P_pred, size=500_000)
+z_s = x_s @ H_pos.T + rng.normal(0.0, 0.5, size=(500_000, 1))
+keep = np.abs(z_s[:, 0] - z_obs[0]) < 0.02
+print(f"Slice kept {keep.sum()} samples")
+print("Slice mean             :", x_s[keep].mean(axis=0).round(3))
+print("Slice covariance       :\n", np.cov(x_s[keep].T).round(4))
+```
+
+### Total Probability and Marginalization {#sec-probability-gaussian-total-probability}
+
+The Bayes prediction step,
+$\overline{\text{bel}}(\mathbf{x}_k) = \int p(\mathbf{x}_k \mid \mathbf{x}_{k-1}, \mathbf{u}_k)\,\text{bel}(\mathbf{x}_{k-1})\,d\mathbf{x}_{k-1}$,
+is the law of total probability: form the joint density of the previous and
+current states and integrate the previous state out. For a linear-Gaussian model
+we never need to evaluate that integral. Because
+$\mathbf{x}_k = \mathbf{F}\mathbf{x}_{k-1} + \mathbf{w}_k$ is a linear function
+of the independent Gaussians $\mathbf{x}_{k-1}$ and $\mathbf{w}_k$, the pair is
+jointly Gaussian,
+
+$$
+\begin{bmatrix} \mathbf{x}_{k-1} \\ \mathbf{x}_k \end{bmatrix}
+\sim \mathcal{N}\left(
+\begin{bmatrix} \hat{\mathbf{x}}_{k-1|k-1} \\ \mathbf{F}\hat{\mathbf{x}}_{k-1|k-1} \end{bmatrix},
+\begin{bmatrix} \mathbf{P}_{k-1|k-1} & \mathbf{P}_{k-1|k-1}\mathbf{F}^T \\ \mathbf{F}\mathbf{P}_{k-1|k-1} & \mathbf{F}\mathbf{P}_{k-1|k-1}\mathbf{F}^T + \mathbf{Q} \end{bmatrix}
+\right),
+$$
+
+and marginalizing out $\mathbf{x}_{k-1}$ means reading off the lower-right block,
+which is the prediction step of @sec-probability-gaussian-linear again. The
+off-diagonal block $\mathbf{P}_{k-1|k-1}\mathbf{F}^T$ is discarded by the filter,
+but it is precisely what the smoother of @sec-kf-smoothing uses to send
+information backward in time.
+
+Total probability has a companion for moments. The laws of total expectation and
+total variance say
+
+$$
+\mathbb{E}[X] = \mathbb{E}\big[\mathbb{E}[X \mid Y]\big],
+\qquad
+\text{Var}(X) = \mathbb{E}\big[\text{Var}(X \mid Y)\big] + \text{Var}\big(\mathbb{E}[X \mid Y]\big).
+$$
+
+In words, the total spread is the average spread *within* each hypothesis plus
+the spread *between* the hypotheses. Apply it to the two-marker prior of
+@fig-probability-bayes-update, where $Y$ labels which marker the robot saw: the
+modes at 0.30 m and 0.60 m have standard deviations of 0.01 m and 0.02 m, so the
+mean is 0.45 m and the variance is $(0.01^2 + 0.02^2)/2 + 0.15^2 \approx 0.0228$
+m$^2$. A single Gaussian matched to those moments has a standard deviation of
+about 15 cm and its peak at 0.45 m, exactly where the robot is not. This is the
+moment-matching failure that makes global localization a job for particle
+filters (@sec-pf) or Gaussian mixtures rather than a single Kalman filter.
+
+```{python}
+#| label: total-variance-check
+
+prior_mean_grid = np.sum(x * prior)
+prior_var_grid = np.sum((x - prior_mean_grid) ** 2 * prior)
+within = 0.5 * (0.01**2 + 0.02**2)               # E[Var(X | Y)]
+between = 0.5 * (0.30 - 0.45)**2 + 0.5 * (0.60 - 0.45)**2   # Var(E[X | Y])
+print(f"Grid prior mean / variance : {prior_mean_grid:.4f} m, {prior_var_grid:.5f} m^2")
+print(f"Law of total variance      : {within:.5f} + {between:.5f} = {within + between:.5f} m^2")
+print(f"Prior probability within 5 cm of the mean: {prior[np.abs(x - prior_mean_grid) < 0.05].sum():.2e}")
+```
+
+### Why Gaussians? The Central Limit Theorem {#sec-probability-gaussian-clt}
+
+The central limit theorem says that the standardized sum of $n$ independent,
+identically distributed random variables with finite variance converges in
+distribution to a standard Gaussian as $n$ grows. The convergence is often fast.
+An analog-to-digital converter's quantization error is roughly uniform on
+$\pm\tfrac{1}{2}$ LSB, about as un-Gaussian as a bounded distribution gets, yet
+the sum of a dozen such errors is already hard to tell from a Gaussian by eye
+(@fig-probability-clt). The same mechanism is why the many small, independent
+disturbances inside a sensor (thermal noise, quantization, vibration) tend to
+produce near-Gaussian noise, and why integrating white gyroscope noise over many
+samples produces an angle random walk with Gaussian increments.
+
+```{python}
+#| label: fig-probability-clt
+#| fig-cap: "Central limit theorem in action. Sums of n independent quantization errors, each uniform on ±0.5 LSB, compared with a Gaussian of the same variance n/12. By n = 12 the histogram is hard to distinguish from the Gaussian."
+#| code-fold: true
+
+rng = np.random.default_rng(12)
+n_samples = 100_000
+fig, axes = plt.subplots(1, 4, figsize=(12, 3), sharey=False)
+for ax, n_terms in zip(axes, (1, 2, 4, 12)):
+    sums = rng.uniform(-0.5, 0.5, size=(n_samples, n_terms)).sum(axis=1)
+    sigma = np.sqrt(n_terms / 12.0)
+    grid = np.linspace(-4 * sigma, 4 * sigma, 300)
+    ax.hist(sums, bins=60, density=True, color="0.7", label="Simulated sum")
+    ax.plot(grid, normal_pdf(grid, 0.0, sigma), "C3", linewidth=2, label="Gaussian")
+    excess_kurtosis = np.mean((sums / sigma) ** 4) - 3.0
+    ax.set_title(f"n = {n_terms} (excess kurtosis {excess_kurtosis:+.2f})", fontsize=10)
+    ax.set_xlabel("Sum of errors (LSB)")
+axes[0].set_ylabel("Probability density")
+axes[0].legend(fontsize=8)
+plt.tight_layout()
+plt.show()
+```
+
+Two caveats keep the theorem honest. It says nothing about the tails at finite
+$n$, and it needs finite variance and (roughly) independent terms. GNSS
+multipath, lidar returns from rain, and a wrong data association do not produce
+small independent errors; they produce outliers and heavy tails, and a filter
+that assumes Gaussian noise will be wildly overconfident about them. That is why
+practical filters gate measurements on their Mahalanobis distance
+(@sec-slam-association-innovation-mahalanobis-distance) and why the
+nonparametric methods of @sec-pf exist. The other, less respectable reason the
+Gaussian dominates is the closure property this section has been exploiting:
+when the world is close enough to Gaussian, the math becomes matrix algebra.
 
 ## A Case Study in Probability Theory: Why you should never gamble against the house {#sec-probability-case-study-probability}
 
-Probability theory is abstract. Betting is concrete. The gambling industry has spent centuries engineering systems that are mathematically guaranteed to extract money from participants, and those systems are a beautiful — if sobering — application of everything in this chapter. Understanding them will also sharpen your intuition for why an imperfect prior or a biased likelihood function corrupts your state estimate in exactly the same way a crooked bookie corrupts your payout.
+Probability theory is abstract. Betting is concrete. The gambling industry has
+spent centuries engineering games that are mathematically guaranteed to extract
+money from the people who play them, and those games are a beautiful, if
+sobering, application of everything in this chapter. They also sharpen your
+intuition for a navigation truth: a better model is an edge, and a wrong model is
+a slow leak. A biased likelihood corrupts your state estimate in the same way
+shaded odds corrupt your payout, quietly and a little at a time.
 
 ### Odds and What They Mean
 
-At its core, an **odds** quote is a compressed representation of a probability. Bookmakers express the same underlying number in three different formats depending on the market, and understanding the conversions is the first step.
+At its core, an **odds** quote is a compressed representation of a probability.
+Bookmakers express the same underlying number in three different formats
+depending on the market, and understanding the conversions is the first step.
 
-**Decimal odds** (dominant in Europe and online markets) express the total return per unit staked, including your stake back:
-
-$$
-d = \frac{1}{p}
-$$
-
-so a true probability of $p = 0.5$ (a fair coin) corresponds to decimal odds $d = 2.0$. If you bet \$1 at $d = 2.0$ and win, you receive \$2 back (\$1 profit + \$1 stake returned).
-
-**Fractional odds** (traditional in UK and US horse racing) express profit relative to stake. The quote $n/m$ means you profit \$n for every \$m staked. The implied probability is:
+**Decimal odds** (dominant in Europe and online markets) express the total
+return per unit staked, including your stake back. A price of $d$ implies the
+probability $p$ through
 
 $$
-p = \frac{m}{n + m}
+d = \frac{1}{p},
 $$
 
-So 1/1 (read "evens") implies $p = 0.5$. A odds quote of 5/1 implies $p = 1/6 \approx 0.167$.
+so a true probability of $p = 0.5$ (a fair coin) corresponds to decimal odds
+$d = 2.0$. If you bet \$1 at $d = 2.0$ and win, you receive \$2 back (\$1 profit
+plus your \$1 stake).
 
-**American Moneyline odds** (traditional in US sports betting) are expressed as signed integers relative to a \$100 unit:
+**Fractional odds** (traditional in UK and US horse racing) express profit
+relative to stake. The quote $n/m$ means you profit \$n for every \$m staked.
+The implied probability is
 
-- A **positive** line (e.g. +150) means a \$100 bet profits \$150 if you win. Implied probability: $p = \frac{100}{o + 100}$
-- A **negative** line (e.g. −200) means you must stake \$200 to profit \$100. Implied probability: $p = \frac{|o|}{|o| + 100}$
+$$
+p = \frac{m}{n + m}.
+$$
 
-So if the line is +150, the implied probability is $p = 100 / (150 + 100) = 0.4$. If the line is −200, the implied probability is $p = 200 / (200 + 100) = 0.6667$.
+So 1/1 (read "evens") implies $p = 0.5$, and a quote of 5/1 implies
+$p = 1/6 \approx 0.167$.
 
-All three formats encode identical information. The Python block below provides conversion utilities so we can work in whichever format is convenient.
+**American moneyline odds** (traditional in US sports betting) are expressed as
+signed integers relative to a \$100 unit:
+
+- A **positive** line (e.g. +150) means a \$100 bet profits \$150 if you win. Implied probability: $p = \frac{100}{o + 100}$.
+- A **negative** line (e.g. −200) means you must stake \$200 to profit \$100. Implied probability: $p = \frac{|o|}{|o| + 100}$.
+
+So a line of +150 implies $p = 100 / (150 + 100) = 0.4$, and a line of −200
+implies $p = 200 / (200 + 100) \approx 0.667$.
+
+All three formats encode identical information. The code below provides
+conversion utilities so we can work in whichever format is convenient.
 
 ```{python}
 #| label: odds-conversions
-#| code-fold: true
 
 def decimal_to_implied_prob(d: float) -> float:
     """Implied probability from decimal odds."""
     return 1.0 / d
 
+
 def fractional_to_decimal(n: float, m: float) -> float:
-    """Convert fractional odds n/m to decimal."""
+    """Convert fractional odds n/m (profit n per m staked) to decimal odds."""
     return (n / m) + 1.0
 
+
 def american_to_decimal(o: float) -> float:
-    """Convert American moneyline to decimal odds."""
+    """Convert an American moneyline to decimal odds."""
     if o > 0:
         return (o / 100.0) + 1.0
-    else:
-        return (100.0 / abs(o)) + 1.0
+    return (100.0 / abs(o)) + 1.0
+
 
 def decimal_to_american(d: float) -> float:
-    """Convert decimal odds to American moneyline."""
+    """Convert decimal odds to an American moneyline."""
     if d >= 2.0:
         return (d - 1.0) * 100.0
-    else:
-        return -100.0 / (d - 1.0)
+    return -100.0 / (d - 1.0)
 
-# Demonstration — a coin flip in all three formats
+
+# A fair coin flip in all three formats
 p_true = 0.5
-d_fair = 1.0 / p_true       # 2.0 (fair)
-
+d_fair = 1.0 / p_true       # 2.0
 print("=== Fair coin flip ===")
 print(f"  True probability : {p_true:.4f}")
-print(f"  Decimal odds     : {d_fair:.4f}")
-print(f"  Fractional       : {fractional_to_decimal(1, 1):.4f}  (1/1, i.e. 'evens')")
-print(f"  American         : {decimal_to_american(d_fair):+.1f}")
+print(f"  Decimal odds     : {d_fair:.2f}")
+print(f"  Fractional odds  : 1/1 ('evens'), which is decimal {fractional_to_decimal(1, 1):.2f}")
+print(f"  American odds    : {decimal_to_american(d_fair):+.0f}")
+
+print("\n=== The other examples from the text ===")
+print(f"  Fractional 5/1 -> implied p = {decimal_to_implied_prob(fractional_to_decimal(5, 1)):.4f}")
+print(f"  American +150  -> implied p = {decimal_to_implied_prob(american_to_decimal(150)):.4f}")
+print(f"  American -200  -> implied p = {decimal_to_implied_prob(american_to_decimal(-200)):.4f}")
 ```
 
 ### Expected Value of a Bet
 
-A wager is a discrete random variable. If you stake \$1 at decimal odds $d$ on an outcome with true probability $p$, your profit $W$ takes two values:
+A wager is a discrete random variable. If you stake \$1 at decimal odds $d$ on an
+outcome with true probability $p$, your profit $W$ takes two values:
 
 $$
 W = \begin{cases} d - 1 & \text{with probability } p \\ -1 & \text{with probability } 1-p \end{cases}
 $$
 
-The expected profit is therefore:
+The expected profit is therefore
 
 $$
-\mathbb{E}[W] = p(d - 1) + (1-p)(-1) = pd - 1
-$$
+\mathbb{E}[W] = p(d - 1) + (1-p)(-1) = pd - 1 = \frac{p}{q} - 1,
+$$ {#eq-probability-bet-ev}
 
-For **fair odds** ($d = 1/p$) this equals exactly zero — you neither gain nor lose in the long run regardless of which side of the bet you take. Not exactly a good way to run a business. This means that for simple you against the house bets (e.g. roll a die, flip a coin) with truly random and fair outcomes, the bookmaker or casino cannot make a *profit* if they offer *fair* odds. 
-
-For fair random variables, in order to make a profit the bookmaker must offer unfair payouts — that is, they must shade the odds below the fair level. This is the mathematical basis for the house edge in gambling. Take a simple coin flip with true probability $p = 0.5$. If the bookmaker offers fair odds of $d = 2.0$, the expected profit is zero. If the bookmaker offers $d = 1.95$, the expected profit is negative for the bettor.
+where $q = 1/d$ is the probability implied by the price. The bettor profits in
+expectation only when $p > q$, that is, when the event is genuinely more likely
+than the price says. For **fair odds** ($q = p$) the expectation is exactly zero:
+neither side gains or loses in the long run. That is not a good way to run a
+business. For a game of pure chance with honestly known probabilities, such as a
+coin, a die, or a roulette wheel, the house cannot profit at fair odds, so it
+must shade the payout below the fair level. That shading is the mathematical
+basis of the house edge. On a fair coin, $d = 2.0$ gives an expected profit of
+zero, while $d = 1.95$ makes it negative for the bettor.
 
 ```{python}
 #| label: expected-value
-#| code-fold: true
 
 def expected_profit(stake: float, decimal_odds: float, true_prob: float) -> float:
-    """Expected profit per bet given true probability."""
-    profit_if_win  =  stake * (decimal_odds - 1)
+    """Expected profit of a bet given the true probability of winning."""
+    profit_if_win = stake * (decimal_odds - 1)
     profit_if_lose = -stake
     return true_prob * profit_if_win + (1 - true_prob) * profit_if_lose
 
-# Coin flip — fair vs. vig-adjusted book
+
 p_true = 0.5
 print("=== Expected value, $1 stake on a fair coin ===")
-print(f"  Decimal 2.00 (fair odds)  : EV = ${expected_profit(1, 2.00, p_true):+.4f}")
+print(f"  Decimal 2.00 (fair odds)   : EV = ${expected_profit(1, 2.00, p_true):+.4f}")
 print(f"  Decimal 1.95 (vig baked in): EV = ${expected_profit(1, 1.95, p_true):+.4f}")
-print(f"  Decimal 1.90              : EV = ${expected_profit(1, 1.90, p_true):+.4f}")
+print(f"  Decimal 1.90               : EV = ${expected_profit(1, 1.90, p_true):+.4f}")
 ```
 
-To further complicate matters, we can take an example where the house, casino, or bookmaker does not automatically take the other side of the bet. This is the case in many sports betting markets, where you can bet on either side of the outcome (e.g. Team A wins vs. Team B wins). In this case, the bookmaker can set the odds on both sides of the bet such that the implied probabilities sum to more than one, ensuring a profit regardless of which outcome occurs. This is how bookmakers make money in sports betting markets, and it is a direct application of the expected value calculation we just did. This excess is called the **vigorish**, **vig**, or **juice**.
+In many sports betting markets the bookmaker does not simply take the other side
+of your bet. It accepts bets on every outcome (Team A wins, Team B wins) and
+prices them so that the implied probabilities sum to **more than one**. The
+excess is called the **vigorish**, **vig**, or **juice**. Suppose our fair coin is
+now offered at 1.90 on both heads and tails, and the house takes \$100 on each
+side. If heads comes up, the house collects the \$100 staked on tails and pays
+\$90 of profit to the heads bettors, keeping \$10; tails is the mirror image.
+Each bettor faces a 50% chance of winning \$0.90 and a 50% chance of losing
+\$1.00, an expected loss of 5 cents per dollar, and the house keeps the
+difference no matter how the coin lands.
 
-As an example, let's say the coin flip is still fair, with both sides having an odds of $1.90$ instead of the fair $2.0$. The casino flips the coin and accepts bets on both sides. If you bet on heads, you have a 50% chance of winning $0.90$ (since you get your stake back plus $0.90$ profit) and a 50% chance of losing $1.00$. Same for betting on tails. The expected value of this bet for the casino is positive, while the expected value for the bettor is negative. Further, the casino gets to double dip on both sides of the bet, collecting money from losing bets on both sides while only paying out on winning bets at a reduced rate. This is the mathematical guarantee that the house always wins in the long run when they set odds with vig.
+Define the **overround** $\Omega$ for an event with $n$ outcomes quoted at decimal
+odds $d_1, d_2, \ldots, d_n$:
 
-The moment the bookmaker shades the odds below $1/p$, the expected value goes negative for the bettor (you). In practice the bookmaker prices *both* sides of an event — say Team A wins and Team B wins — and sets the odds such that the implied probabilities sum to **more than one**. 
+$$
+\Omega = \sum_{i=1}^{n} \frac{1}{d_i}.
+$$
 
-Define the **overround** $\Omega$ for an event with $n$ outcomes quoted at decimal odds $d_1, d_2, \ldots, d_n$:
+For a fair book, $\Omega = 1$ exactly (implied probabilities sum to 100%). For a
+real book, $\Omega > 1$. The **vig** is
 
-$$\Omega = \sum_{i=1}^{n} \frac{1}{d_i}$$
-
-For a fair book, $\Omega = 1$ exactly (implied probs sum to 100 %). For a real book, $\Omega > 1$. The **vig** is:
-
-$$v = \Omega - 1$$
+$$
+v = \Omega - 1 .
+$$
 
 A typical two-outcome market (e.g. a football game with no draw) might look like:
 
@@ -272,61 +1000,79 @@ A typical two-outcome market (e.g. a football game with no draw) might look like
 | Team B  | 1.91    | 0.5236      |
 | **Total** |       | **1.0471**  |
 
-Here $\Omega = 1.047$ and $v = 4.7\%$. Every dollar wagered loses 4.7 cents in expectation, regardless of which team the bettor backs.
+Here $\Omega = 1.047$ and $v = 4.7\%$. If the game really is a coin flip, a
+dollar on either team has an expected profit of $0.5 \times 1.91 - 1 = -0.045$,
+a loss of 4.5 cents, by @eq-probability-bet-ev.
 
-### Why the House Always Wins — The Mathematical Guarantee
+### When the House Cannot Lose: The Balanced Book
 
-Suppose a book takes action $A$ on outcome 1 and action $B$ on outcome 2, at decimal odds $d_1$ and $d_2$ respectively.
+Suppose a book takes action $A$ on outcome 1 and action $B$ on outcome 2, at
+decimal odds $d_1$ and $d_2$ respectively. If outcome 1 occurs, the book collects
+$B$ (from losing bets on side 2) and pays out $A(d_1 - 1)$ (profit to winning bets
+on side 1). The house profit is
 
-If outcome 1 occurs, the book collects $B$ (from losing bets on side 2) and pays out $A(d_1 - 1)$ (profit to winning bets on side 1). House profit:
+$$
+\Pi_1 = B - A(d_1 - 1).
+$$
 
-$$\Pi_1 = B - A(d_1 - 1)$$
+If outcome 2 occurs,
 
-If outcome 2 occurs:
+$$
+\Pi_2 = A - B(d_2 - 1).
+$$
 
-$$\Pi_2 = A - B(d_2 - 1)$$
+For the house to profit *regardless of outcome* we need $\Pi_1 > 0$ **and**
+$\Pi_2 > 0$. Dividing by the total handle $A + B$, those conditions say the
+fraction of money on side 1 must satisfy
+$1 - 1/d_2 < A/(A+B) < 1/d_1$, an interval that is nonempty exactly when
+$1/d_1 + 1/d_2 = \Omega > 1$. The overround makes a risk-free book *possible*;
+the money still has to arrive in the right proportions. In a market with equal
+action on both sides ($A = B$),
 
-For the house to guarantee a profit *regardless of outcome*, we need $\Pi_1 > 0$ **and** $\Pi_2 > 0$. This is achievable whenever $\Omega > 1$. In a balanced market where $A = B$ (equal action on both sides):
+$$
+\Pi_1 = A\left(1 - (d_1 - 1)\right) = A(2 - d_1),
+$$
 
-$$\Pi_1 = A\left(1 - (d_1 - 1)\right) = A(2 - d_1)$$
+which is positive as long as $d_1 < 2$, i.e. the odds are below the fair level,
+which is precisely what vig ensures.
 
-This is positive as long as $d_1 < 2$, i.e. the odds are below the fair level — which is precisely what vig ensures.
+When the action on each outcome is proportional to its implied probability, the
+house earns the same amount whichever outcome occurs, and its margin per dollar
+of handle is
 
-More generally, the bookmaker's **expected margin per dollar of action** is:
+$$
+\text{margin} = 1 - \frac{1}{\Omega} = \frac{v}{1 + v}.
+$$
 
-$$\text{margin} = 1 - \frac{1}{\Omega} = \frac{v}{1 + v}$$
-
-For $v = 4.7\%$, the margin is $\approx 4.5\%$ per dollar — that is the house's guaranteed take, locked in by the structure of the odds before a single ball is kicked.
+For $v = 4.7\%$ the margin is about 4.5% per dollar, matching the bettor's
+expected loss computed above. That take is locked in before a ball is kicked
+*only for a balanced book*. A lopsided book is a bet the house is making on the
+outcome, which is why bookmakers move their lines to attract money to the light
+side, or lay off risk with other books, rather than hope.
 
 ```{python}
-#| label: vig-visualization
-#| fig-cap: "Expected profit per $1 stake as a function of bookmaker vig. The bettor's EV is always negative once any vig is present."
+#| label: fig-probability-vig
+#| fig-cap: "Expected profit per $1 stake on a fair 50/50 event as a function of bookmaker vig. The bettor's expected value is negative as soon as any vig is present."
 #| code-fold: true
 
-import numpy as np
-import matplotlib.pyplot as plt
+p_true = 0.5                         # symmetric two-outcome event
+vig_pct = np.linspace(0, 15, 300)    # vig from 0% to 15%
 
-p_true = 0.5                    # symmetric two-outcome event
-vig_pct = np.linspace(0, 15, 300)   # vig from 0% to 15%
-
-# Overround implied by vig; each side gets half the overround
-# Implied prob for each side = 0.5 * (1 + v) -> decimal = 1/implied_prob
+# Each side gets half the overround: implied prob per side = (1 + v)/2.
 ev_per_dollar = []
-house_margin  = []
-
+house_margin = []
 for v in vig_pct / 100:
-    implied_prob_side = (1 + v) / 2          # implied prob offered to bettor
-    decimal_odds      = 1.0 / implied_prob_side
-    ev = expected_profit(1.0, decimal_odds, p_true)
-    ev_per_dollar.append(ev)
-    house_margin.append(v / (1 + v) * 100)   # as %
+    implied_prob_side = (1 + v) / 2
+    decimal_odds = 1.0 / implied_prob_side
+    ev_per_dollar.append(expected_profit(1.0, decimal_odds, p_true))
+    house_margin.append(v / (1 + v) * 100)   # percent
 
 fig, ax = plt.subplots(figsize=(8, 4))
-ax.plot(vig_pct, ev_per_dollar, color='firebrick', linewidth=2, label="Bettor EV per $1 stake")
-ax.axhline(0, color='gray', linewidth=0.8, linestyle='--')
-ax.fill_between(vig_pct, ev_per_dollar, 0, alpha=0.15, color='firebrick')
-ax.set_xlabel("Bookmaker Vig (%)")
-ax.set_ylabel("Expected Profit ($)")
+ax.plot(vig_pct, ev_per_dollar, color="firebrick", linewidth=2, label="Bettor EV per $1 stake")
+ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
+ax.fill_between(vig_pct, ev_per_dollar, 0, alpha=0.15, color="firebrick")
+ax.set_xlabel("Bookmaker vig (%)")
+ax.set_ylabel("Expected profit ($)")
 ax.set_title("The House Edge: Expected Value vs. Vig")
 ax.legend()
 plt.tight_layout()
@@ -338,34 +1084,348 @@ for v_pct, ev, hm in zip(vig_pct[::60], ev_per_dollar[::60], house_margin[::60])
     print(f"{v_pct:>7.1f}%  ${ev:>11.4f}  {hm:>13.2f}%")
 ```
 
-### Horse Racing — Parimutuel Pools
+@fig-probability-vig shows the bettor's expected value falling linearly with the
+vig: on a symmetric event, each percentage point of vig costs the bettor roughly
+half a cent per dollar staked.
 
-Fixed-odds bookmaking is one architecture. Horse racing uses a different mechanism — **parimutuel** (French: *mutual stake*) — but the mathematics of extraction is identical.
+### Roulette: An Edge You Can Compute
 
-In a parimutuel pool:
+Roulette is the cleanest house edge in the casino because every probability is
+known exactly. A European wheel has 37 pockets: the numbers 1 to 36 (half red,
+half black) and a single green zero. An American wheel adds a double zero, for
+38 pockets. The payouts are set as if the zeros did not exist: a bet covering $n$
+numbers pays $36/n - 1$ to 1, so a single number pays 35 to 1, a dozen pays 2 to
+1, and red or black pays even money. On a wheel with $N$ pockets, a one-unit bet
+on $n$ numbers wins with probability $n/N$, and its expected profit is
+
+$$
+\mathbb{E}[W] = \frac{n}{N}\left(\frac{36}{n} - 1\right) - \left(1 - \frac{n}{N}\right) = \frac{36}{N} - 1 .
+$$ {#eq-probability-roulette-ev}
+
+The number of pockets covered cancels. Every standard bet on a European wheel has
+an expected profit of $-1/37 \approx -2.70\%$ per unit staked, and every
+standard bet on an American wheel has $-2/38 \approx -5.26\%$. The zeros are the
+whole business model. Since expectation is linear, no combination of bets and no
+betting progression changes the arithmetic either: the expected loss is the edge
+times the total amount wagered.
+
+```{python}
+#| label: roulette-house-edge
+
+from fractions import Fraction
+
+
+def roulette_ev(numbers_covered: int, pockets: int, payout: Fraction | None = None) -> Fraction:
+    """Exact expected profit per unit staked on a roulette bet.
+
+    By default the bet pays (36/n - 1) to 1 on n numbers, as every standard
+    bet does; pass `payout` for a bet that breaks that rule.
+    """
+    if payout is None:
+        payout = Fraction(36, numbers_covered) - 1
+    p_win = Fraction(numbers_covered, pockets)
+    return p_win * payout - (1 - p_win)
+
+
+bets = {"Straight up": 1, "Split": 2, "Street": 3, "Corner": 4, "Six line": 6,
+        "Dozen / column": 12, "Red / black": 18}
+print(f"{'Bet':<16}{'n':>4}{'European EV':>16}{'American EV':>16}")
+for name, n in bets.items():
+    eu, us = roulette_ev(n, 37), roulette_ev(n, 38)
+    print(f"{name:<16}{n:>4}{str(eu):>9} ({float(eu):+.2%}){str(us):>8} ({float(us):+.2%})")
+
+# The American "top line" (0, 00, 1, 2, 3) pays 6 to 1, not 36/5 - 1 = 6.2 to 1.
+top_line = roulette_ev(5, 38, payout=Fraction(6))
+print(f"{'Top line (US)':<16}{5:>4}{'':>16}{str(top_line):>8} ({float(top_line):+.2%})")
+
+# Monte Carlo check: a million one-unit bets on red at a European wheel.
+RED = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
+rng = np.random.default_rng(37)
+spins = rng.integers(0, 37, size=1_000_000)          # pocket 0 is the green zero
+wins = np.isin(spins, list(RED))
+print(f"\nSimulated EV of red over 10^6 spins: {np.mean(np.where(wins, 1.0, -1.0)):+.4f}"
+      f"  (exact {-1 / 37:+.4f})")
+```
+
+### Gambler's Ruin: Small Edges, Certain Outcomes
+
+A 2.7% edge sounds small. To see why it is not, put a bettor at a European wheel
+with a bankroll of $k$ units, betting one unit on red per spin, and let them play
+until they either reach a target of $N$ units or go broke. Each spin moves the
+bankroll up one unit with probability $p = 18/37$ or down one with probability
+$q = 19/37$. This is the classic gambler's ruin problem, and its solution
+(conditioning on the first spin and solving the resulting difference equation) is
+
+$$
+P(\text{ruin}) = 1 - \frac{1 - (q/p)^k}{1 - (q/p)^N} \quad (p \ne q),
+\qquad
+P(\text{ruin}) = 1 - \frac{k}{N} \quad (p = q = \tfrac{1}{2}).
+$$ {#eq-probability-gamblers-ruin}
+
+With $q/p > 1$, the ruin probability approaches one exponentially fast as the
+target grows. Even a fair game ruins you with probability $1 - k/N \to 1$ as the
+target grows, because your bankroll is finite and the house's effectively is not;
+the edge simply makes it happen sooner and with near certainty. The simulation
+below plays thousands of gamblers to the end and checks the formula.
+
+```{python}
+#| label: gamblers-ruin-code
+
+def simulate_ruin(p_win: float, start: int, target: int, n_gamblers: int,
+                  rng: np.random.Generator, chunk: int = 1000) -> float:
+    """Fraction of gamblers who go broke before reaching `target`.
+
+    Each gambler starts with `start` units and bets one unit per round,
+    winning with probability `p_win`. Rounds are simulated in chunks: within
+    a chunk we take the cumulative sum of +/-1 steps and find the first round,
+    if any, at which each gambler hits 0 or the target.
+    """
+    bankroll = np.full(n_gamblers, start, dtype=np.int64)
+    active = np.ones(n_gamblers, dtype=bool)
+    ruined = np.zeros(n_gamblers, dtype=bool)
+    while active.any():
+        idx = np.flatnonzero(active)
+        steps = np.where(rng.random((idx.size, chunk)) < p_win, 1, -1)
+        paths = bankroll[idx, None] + np.cumsum(steps, axis=1)
+        hit = (paths <= 0) | (paths >= target)
+        has_hit = hit.any(axis=1)
+        first_hit = hit.argmax(axis=1)               # index of the first absorbing round
+        final = np.where(has_hit, paths[np.arange(idx.size), first_hit], paths[:, -1])
+        bankroll[idx] = final
+        finished = idx[has_hit]
+        ruined[finished] = final[has_hit] <= 0
+        active[finished] = False
+    return float(ruined.mean())
+
+
+def ruin_probability(p_win: float, start: int, target: int) -> float:
+    """Exact gambler's-ruin probability for unit bets."""
+    if np.isclose(p_win, 0.5):
+        return 1.0 - start / target
+    r = (1.0 - p_win) / p_win
+    return 1.0 - (1.0 - r**start) / (1.0 - r**target)
+
+
+rng = np.random.default_rng(1983)
+start_units = 20
+targets = np.array([25, 30, 40, 50, 60, 80, 100, 150])
+games = {"Fair coin": 0.5, "European red": 18 / 37, "American red": 18 / 38}
+ruin_mc = {name: [simulate_ruin(p, start_units, N, 4000, rng) for N in targets]
+           for name, p in games.items()}
+
+print(f"Start with {start_units} units. P(ruin) before reaching the target, simulated (exact):")
+print(f"{'Target':>7}" + "".join(f"{name:>22}" for name in games))
+for i, N in enumerate(targets):
+    row = "".join(f"{ruin_mc[name][i]:>13.3f} ({ruin_probability(p, start_units, N):.3f})"
+                  for name, p in games.items())
+    print(f"{N:>7}{row}")
+```
+
+```{python}
+#| label: fig-probability-gamblers-ruin
+#| fig-cap: "Left: cumulative winnings of 20 bettors staking one unit on red at a European wheel. Early on, the random walk (spread growing like the square root of the number of spins) hides the drift; eventually the drift of -1/37 per spin (growing linearly) dominates. Right: probability of going broke before reaching a target bankroll, starting from 20 units. Markers are Monte Carlo, lines are exact."
+#| code-fold: true
+
+n_spins = 10_000
+rng = np.random.default_rng(36)
+outcomes = np.where(rng.random((20, n_spins)) < 18 / 37, 1.0, -1.0)
+winnings = np.cumsum(outcomes, axis=1)
+spin_index = np.arange(1, n_spins + 1)
+edge = 1 / 37
+sigma_bet = np.sqrt(1 - edge**2)                 # std of a single +/-1 bet
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))
+ax1.plot(spin_index, winnings.T, color="0.6", linewidth=0.7)
+ax1.plot(spin_index, -edge * spin_index, "C3", linewidth=2, label="Expected winnings")
+ax1.fill_between(spin_index, -edge * spin_index - 2 * sigma_bet * np.sqrt(spin_index),
+                 -edge * spin_index + 2 * sigma_bet * np.sqrt(spin_index),
+                 color="C3", alpha=0.15, label="±2 sigma band")
+ax1.axhline(0, color="k", linewidth=0.8)
+ax1.set_xlabel("Spins")
+ax1.set_ylabel("Cumulative winnings (units)")
+ax1.set_title("Drift vs. Diffusion at the Roulette Table")
+ax1.legend(loc="lower left")
+ax1.grid(True, alpha=0.3)
+
+target_grid = np.arange(start_units + 1, 151)
+for (name, p), color in zip(games.items(), ("C0", "C1", "C3")):
+    ax2.plot(target_grid, [ruin_probability(p, start_units, N) for N in target_grid],
+             color=color, linewidth=2, label=f"{name} (exact)")
+    ax2.plot(targets, ruin_mc[name], "o", color=color, markersize=5)
+ax2.set_xlabel("Target bankroll (units), starting from 20")
+ax2.set_ylabel("Probability of ruin")
+ax2.set_title("Gambler's Ruin")
+ax2.set_ylim(0, 1.02)
+ax2.legend(loc="lower right")
+ax2.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+The left panel of @fig-probability-gamblers-ruin holds the lesson that carries
+over to navigation. After $n$ spins, the bettor's winnings have mean $-n/37$ and
+standard deviation of about $\sqrt{n}$. The noise dominates at first, so plenty of
+people walk out ahead after an evening and conclude they have a system. But the
+drift grows linearly while the noise grows like a square root, and they are equal
+at $n^* = (\sigma/\varepsilon)^2 \approx 1370$ spins for an edge $\varepsilon = 1/37$:
+roughly a long weekend at the table. After that, the edge owns the outcome.
+
+A gyroscope integrated for heading has exactly this structure. White rate noise
+produces an angle random walk whose standard deviation grows as $N\sqrt{t}$, while
+an uncompensated bias $b$ produces a heading error $bt$ that grows linearly. The
+crossover is at $t^* = (N/b)^2$. For a MEMS gyroscope with an angle random walk of
+$0.3^\circ/\sqrt{\text{h}}$ and a residual bias of $10^\circ/\text{h}$, that is
+$(0.03)^2$ h, about 3 seconds. Past that point the bias owns the error budget,
+which is why every inertial filter in this book carries the gyroscope bias as a
+state to be estimated (@sec-ins-errors). A biased model, like a negative edge,
+does not need to be large. It just needs time.
+
+### Horse Racing: Parimutuel Pools
+
+Fixed-odds bookmaking is one architecture. Horse racing uses a different
+mechanism, **parimutuel** betting (French *pari mutuel*, "mutual stake"), in which
+bettors bet against each other and the track simply takes a cut. In a parimutuel
+pool:
 
 1. All bets on a race go into a single pool $P$.
-2. The track removes its **take** $\tau$ (typically 15–25 %) up front: $P_\text{net} = P(1 - \tau)$.
-3. The remainder is divided proportionally among tickets on the winning horse.
+2. The track removes its **take** $\tau$ (typically 15–25%) off the top, leaving $P(1 - \tau)$.
+3. The remainder is divided among the tickets on the winning horse, in proportion to stake.
 
-If a bettor holds a fraction $f$ of all winning tickets, the expected return per dollar staked is:
+Let $P_i$ be the money bet on horse $i$, so $q_i = P_i / P$ is the win probability
+implied by the crowd's betting, with $\sum_i q_i = 1$. If horse $i$ wins, every
+dollar on it returns $P(1-\tau)/P_i = (1-\tau)/q_i$ dollars (the odds on the tote
+board are this number minus one). If the horse's true win probability is $p_i$,
+the expected return and expected profit per dollar bet on it are
 
-$$\mathbb{E}[\text{return}] = f \cdot \frac{P(1-\tau)}{f \cdot P} = 1 - \tau$$
+$$
+\mathbb{E}[\text{return}] = (1 - \tau)\,\frac{p_i}{q_i},
+\qquad
+\mathbb{E}[\text{profit}] = (1 - \tau)\,\frac{p_i}{q_i} - 1 .
+$$ {#eq-probability-parimutuel}
 
-So the expected **profit** per dollar is:
+Two consequences follow. First, the crowd as a whole loses exactly the take.
+Summing the expected payout over all the money in the pool gives
+$\sum_i P_i (1-\tau) p_i / q_i = (1-\tau) P \sum_i p_i = (1-\tau)P$, so the track
+collects $\tau P$ whichever horse wins and never needs to care who is right.
+Second, an *individual* bettor's expected return is $1 - \tau$ only when the
+crowd's implied probability equals the truth, $q_i = p_i$. A bettor whose model
+finds horses with $p_i / q_i > 1/(1-\tau)$, about 1.22 for an 18% take, has a
+positive expectation. That money does not come from the track; it comes from the
+other bettors, whose collective model is worse. (This ignores the fact that a
+large bet moves $q_i$ itself, which caps how much any edge can be exploited.)
 
-$$\mathbb{E}[\text{profit}] = -\tau$$
-
-The bettor loses the take $\tau$ in expectation *regardless of which horse wins*, regardless of the bettor's skill in picking horses, and regardless of the odds displayed on the board. The take is extracted before any payout calculations are made. A typical 20 % take means that, in the long run, every dollar bet at the track returns 80 cents.
+That is not hypothetical. Starting in the 1980s, Bill Benter and his
+collaborators built a statistical model of Hong Kong horse racing that estimated
+each horse's win probability from many handicapping variables and, crucially,
+combined the model's estimate with the public's implied probabilities rather than
+ignoring them [@benter1994]. The fused estimate beat both the model alone and the
+crowd alone by enough to overcome the track take, and the operation reportedly
+made a fortune. If that sounds like sensor fusion, it is: two imperfect,
+partly independent estimators combined with sensible weights beat either one,
+just as in @sec-probability-gaussian-product. The navigation lesson is the theme
+of this case study. A filter whose motion and measurement models match reality
+extracts real information from every measurement. A filter with a biased model
+pays a little to the house at every step, and as the gambler's ruin showed, small
+persistent edges compound.
 
 ::: {.callout-note}
 ## Connection to Bayesian Filtering {#sec-probability-connection-bayesian-filtering}
 
-There is a structural analogy worth noting. In Bayes' rule:
+In Bayes' rule,
 
-$$p(\mathbf{x}|\mathbf{z}) = \frac{p(\mathbf{z}|\mathbf{x})\,p(\mathbf{x})}{p(\mathbf{z})}$$
+$$p(\mathbf{x}|\mathbf{z}) = \frac{p(\mathbf{z}|\mathbf{x})\,p(\mathbf{x})}{p(\mathbf{z})},$$
 
-the denominator $p(\mathbf{z})$ is a normalizing constant that ensures the posterior integrates to one — it is the "true" probability of the measurement. A bookmaker who sets odds with vig is doing the inverse: they are deliberately *mis-normalizing* the implied probabilities so that they sum to more than one, extracting the excess as profit. A biased sensor model in your filter does exactly the same thing: it shifts the effective normalizer and systematically corrupts the posterior. In both cases, the lesson is the same — if the probabilities you are working with do not sum to one, someone or something is taking a cut.
+the evidence $p(\mathbf{z})$ is computed from the model itself, so whatever
+likelihood you supply, the posterior will integrate to one. Normalization is
+never what goes wrong. What goes wrong is the model. A likelihood with an
+unmodeled bias (a range sensor that reads 2% long, a GNSS fix dragged sideways by
+multipath) produces a perfectly normalized, confidently reported, systematically
+wrong posterior. A bookmaker's quoted probabilities $q_i = 1/d_i$ are such a
+model, mis-specified on purpose: they sum to $\Omega > 1$, every payout is shaded
+by the factor $1/\Omega$ relative to the book's own fair price, and the overround
+is the house's built-in edge. A bettor who takes the quotes at face value is a
+filter running a biased sensor model. No single bet looks obviously wrong, but
+the error is paid on every use. The defense is the same in both worlds: know
+your model's biases, estimate them when you can, and when you cannot, do not
+bet the vehicle on them.
 :::
 
-The upshot is simple: the mathematics of gambling are not subtle. The house does not need to cheat; it only needs to ensure $\Omega > 1$ (fixed-odds) or $\tau > 0$ (parimutuel). Both conditions are structural, always present, and entirely legal. To quote the cult classic *War Games* (1983): "The only winning move is not to play."
+The upshot is simple: the mathematics of gambling is not subtle. The house does
+not need to cheat; it only needs $\Omega > 1$ and a balanced book, a take
+$\tau > 0$, or a green pocket on the wheel. All of these are structural, always
+present, and entirely legal. Benter is the exception that proves the rule: he did
+not beat the house, he beat the other bettors with a better model while the track
+collected its take from everyone. Unless you are confident that your model beats
+the crowd's by more than the house's cut, the cult classic *WarGames* (1983) has
+the right answer: "The only winning move is not to play."
+
+## Exercises {#sec-probability-exercises}
+
+1. **Which "center" goes on the data sheet?** A GNSS receiver's north and east
+   position errors are independent, zero-mean Gaussians, each with standard
+   deviation $\sigma = 2$ m. (a) Show that the horizontal error magnitude
+   $r = \sqrt{e_N^2 + e_E^2}$ has the Rayleigh density
+   $p(r) = (r/\sigma^2)\exp(-r^2/2\sigma^2)$ for $r \ge 0$. (b) Find its mode,
+   median, and mean in terms of $\sigma$, and evaluate them for $\sigma = 2$ m.
+   (c) The median is the circular error probable (CEP). Which radius contains
+   95% of fixes? (d) Verify (b) and (c) numerically with 100,000 samples. Why
+   might a marketing department prefer to quote CEP rather than the 95% radius?
+
+2. **Fusing fixes on a coastal passage.** A vessel's dead-reckoned along-track
+   position is $\mathcal{N}(1200, 40^2)$ m. Two independent radar ranges to
+   charted marks place it at $z_1 = 1260$ m ($\sigma_1 = 30$ m) and
+   $z_2 = 1230$ m ($\sigma_2 = 25$ m). (a) Using
+   @eq-probability-gaussian-product, fuse $z_1$ first and then $z_2$, and
+   report the posterior mean and standard deviation. (b) Repeat in the opposite
+   order and show the answer is the same. (c) Show that fusing both is
+   equivalent to fusing a single measurement at the precision-weighted average
+   of $z_1$ and $z_2$ with variance $(\sigma_1^{-2} + \sigma_2^{-2})^{-1}$.
+   (d) Write the joint Gaussian of $[x, z_1]^T$ and confirm that
+   @eq-probability-gaussian-conditional reproduces your first update.
+
+3. **Correcting what you never measured.** A constant-velocity state
+   $[p, v]^T$ has prior covariance
+   $\mathbf{P} = \begin{bmatrix} 4 & 1.5 \\ 1.5 & 1 \end{bmatrix}$
+   (units m$^2$, m$^2$/s, m$^2$/s$^2$) and mean $[10, 2]^T$. A position
+   measurement $z = 12.5$ m arrives with variance $R = 1$ m$^2$. (a) By hand,
+   use @eq-probability-gaussian-conditional to compute the posterior mean and
+   covariance. (b) By how much did the velocity standard deviation shrink, and
+   why did it shrink at all? (c) What would the velocity update be if the prior
+   covariance were diagonal? (d) Check your answer in code by slicing joint
+   samples, as in @sec-probability-gaussian-conditioning.
+
+4. **There is no betting system.** (a) Show that the American roulette top-line
+   bet (0, 00, 1, 2, 3, paying 6 to 1) has an expected profit of $-3/38$ per
+   unit. (b) A "martingale" bettor at a European wheel bets 1 unit on red,
+   doubles the stake after every loss, and returns to 1 unit after every win,
+   with a bankroll of 255 units (enough for 8 consecutive losses) and a session
+   that ends when the bankroll cannot cover the next stake or after 200 spins.
+   Simulate 20,000 sessions with a seeded generator. Report the fraction of
+   sessions that end ahead, the mean profit per session, and the mean total
+   amount wagered per session. (c) Show that mean profit is approximately
+   $-\tfrac{1}{37}$ times the mean amount wagered, and explain using linearity
+   of expectation why no staking rule can change that.
+
+5. **Beating the crowd, not the track.** A four-horse parimutuel pool holds
+   \$40,000, \$30,000, \$20,000, and \$10,000 on horses A to D, and the track
+   take is $\tau = 0.18$. Your model says the true win probabilities are
+   0.35, 0.30, 0.25, and 0.10. (a) Compute the crowd-implied probabilities
+   $q_i$ and the payout per dollar for each horse. (b) Use
+   @eq-probability-parimutuel to find the expected profit per dollar on each
+   horse. Which bets, if any, are worth making? (c) Show that the total
+   expected payout to all bettors is \$82,000 regardless of your model.
+   (d) Suppose you bet \$5,000 on your best horse. Recompute its payout with
+   your money in the pool. What does this say about how far an edge scales?
+
+6. **Drift versus diffusion.** (a) For one-unit bets on red at a European wheel,
+   find the number of spins $n^*$ after which the expected loss equals one
+   standard deviation of the net winnings, and the number after which it equals
+   two standard deviations. Interpret the second number. (b) A heading
+   estimate is propagated by integrating a gyroscope with angle random walk
+   $0.15^\circ/\sqrt{\text{h}}$ and an uncompensated bias of
+   $3^\circ/\text{h}$. Find the time after which the bias-induced heading error
+   exceeds the one-sigma random-walk error, and the heading error from each
+   source after 10 minutes. (c) Simulate 200 heading-error trajectories at
+   100 Hz for 10 minutes and plot them with the predicted mean and
+   $\pm 2\sigma$ envelope. What does this imply about how often a filter must
+   observe heading (or estimate the bias) for this gyroscope to be useful?

@@ -1,79 +1,100 @@
 # Modern Python Refresher {#sec-python}
 
-This chapter is a practical refresh on Python tools and patterns used throughout the course. It assumes prior Python experience and focuses on habits that make numerical and estimation code reliable. Much of this is borrowed or adopted from the scientific Python community and best practices for numerical computing. The goal is to establish a common baseline for code style, project structure, and testing that will be used in all code examples and assignments in this class. This chapter is not meant to be an exhaustive (or even quick and light) introduction to Python programming, but rather a focused refresher on the specific tools and best practices that are most relevant for implementing autonomous navigation algorithms. If you are new to Python or want a more comprehensive introduction, there are many excellent resources available online, including the official Python tutorial and various books and courses on Python programming. 
+This chapter is a practical refresh on Python tools and patterns used throughout the course. It assumes prior Python experience and focuses on habits that make numerical and estimation code reliable. Much of this is borrowed or adopted from the scientific Python community and best practices for numerical computing. The goal is to establish a common baseline for code style, project structure, and testing that will be used in all code examples and assignments in this class. This chapter is not meant to be an exhaustive (or even quick and light) introduction to Python programming, but rather a focused refresher on the specific tools and best practices that are most relevant for implementing autonomous navigation algorithms. If you are new to Python or want a more comprehensive introduction, there are many excellent resources available online, including the official Python tutorial and various books and courses on Python programming.
 
-I further suggest you take a detour to the [Scientific Python Library Development Guide](https://learn.scientific-python.org/development/) for a more in-depth look at how to write high-quality, maintainable, and performant scientific Python code. If you are not very familiar with scientific Python programming, instead start with the [Scientific Python Lectures](https://lectures.scientific-python.org/). Teaching engineers, and especially engineering researchers and scientists, programming is a critical skill, but one that is rather fractured. Count yourself fortunate if your undergraduate engineering curriculum taught engineering programming in Python and not MATLAB. That said, to borrow a phrase from the Silicon Valley tech world: Software is eating the world, but hardware gives it teeth. If you want to have a career in autonomous systems and robotics engineering, you will need to be proficient in software development, and Python is a great language to learn the basic principles that can be applied to rigorous research code that makes organizing your results and papers easier, as well as providing for straight forward principles that you can apply when working on an industrial production code base. The Scientific Python Library Development Guide is a great resource for learning how to write high-quality scientific Python code, and it covers many of the best practices and patterns that are relevant for writing code for autonomous navigation algorithms.
+I further suggest you take a detour to the [Scientific Python Library Development Guide](https://learn.scientific-python.org/development/) for a more in-depth look at how to write high-quality, maintainable, and performant scientific Python code. If you are not very familiar with scientific Python programming, instead start with the [Scientific Python Lectures](https://lectures.scientific-python.org/). Teaching engineers, and especially engineering researchers and scientists, programming is a critical skill, but one that is rather fractured. Count yourself fortunate if your undergraduate engineering curriculum taught engineering programming in Python and not MATLAB. That said, to borrow a phrase from the Silicon Valley tech world: Software is eating the world, but hardware gives it teeth. If you want to have a career in autonomous systems and robotics engineering, you will need to be proficient in software development, and Python is a great language to learn the basic principles that can be applied to rigorous research code that makes organizing your results and papers easier, as well as providing for straightforward principles that you can apply when working on an industrial production code base.
 
-The guide covers topics such as project structure, testing, documentation, and performance optimization, all of which are important for writing code that is not only correct but also easy to understand and maintain. While the guide is focused on library development, many of the principles and practices it covers are applicable to writing any kind of scientific Python code, including the code you will be writing for this class. Then follow that up and correction that I would make is to not use their suggested template. Its overkill. All you need is a PEP 621 compliant `pyproject.toml` file to manage your dependencies and project metadata, and then usually just three simple directories: `src/<package_name>` for your code, `tests/` for your tests, and `scripts/` or `notebooks/` for your experiments.
+The guide covers topics such as project structure, testing, documentation, and performance optimization, all of which are important for writing code that is not only correct but also easy to understand and maintain. While the guide is focused on library development, many of the principles and practices it covers are applicable to writing any kind of scientific Python code, including the code you will be writing for this class. The one place I part ways with it is its project template: for coursework it is overkill. All you need is a PEP 621 compliant `pyproject.toml` file to manage your dependencies and project metadata, and then usually just three simple directories: `src/<package_name>/` for your code, `tests/` for your tests, and `scripts/` or `notebooks/` for your experiments.
 
-While not required or even neccessarily standard, I highly recommend using a package manager such as `uv` for Python projects. If you delve more into the machine learning or data science side of things, I recommend using `pixi` as a package manager, which is built on top of `uv` and provides additional features for managing compiled project dependencies. Both `uv` and `pixi` are great tools for managing dependencies and project metadata in Python, and they can help you keep your projects organized and reproducible. However, for the purposes of this class, you can get by with just using `pip` and virtual environments to manage your dependencies, as long as you are careful to pin your versions for reproducibility. While I use `uv` personally, all example code will only be using `pip` and virtual environments, so you can follow along with the examples without needing to learn a new tool if you don't want to. The most important thing is to have a consistent and reproducible workflow for managing your dependencies and project structure, regardless of the specific tools you choose to use.
+This course uses [`uv`](https://docs.astral.sh/uv/) to manage Python versions, virtual environments, and dependencies. The course repository is a uv workspace: `uv sync` builds its environment, `uv run ...` runs anything inside it, and every command in this book and in the project handouts is written that way. If you cannot install uv, plain `pip` and a virtual environment remain a workable fallback, as long as you are careful to pin your versions. If you delve more into the machine learning or data science side of things, also look at `pixi`, which manages conda-ecosystem packages (including compiled, non-Python dependencies) through the `rattler` library and resolves PyPI packages using uv's resolver. The most important thing is to have a consistent and reproducible workflow for managing your dependencies and project structure, regardless of the specific tools you choose to use.
 
 ## Python Version and Environment {#sec-python-version-environment}
 
-Use a modern Python 3 release and isolate dependencies per project. At time of writing (Summer 2026), Python 3.14 is the latest stable release and will be preferred, but the course packages require Python 3.11 or newer. *Avoid using the system Python or installing packages globally!* This can cause conflicts between projects and your operating system's dependencies. Only install packages to the system Python is you expressly know what you are doing and why you are doing it! For project development purposes _**always**_ use virtual environments to create isolated Python environments as this allows you to manage dependencies and avoid version conflicts.
+Use a modern Python 3 release and isolate dependencies per project. The course packages require Python 3.11 or newer; at the time of writing (Summer 2026), Python 3.14 is the latest stable release and is what the examples were last run with. *Avoid using the system Python or installing packages globally!* This can cause conflicts between projects and your operating system's dependencies. Only install packages to the system Python if you expressly know what you are doing and why you are doing it! For project development purposes _**always**_ use virtual environments to create isolated Python environments, as this allows you to manage dependencies and avoid version conflicts.
 
-Recommended baseline workflow:
+With uv, the workflow for the course repository and for a project of your own looks like this:
 
-1. Create virtual environment.
-2. Install core scientific stack.
-3. Pin versions for reproducibility.
+```bash
+# The course repository: build .venv/ from the committed uv.lock, then run things in it
+uv sync
+uv run python scripts/fetch_data.py --list
+uv run pytest
+
+# A new project of your own
+uv init --lib my_filter        # creates my_filter/ with pyproject.toml and src/my_filter/
+cd my_filter
+uv add numpy scipy matplotlib  # records dependencies in pyproject.toml and pins them in uv.lock
+uv add --dev pytest            # development-only dependency
+uv run pytest
+```
+
+uv creates the virtual environment, installs your package in editable mode, and writes a `uv.lock` file that pins every version; commit it, and `uv sync` reproduces the same environment on any machine. You never need to activate the environment, because `uv run` does that for each command.
+
+The pip fallback does the same steps by hand:
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
-pip install numpy scipy matplotlib jupyter
+source .venv/bin/activate              # on Windows: .venv\Scripts\activate
+python -m pip install -e . pytest      # your package (editable) plus its dependencies
+python -m pip freeze > requirements.txt
 ```
 
-Depending on system configuration, you may need to use `python3` instead of `python` in the above command. You can also use `python -m pip` instead of just `pip` to ensure you are using the pip associated with your virtual environment. If you are using a package manager like `uv` or `pixi`, they will handle the creation of virtual environments and installation of dependencies for you, so you can follow their documentation for setting up your project environment.
+Depending on system configuration, you may need to use `python3` instead of `python` in the above commands. Using `python -m pip` instead of bare `pip` ensures you are using the pip associated with your virtual environment, and `pip freeze` records the exact versions you installed so that someone else can reproduce them.
 
 ## Core Language Features to Use {#sec-python-core-language-features}
 
 ### Type Hints and Dataclasses
 
-Type hints improve readability and editor/tooling support. While not nearly as rigid as a statically typed language, using type hints can help catch bugs and improve the clarity of your code. While Python is incredibly useful, the dynamic nature of the language and 'duck typing' can sometimes lead to subtle bugs. You should avoid using dynamic typing in critical parts of your code where clarity and correctness are paramount. 
+Type hints improve readability and editor/tooling support. While not nearly as rigid as a statically typed language, using type hints can help catch bugs and improve the clarity of your code. While Python is incredibly useful, the dynamic nature of the language and 'duck typing' can sometimes lead to subtle bugs. You should avoid relying on untyped, duck-typed code in critical parts of your code where clarity and correctness are paramount.
 
-For example, when given a function that takes two inputs: `foo(x, y)`, it is not clear what types `x` and `y` are supposed to be, and this can lead to confusion and bugs. By using type hints, you can make it clear what types are expected for each input, which can help catch bugs and improve the readability of your code. Now, the name of the function can certainly help with this: `add(x, y)` or `sum(x,y)` makes it clear more apparent that we're doing some kind of mathematical operation on `x` and `y`, and this is the one instance where I find Python's dynamic typing to actually be incredibly useful. Python treats `1 + 2.0` as a perfectly valid operation and simply casts the resulting sum to a float. Whereas in a statically typed language like C++ or Rust you would need to do something like this: `let a = (1 + 2.0) as f64;` to achieve the same result.
+For example, when given a function that takes two inputs: `foo(x, y)`, it is not clear what types `x` and `y` are supposed to be, and this can lead to confusion and bugs. By using type hints, you can make it clear what types are expected for each input, which can help catch bugs and improve the readability of your code. Now, the name of the function can certainly help with this: `add(x, y)` or `sum(x, y)` makes it more apparent that we're doing some kind of mathematical operation on `x` and `y`, and this is the one instance where I find Python's dynamic typing to actually be incredibly useful. Python treats `1 + 2.0` as a perfectly valid operation and simply promotes the result to a float. C++ quietly performs the same promotion, but Rust refuses to mix integer and floating-point types: `let a = 1 + 2.0;` is a compile error, and you need to write `let a = (1 as f64) + 2.0;` (or simply `1.0 + 2.0`) to achieve the same result.
 
-However, `add` might mean something more like 'append to a list' or 'concatenate two strings', and in those cases, the dynamic typing can lead to bugs if you accidentally pass in the wrong types. By using type hints, you can make it clear that `add` is supposed to take two numbers and return their sum, which can help catch bugs and improve the readability of your code. For instance:
+However, `add` might mean something more like 'append to a list' or 'concatenate two strings', and in those cases, the dynamic typing can lead to bugs if you accidentally pass in the wrong types. For instance:
 
 ```python
-def add(x, y) -> float:
-		return x + y
+def add(x, y):
+    return x + y
 
-add(1, 2) # returns 3
-add('abc', '123') # returns 'abc123'
-add(1, '123') # throws an error at runtime
+add(1, 2)          # returns 3
+add('abc', '123')  # returns 'abc123'
+add(1, '123')      # raises TypeError at runtime
 ```
 
-If the intended use case of `add` is to concatenate two strings, then the second use case isn't exactly a bug, but could very much be a source of confusion and lead to code being misused. By using type hints, you can make it clear that `add` is supposed to take two strings and return their concatenation, or add together two numbers and return their sum, which can help catch bugs and improve the readability of your code. For instance:
+If the intended use case of `add` is to concatenate two strings, then the second use case isn't exactly a bug, but could very much be a source of confusion and lead to code being misused. By using type hints, you can make it clear that `add` is supposed to take two strings and return their concatenation, or add together two numbers and return their sum:
 
 ```python
 def add(x: str, y: str) -> str:
-		return x + y # Concatenates two strings
-add('abc', '123') # returns 'abc123'
-add(1, 2) # throws an error at runtime and is caught by type checkers in your editor
+    return x + y  # concatenates two strings
+
+add('abc', '123')  # returns 'abc123'
+add(1, 2)          # still returns 3 at runtime, but a type checker flags this line
 ```
 
+Note what that last comment says. Python does **not** enforce type hints when the code runs; the interpreter records them and moves on. A static type checker such as `mypy` or `pyright` (which powers the Python support in many editors) reads the hints and flags the mismatch before you ever run the program. That is still enormously useful, but only if you actually run the checker or watch your editor's warnings.
+
 ```python
-def add(x: int | float, y: int | float) -> int | float:
-	return x + y # Adds two numbers together
-add(1, 2) # returns 3
-add(1.0, 2.0) # returns 3.0
-add(1, 2.0) # returns 3.0
-add('abc', '123') # again, likely to be caught by your editor's type checker
+def add(x: float, y: float) -> float:
+    return x + y  # adds two numbers; type checkers accept an int where a float is expected
+
+add(1, 2)          # returns 3
+add(1.0, 2.0)      # returns 3.0
+add(1, 2.0)        # returns 3.0
+add('abc', '123')  # runs and returns 'abc123', but the type checker flags it
 ```
 
 Dataclasses provide a convenient way to define simple classes for storing data without having to write boilerplate code for initialization, representation, and comparison methods.
 
 ```python
 from dataclasses import dataclass
+
 import numpy as np
+
 
 @dataclass
 class FilterState:
-		x: np.ndarray
-		P: np.ndarray
-		t: float
+    x: np.ndarray  # state estimate, shape (n,)
+    P: np.ndarray  # covariance, shape (n, n)
+    t: float       # time [s]
 ```
 
 ### Structured Iteration
@@ -82,8 +103,8 @@ Prefer explicit, readable loops and vectorized operations where they improve cla
 
 ```python
 for k, z_k in enumerate(measurements):
-		x_pred, P_pred = predict(x, P, dt)
-		x, P = update(x_pred, P_pred, z_k)
+    x_pred, P_pred = predict(x, P, dt)
+    x, P = update(x_pred, P_pred, z_k)
 ```
 
 ### Shape Discipline
@@ -102,25 +123,120 @@ x = np.array([x0, v0], dtype=float)
 P = np.eye(2) * 10.0
 ```
 
+The reason for the discipline is broadcasting. When NumPy combines arrays of different shapes, it lines up their trailing dimensions and stretches any dimension of length 1. That is wonderful when you mean it and silent poison when you do not: a `(3,)` vector minus a `(3, 1)` column is not an error, it is a $3 \times 3$ matrix.
+
+```{python}
+import numpy as np
+
+z = np.array([1.0, 2.0, 3.0])            # measurement, shape (3,)
+H = np.eye(3)
+x_col = np.array([[0.9], [2.1], [2.8]])  # state stored as a column, shape (3, 1)
+
+y_wrong = z - H @ x_col                  # (3,) - (3, 1) broadcasts to (3, 3)
+print("residual shape:", y_wrong.shape)
+print(y_wrong)
+
+x = x_col.ravel()                        # pick one convention: (n,) everywhere
+y = z - H @ x
+assert y.shape == z.shape                # a one-line guard that would have caught it
+print("residual:", y)
+```
+
+No exception, no warning, just a wrong answer that flows into the gain and the covariance. An `assert` on the shapes at the top of a filter's `update` costs nothing and saves an afternoon.
+
+### Reproducible Randomness
+
+Every simulation in this course adds noise, and every one of them must be reproducible: when a filter misbehaves, you want to rerun the exact same noise sequence. NumPy offers two interfaces. The legacy one, `np.random.seed(...)` followed by `np.random.normal(...)`, uses a single hidden global state shared by your code and every library you call, so an innocent extra draw anywhere shifts every number after it. The modern one, `np.random.default_rng(seed)`, returns a `Generator` object that you pass explicitly to whatever needs randomness. NumPy recommends it for all new code, and this book uses it everywhere.
+
+```{python}
+# Legacy global state: an unrelated draw in between changes "the same" noise.
+np.random.seed(595)
+first = np.random.normal(size=3)
+np.random.seed(595)
+_ = np.random.uniform()                  # e.g. a library call you did not know draws numbers
+second = np.random.normal(size=3)
+print("legacy, same seed, same result?   ", np.allclose(first, second))
+
+
+# Generator API: randomness is an explicit argument.
+def simulate_gnss_fixes(truth_ned: np.ndarray, sigma_m: float, n: int,
+                        rng: np.random.Generator) -> np.ndarray:
+    """Return n noisy position fixes around truth_ned, shape (n, 3)."""
+    return truth_ned + rng.normal(0.0, sigma_m, size=(n, 3))
+
+
+truth = np.array([100.0, -40.0, -5.0])
+run_a = simulate_gnss_fixes(truth, 3.0, 5, np.random.default_rng(595))
+rng_other = np.random.default_rng(1)
+_ = rng_other.uniform()                  # draws from a different generator do not interfere
+run_b = simulate_gnss_fixes(truth, 3.0, 5, np.random.default_rng(595))
+print("Generator, same seed, same result?", np.allclose(run_a, run_b))
+
+# Independent streams for Monte Carlo trials, all derived from one seed.
+trial_rngs = np.random.default_rng(595).spawn(3)
+print("per-trial mean error [m]:",
+      [round(float(np.mean(simulate_gnss_fixes(truth, 3.0, 100, r) - truth)), 3) for r in trial_rngs])
+```
+
 ## Project Structure for Assignments {#sec-python-project-structure-assignments}
 
-I highly recommend using `uv` as a package manager for Python to keep code modular and testable. `uv init --lib` sets up a project with a `src/` directory for your code. I would recommend that you set up your projects as such a Python package, even if you are not planning to distribute it. This will help you keep your code organized and make it easier to test and reuse. 
-
-Suggested minimal structure:
+Set up your work as an installable Python package, even if you never plan to distribute it. `uv init --lib my_filter` creates the `src/` layout below (plus a few small housekeeping files), and the course starter packages in `projects/` (for example `projects/drone_pipeline/`, whose code lives in `src/drone_pipeline/`) use the same shape:
 
 ```text
-project/
-	src/
-		models.py
-		filters.py
-		simulation.py
-	tests/ # Unit tests for your code, if needed
-		test_filters.py
-	notebooks/
-		experiments.ipynb
-		projects.ipynb
-pyproject.toml # Project metadata and dependencies	
+my_filter/
+├── pyproject.toml        # PEP 621 metadata, dependencies, build backend
+├── uv.lock               # exact pinned versions (commit it)
+├── README.md
+├── src/
+│   └── my_filter/        # the importable package
+│       ├── __init__.py
+│       ├── models.py
+│       ├── filters.py
+│       └── simulation.py
+├── tests/
+│   └── test_filters.py
+└── notebooks/            # or scripts/: experiments that import my_filter
+    └── experiments.ipynb
 ```
+
+The extra `src/` level is deliberate. Because the package is not sitting in your working directory, Python can only import it through the installed (editable) copy, so your tests exercise the same thing anyone else would install, and a missing file or dependency shows up immediately instead of on the grader's machine. Notebooks then do `from my_filter.filters import predict` rather than accumulating copy-pasted versions of the same function.
+
+## Testing with pytest {#sec-python-testing}
+
+Navigation code is full of functions that are easy to get almost right: angle wrapping, frame conversions, covariance updates. A test that pins down a few known answers catches the "almost." The course uses `pytest`. Test files live in `tests/`, are named `test_*.py`, and contain plain functions whose names start with `test_` and that use plain `assert`. For floating-point results, compare with a tolerance (`pytest.approx` or `np.testing.assert_allclose`), never with `==`.
+
+```python
+# tests/test_geometry.py
+import numpy as np
+import pytest
+
+from my_filter.geometry import wrap_angle
+
+
+@pytest.mark.parametrize(
+    ("angle", "expected"),
+    [
+        (0.0, 0.0),
+        (np.pi + 0.1, -np.pi + 0.1),
+        (-np.pi - 0.1, np.pi - 0.1),
+        (4.0 * np.pi, 0.0),
+    ],
+)
+def test_wrap_angle_maps_into_minus_pi_to_pi(angle: float, expected: float) -> None:
+    assert wrap_angle(angle) == pytest.approx(expected, abs=1e-12)
+
+
+def test_covariance_update_stays_symmetric() -> None:
+    rng = np.random.default_rng(0)
+    G = rng.normal(size=(4, 4))
+    P = G @ G.T + 4.0 * np.eye(4)
+    H = np.array([[1.0, 0.0, 0.0, 0.0]])
+    S = H @ P @ H.T + 0.5
+    P_post = P - P @ H.T @ np.linalg.solve(S, H @ P)
+    np.testing.assert_allclose(P_post, P_post.T, atol=1e-12)
+```
+
+Run the whole suite from the repository root with `uv run pytest` (the root `pyproject.toml` tells pytest where the tests live), or narrow it down with `uv run pytest projects/drone_pipeline/tests -k wrap`. Tests that need a dataset you have not downloaded are skipped with a reason rather than failing.
 
 ## Visualization Habits {#sec-python-visualization-habits}
 
@@ -136,5 +252,27 @@ Readable diagnostic plotting often catches model and tuning issues before deep d
 
 - Mixing radians and degrees in the same pipeline.
 - Silent shape broadcasting errors.
+- Seeding the global `np.random` state instead of passing a `Generator`.
+- Comparing floating-point results with `==`.
 - Hard-coding constants instead of configuration values.
 - Writing all logic in notebooks without reusable modules.
+
+## Exercises {#sec-python-exercises}
+
+1. **Broadcasting bug hunt.** A teammate's filter computes the normalized innovation squared like this, with the state stored as a `(n, 1)` column and the measurement as a `(m,)` array:
+
+   ```python
+   def nis(z, H, x, S):
+       y = z - H @ x
+       return y @ np.linalg.solve(S, y)
+   ```
+
+   (a) Predict the shape of the return value for $m = 2$, then confirm it. (b) Fix the function, with type hints, so that it returns a float whether `x` arrives as `(n,)` or `(n, 1)`. (c) Write a pytest test that fails on the original and passes on the fix.
+
+2. **Reproducible Monte Carlo.** Write `run_trial(rng: np.random.Generator) -> float` that draws 100 GNSS fixes with $\sigma = 3$ m around a fixed truth (use `simulate_gnss_fixes`) and returns the RMS horizontal error. (a) Run 200 trials, each with its own stream spawned from one seed, and show that rerunning gives identical results. (b) Run the same trials in reverse order and show that each trial's result is unchanged. (c) Repeat (b) with `np.random.seed` and the legacy functions, and explain the difference.
+
+3. **Course over ground, tested.** Implement `course_over_ground_deg(v_north: float, v_east: float, min_speed: float = 0.5) -> float` returning the course in degrees in $[0, 360)$ (see @sec-frames-heading-course-yaw), raising `ValueError` below `min_speed` because course is meaningless when the vehicle is nearly stopped. Write parameterized tests for north, east, south, west, and 315°, plus a test for the low-speed error, and run them with `uv run pytest`. Which of your tests would catch a swapped `atan2` argument order, and which would not?
+
+4. **Package it.** Create a project with `uv init --lib imu_tools`, add NumPy, and write a dataclass `ImuSample` with fields `t: float`, `accel: np.ndarray`, and `gyro: np.ndarray` whose `__post_init__` raises `ValueError` unless both arrays have shape `(3,)` and finite values. Add tests for one valid and two invalid samples. Then explain why `from imu_tools import ImuSample` works inside `tests/` even though the package lives under `src/`, and what happens if you run the tests with a system Python (`python -m pytest`) instead of `uv run pytest`.
+
+5. **Hints are not enforced.** Save the string version of `add` from @sec-python-core-language-features, together with the call `add(1, 2)`, in a file and run it with `uv run python`. Then run `uv run --with mypy mypy` on the same file. Report what each command prints and explain why both outcomes are correct.

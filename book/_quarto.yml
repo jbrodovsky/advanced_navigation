@@ -70,6 +70,7 @@ book:
       chapters:
         - chapters/03-filtering/filtering.qmd
         - chapters/03-filtering/bayes.qmd
+        - chapters/03-filtering/kf.qmd
         - chapters/03-filtering/ekf.qmd
         - chapters/03-filtering/ukf.qmd
         - chapters/03-filtering/information-filter.qmd

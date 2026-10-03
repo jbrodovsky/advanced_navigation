@@ -6,10 +6,14 @@ matrix and an information vector. It is not a different probabilistic
 assumption. It is a different coordinate system for the same linear-Gaussian
 estimator.
 
-That change of coordinates is useful in some problems and annoying in others.
-This chapter keeps the focus narrow: what the information form is, why the
-measurement update is attractive, how it compares with Kalman filtering, and
-what nonlinear variants look like.
+That change of coordinates is useful in some problems and annoying in others,
+and the two lists are mirror images of each other. What is cheap in covariance
+form (prediction, marginalizing out a variable) is expensive in information
+form, and what is cheap in information form (fusing measurements, conditioning
+on a variable, starting with no prior at all) is expensive or impossible in
+covariance form. This chapter develops that duality, because it is the bridge
+from recursive filtering to the sparse information matrices of EIF-SLAM and to
+the factor graphs behind modern smoothing (@sec-slam).
 
 ## Covariance Form and Information Form {#sec-information-filter-covariance-form-information}
 
@@ -29,35 +33,48 @@ $$
 \boldsymbol{\Omega}
 =
 \mathbf{P}^{-1},
-$$
-
-$$
+\qquad
 \boldsymbol{\xi}
 =
 \boldsymbol{\Omega}\hat{\mathbf{x}}.
 $$
 
 The matrix $\boldsymbol{\Omega}$ is the **information matrix** or **precision
-matrix**. The vector $\boldsymbol{\xi}$ is the **information vector**.
+matrix**. The vector $\boldsymbol{\xi}$ is the **information vector**. The
+names come from expanding the exponent of the Gaussian:
 
-To recover covariance form:
+$$
+-\log p(\mathbf{x})
+=
+\tfrac{1}{2}\mathbf{x}^T\boldsymbol{\Omega}\mathbf{x}
+-
+\boldsymbol{\xi}^T\mathbf{x}
++
+\text{const},
+$$ {#eq-information-quadratic}
+
+so $\boldsymbol{\Omega}$ and $\boldsymbol{\xi}$ are simply the quadratic and
+linear coefficients of the negative log-density. To recover covariance form,
+invert the relationship:
 
 $$
 \mathbf{P}
 =
 \boldsymbol{\Omega}^{-1},
-$$
-
-$$
+\qquad
 \hat{\mathbf{x}}
 =
-\mathbf{P}\boldsymbol{\xi}.
+\boldsymbol{\Omega}^{-1}\boldsymbol{\xi}.
 $$
+
+In practice "invert" means "solve": $\hat{\mathbf{x}}$ is the solution of the
+linear system $\boldsymbol{\Omega}\hat{\mathbf{x}} = \boldsymbol{\xi}$, and that
+solve will turn out to be the information filter's real price.
 
 In scalar form, information is just inverse variance:
 
 $$
-\omega = \frac{1}{\sigma^2}.
+\Omega = \frac{1}{\sigma^2}.
 $$
 
 High variance means low information. Low variance means high information. This
@@ -92,9 +109,9 @@ covariance matrix directly describes uncertainty, and prediction has a clean
 form:
 
 $$
-\mathbf{P}_k^-
+\mathbf{P}_{k|k-1}
 =
-\mathbf{F}_k\mathbf{P}_{k-1}\mathbf{F}_k^T + \mathbf{Q}_k.
+\mathbf{F}_k\mathbf{P}_{k-1|k-1}\mathbf{F}_k^T + \mathbf{Q}_k.
 $$
 
 Information form is most attractive when many independent measurements arrive.
@@ -112,91 +129,96 @@ reaches for matrix identities.
 Start from a prior belief in information form:
 
 $$
-\boldsymbol{\Omega}^-
+\boldsymbol{\Omega}_{k|k-1}
 =
-(\mathbf{P}^-)^{-1},
+\mathbf{P}_{k|k-1}^{-1},
 \qquad
-\boldsymbol{\xi}^-
+\boldsymbol{\xi}_{k|k-1}
 =
-\boldsymbol{\Omega}^-\hat{\mathbf{x}}^-.
+\boldsymbol{\Omega}_{k|k-1}\hat{\mathbf{x}}_{k|k-1}.
 $$
 
 For a linear measurement model,
 
 $$
-\mathbf{z}
+\mathbf{z}_k
 =
-\mathbf{H}\mathbf{x} + \mathbf{v},
+\mathbf{H}\mathbf{x}_k + \mathbf{v}_k,
 \qquad
-\mathbf{v} \sim \mathcal{N}(\mathbf{0}, \mathbf{R}),
+\mathbf{v}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{R}),
 $$
 
-the posterior information matrix is
+Bayes' rule multiplies the prior by the likelihood, so the negative
+log-posterior is the sum of the two negative log-densities:
 
 $$
-\boldsymbol{\Omega}
+-\log p(\mathbf{x}_k \mid \mathbf{z}_k)
 =
-\boldsymbol{\Omega}^-
+\tfrac{1}{2}\mathbf{x}_k^T\boldsymbol{\Omega}_{k|k-1}\mathbf{x}_k
+-
+\boldsymbol{\xi}_{k|k-1}^T\mathbf{x}_k
 +
-\mathbf{H}^T\mathbf{R}^{-1}\mathbf{H}.
+\tfrac{1}{2}(\mathbf{z}_k - \mathbf{H}\mathbf{x}_k)^T\mathbf{R}^{-1}(\mathbf{z}_k - \mathbf{H}\mathbf{x}_k)
++
+\text{const}.
 $$
 
-The posterior information vector is
+Collecting the quadratic and linear terms in $\mathbf{x}_k$ and matching them
+against @eq-information-quadratic gives the posterior directly:
 
 $$
-\boldsymbol{\xi}
+\boldsymbol{\Omega}_{k|k}
 =
-\boldsymbol{\xi}^-
+\boldsymbol{\Omega}_{k|k-1}
 +
-\mathbf{H}^T\mathbf{R}^{-1}\mathbf{z}.
-$$
+\mathbf{H}^T\mathbf{R}^{-1}\mathbf{H},
+\qquad
+\boldsymbol{\xi}_{k|k}
+=
+\boldsymbol{\xi}_{k|k-1}
++
+\mathbf{H}^T\mathbf{R}^{-1}\mathbf{z}_k.
+$$ {#eq-information-update}
 
 That is the main appeal: measurement updates are additive. Each independent
 measurement contributes one information matrix term and one information vector
-term.
+term. No gain, no innovation covariance, and no inverse of anything
+state-sized: only $\mathbf{R}^{-1}$, which is usually diagonal and can be
+computed once.
 
 ## Scalar Example: Same Posterior as Kalman {#sec-information-filter-scalar-example-same}
 
-For a scalar state with prior $x \sim \mathcal{N}(\mu^-, P^-)$ and measurement
-$z = x + v$, the Kalman update is
+For a scalar state with prior $x \sim \mathcal{N}(\hat{x}_{k|k-1}, P_{k|k-1})$
+and measurement $z = x + v$, $v \sim \mathcal{N}(0, R)$, the Kalman update is
 
 $$
-K = \frac{P^-}{P^- + R},
-$$
-
-$$
-\mu = \mu^- + K(z-\mu^-),
-$$
-
-$$
-P = (1-K)P^-.
+K = \frac{P_{k|k-1}}{P_{k|k-1} + R},
+\qquad
+\hat{x}_{k|k} = \hat{x}_{k|k-1} + K(z-\hat{x}_{k|k-1}),
+\qquad
+P_{k|k} = (1-K)P_{k|k-1}.
 $$
 
 In information form,
 
 $$
-\omega = \frac{1}{P^-} + \frac{1}{R},
-$$
-
-$$
-\xi = \frac{\mu^-}{P^-} + \frac{z}{R}.
-$$
-
-Then
-
-$$
-P = \frac{1}{\omega},
+\Omega_{k|k} = \frac{1}{P_{k|k-1}} + \frac{1}{R},
 \qquad
-\mu = \frac{\xi}{\omega}.
+\xi_{k|k} = \frac{\hat{x}_{k|k-1}}{P_{k|k-1}} + \frac{z}{R},
+$$
+
+and then
+
+$$
+P_{k|k} = \frac{1}{\Omega_{k|k}},
+\qquad
+\hat{x}_{k|k} = \frac{\xi_{k|k}}{\Omega_{k|k}}.
 $$
 
 ```{python}
 #| label: fig-information-kalman-equivalence
 #| fig-cap: "Scalar Kalman and information-form updates produce the same posterior. The information update reaches it by adding precision-weighted terms."
 #| code-fold: true
-
-import numpy as np
-import matplotlib.pyplot as plt
 
 
 def gaussian_pdf(x, mean, variance):
@@ -212,10 +234,10 @@ K = prior_var / (prior_var + measurement_var)
 kalman_mean = prior_mean + K * (measurement - prior_mean)
 kalman_var = (1.0 - K) * prior_var
 
-omega = 1.0 / prior_var + 1.0 / measurement_var
-xi = prior_mean / prior_var + measurement / measurement_var
-information_var = 1.0 / omega
-information_mean = information_var * xi
+info = 1.0 / prior_var + 1.0 / measurement_var
+info_vec = prior_mean / prior_var + measurement / measurement_var
+information_var = 1.0 / info
+information_mean = information_var * info_vec
 
 print(f"Kalman posterior mean:      {kalman_mean:.6f}")
 print(f"Information posterior mean: {information_mean:.6f}")
@@ -253,22 +275,18 @@ z_i = x + v_i,
 v_i \sim \mathcal{N}(0, R_i).
 $$
 
-The posterior information is
+The posterior information and information vector are
 
 $$
-\omega
+\Omega_{k|k}
 =
-\omega^-
+\Omega_{k|k-1}
 +
-\sum_i \frac{1}{R_i}.
-$$
-
-The posterior information vector is
-
-$$
-\xi
+\sum_i \frac{1}{R_i},
+\qquad
+\xi_{k|k}
 =
-\xi^-
+\xi_{k|k-1}
 +
 \sum_i \frac{z_i}{R_i}.
 $$
@@ -281,31 +299,28 @@ information. Sensors with large variance still contribute, but only a little.
 #| fig-cap: "Independent measurements add information. Low-noise measurements contribute more precision than high-noise measurements."
 #| code-fold: true
 
-import numpy as np
-import matplotlib.pyplot as plt
-
 prior_mean = 0.0
 prior_var = 4.0
 measurements = np.array([1.6, 2.1, 1.8, 4.0])
 variances = np.array([0.45, 0.25, 0.8, 5.0])
 
-omega_terms = 1.0 / variances
-xi_terms = measurements / variances
+info_terms = 1.0 / variances
+info_vec_terms = measurements / variances
 
-omega = 1.0 / prior_var
-xi = prior_mean / prior_var
+info = 1.0 / prior_var
+info_vec = prior_mean / prior_var
 
 posterior_means = []
 posterior_vars = []
-for omega_i, xi_i in zip(omega_terms, xi_terms):
-    omega += omega_i
-    xi += xi_i
-    posterior_vars.append(1.0 / omega)
-    posterior_means.append(xi / omega)
+for info_i, info_vec_i in zip(info_terms, info_vec_terms):
+    info += info_i
+    info_vec += info_vec_i
+    posterior_vars.append(1.0 / info)
+    posterior_means.append(info_vec / info)
 
 fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
-axes[0].bar(np.arange(len(measurements)) + 1, omega_terms)
+axes[0].bar(np.arange(len(measurements)) + 1, info_terms)
 axes[0].set_xlabel("measurement number")
 axes[0].set_ylabel("information contribution")
 axes[0].set_title("Each measurement adds precision")
@@ -327,6 +342,65 @@ measurements becomes a sum of terms. In a large sparse problem, most
 measurements touch only a few state variables, so the information matrix can
 remain sparse.
 
+## Starting from No Information {#sec-information-filter-no-prior}
+
+Information form can represent something covariance form cannot: complete
+ignorance. Setting $\boldsymbol{\Omega} = \mathbf{0}$ and
+$\boldsymbol{\xi} = \mathbf{0}$ says "no prior at all," which in covariance form
+would need an infinite $\mathbf{P}$. A Kalman filter has to fake it with a large
+diagonal, and "large" is a tuning parameter that leaks into the answer and into
+the conditioning of every matrix it touches. An information filter just starts
+at zero and adds measurements. The state becomes estimable exactly when
+$\boldsymbol{\Omega}$ becomes invertible, and the rank of $\boldsymbol{\Omega}$
+along the way tells you how many directions are observable.
+
+Navigators have done this by hand for centuries. A compass bearing to a charted
+lighthouse puts the ship somewhere on a **line of position** (LOP): a straight
+line through the lighthouse along the bearing. One LOP fixes the ship's
+cross-line position and says nothing about the along-line position. A second
+LOP that crosses the first gives a fix, and a third gives the famous "cocked
+hat" triangle. In information form each LOP is one rank-one term. If
+$\mathbf{a}_j$ is the unit normal to line $j$ through landmark
+$\boldsymbol{\ell}_j$, the observer satisfies
+$\mathbf{a}_j^T\mathbf{x} = \mathbf{a}_j^T\boldsymbol{\ell}_j$ up to a
+cross-line error with standard deviation $r_j\sigma_\vartheta$, where $r_j$ is
+the range and $\sigma_\vartheta$ the bearing error.
+
+```{python}
+#| label: information-lines-of-position
+
+rng = np.random.default_rng(1)
+x_true = np.array([0.0, 0.0])                    # ship position, north/east [m]
+landmarks = {"lighthouse": np.array([3000.0, 1000.0]),
+             "water tower": np.array([500.0, -2500.0]),
+             "church spire": np.array([-2000.0, 1500.0])}
+sigma_bearing = np.deg2rad(1.0)
+
+Omega = np.zeros((2, 2))                         # no prior information at all
+xi = np.zeros(2)
+for name, mark in landmarks.items():
+    d = mark - x_true
+    bearing = np.arctan2(d[1], d[0]) + rng.normal(0.0, sigma_bearing)  # measured
+    a = np.array([-np.sin(bearing), np.cos(bearing)])   # unit normal to the LOP
+    r_lop = np.linalg.norm(d) * sigma_bearing           # cross-line std [m]
+    Omega += np.outer(a, a) / r_lop**2                  # H = a^T, R = r_lop^2
+    xi += a * (a @ mark) / r_lop**2                     # z = a^T * landmark
+    rank = np.linalg.matrix_rank(Omega)
+    if rank < 2:
+        print(f"after {name:12s}: rank {rank}, no fix yet (one direction unobserved)")
+    else:
+        fix = np.linalg.solve(Omega, xi)
+        sd = np.sqrt(np.diag(np.linalg.solve(Omega, np.eye(2))))
+        print(f"after {name:12s}: rank {rank}, fix error {np.linalg.norm(fix - x_true):5.1f} m,"
+              f" std north {sd[0]:5.1f} m, east {sd[1]:5.1f} m")
+```
+
+No initial guess, no fake prior, and the singular matrix after the first
+bearing is not a numerical failure; it is the correct answer to "where am I
+along this line?" The same property is why information form is natural for
+initializing new landmarks in SLAM, and why least-squares and factor-graph
+solvers are written in it.
+
 ## Linear Prediction {#sec-information-filter-linear-prediction}
 
 For the linear process model
@@ -346,58 +420,354 @@ $$
 the covariance-form prediction is
 
 $$
-\hat{\mathbf{x}}_k^-
+\hat{\mathbf{x}}_{k|k-1}
 =
-\mathbf{F}\hat{\mathbf{x}}_{k-1}
+\mathbf{F}\hat{\mathbf{x}}_{k-1|k-1}
 +
 \mathbf{B}\mathbf{u}_k,
-$$
-
-$$
-\mathbf{P}_k^-
+\qquad
+\mathbf{P}_{k|k-1}
 =
-\mathbf{F}\mathbf{P}_{k-1}\mathbf{F}^T
+\mathbf{F}\mathbf{P}_{k-1|k-1}\mathbf{F}^T
 +
 \mathbf{Q}.
 $$
 
-The direct information-form prediction is less tidy because process noise adds
-in covariance space, not information space. The straightforward implementation
-is:
+Substituting $\mathbf{P}_{k-1|k-1} = \boldsymbol{\Omega}_{k-1|k-1}^{-1}$ and
+$\hat{\mathbf{x}}_{k-1|k-1} = \boldsymbol{\Omega}_{k-1|k-1}^{-1}\boldsymbol{\xi}_{k-1|k-1}$
+gives the information-form prediction in closed form [@ProbRob]:
 
-1. Convert from information form to covariance form.
-2. Apply the normal Kalman prediction.
-3. Convert the predicted result back to information form.
+$$
+\begin{aligned}
+\boldsymbol{\Omega}_{k|k-1}
+&=
+\left(\mathbf{F}\boldsymbol{\Omega}_{k-1|k-1}^{-1}\mathbf{F}^T + \mathbf{Q}\right)^{-1},
+\\
+\boldsymbol{\xi}_{k|k-1}
+&=
+\boldsymbol{\Omega}_{k|k-1}
+\left(\mathbf{F}\boldsymbol{\Omega}_{k-1|k-1}^{-1}\boldsymbol{\xi}_{k-1|k-1} + \mathbf{B}\mathbf{u}_k\right).
+\end{aligned}
+$$ {#eq-information-predict}
+
+Process noise adds in covariance space, not information space, so two
+state-sized inversions are unavoidable. When $\mathbf{F}$ is invertible (it
+always is for a discretized continuous-time model), the matrix inversion lemma (@eq-linalg-woodbury)
+rearranges @eq-information-predict into a form that shows what is going on.
+Define $\mathbf{M} = \mathbf{F}^{-T}\boldsymbol{\Omega}_{k-1|k-1}\mathbf{F}^{-1}$,
+the old information carried through the dynamics. Then
+
+$$
+\begin{aligned}
+\boldsymbol{\Omega}_{k|k-1}
+&=
+\mathbf{M} - \mathbf{M}\left(\mathbf{M} + \mathbf{Q}^{-1}\right)^{-1}\mathbf{M},
+\\
+\boldsymbol{\xi}_{k|k-1}
+&=
+\left(\mathbf{I} - \mathbf{M}\left(\mathbf{M} + \mathbf{Q}^{-1}\right)^{-1}\right)
+\left(\mathbf{F}^{-T}\boldsymbol{\xi}_{k-1|k-1} + \mathbf{M}\mathbf{B}\mathbf{u}_k\right).
+\end{aligned}
+$$ {#eq-information-predict-m}
+
+With no process noise ($\mathbf{Q}^{-1} \to \infty$) the subtracted term
+vanishes and the information is merely transported, $\boldsymbol{\Omega}_{k|k-1} = \mathbf{M}$.
+With enormous process noise ($\mathbf{Q}^{-1} \to \mathbf{0}$) the subtracted
+term equals $\mathbf{M}$ and all information is lost. Prediction is where
+information leaks away, and computing exactly how much costs a state-sized
+solve either way.
+
+The implementation below never calls `np.linalg.inv`. It factors the positive
+definite matrices once with a Cholesky decomposition and uses triangular solves
+for everything else.
 
 ```{python}
 #| label: information-predict-code
-#| eval: false
 
-import numpy as np
+from scipy.linalg import cho_factor, cho_solve
 
 
 def information_to_covariance(Omega, xi):
-    P = np.linalg.inv(Omega)
-    x_hat = P @ xi
+    """(Omega, xi) -> (x_hat, P) using one Cholesky factorization of Omega."""
+    factor = cho_factor(Omega)
+    x_hat = cho_solve(factor, xi)                  # solve Omega x = xi
+    P = cho_solve(factor, np.eye(Omega.shape[0]))
     return x_hat, P
 
 
 def covariance_to_information(x_hat, P):
-    Omega = np.linalg.inv(P)
-    xi = Omega @ x_hat
+    """(x_hat, P) -> (Omega, xi) using one Cholesky factorization of P."""
+    factor = cho_factor(P)
+    Omega = cho_solve(factor, np.eye(P.shape[0]))
+    xi = cho_solve(factor, x_hat)                  # xi = P^-1 x_hat
     return Omega, xi
 
 
 def information_predict(Omega, xi, F, B, u, Q):
+    """Closed-form information prediction, eq-information-predict."""
     x_hat, P = information_to_covariance(Omega, xi)
-    x_bar = F @ x_hat + B @ u
-    P_bar = F @ P @ F.T + Q
-    return covariance_to_information(x_bar, P_bar)
+    x_pred = F @ x_hat + B @ u
+    P_pred = F @ P @ F.T + Q
+    return covariance_to_information(x_pred, 0.5 * (P_pred + P_pred.T))
+
+
+def information_update(Omega, xi, z, H, R):
+    """Additive information update, eq-information-update."""
+    Rinv_H = np.linalg.solve(R, H)                 # R^-1 H without forming R^-1
+    Omega_post = Omega + H.T @ Rinv_H
+    xi_post = xi + Rinv_H.T @ z                    # H^T R^-1 z (R symmetric)
+    return 0.5 * (Omega_post + Omega_post.T), xi_post
 ```
 
-There are matrix identities that avoid some explicit inversions in special
-cases, but the conceptual issue remains: information form makes measurement
-fusion clean and prediction less clean.
+Written this way the "closed form" and the "convert, predict, convert back"
+recipe are the same computation; @eq-information-predict just says so in one
+line. The check below runs a Kalman filter and an information filter side by
+side on a constant-velocity target observed by two independent position
+sensors, confirms they agree to rounding error, and confirms that
+@eq-information-predict-m gives the same prediction.
+
+```{python}
+#| label: information-kf-duality-check
+
+dt = 1.0
+F = np.array([[1.0, dt], [0.0, 1.0]])
+B = np.array([[0.5 * dt**2], [dt]])
+Q = 0.2 * np.array([[dt**3 / 3, dt**2 / 2], [dt**2 / 2, dt]])
+H = np.array([[1.0, 0.0], [1.0, 0.0]])            # two sensors, both measure position
+R = np.diag([2.0**2, 0.5**2])
+
+rng = np.random.default_rng(7)
+x_true = np.array([0.0, 1.0])
+x_kf, P_kf = np.zeros(2), 10.0 * np.eye(2)
+Omega_if, xi_if = covariance_to_information(x_kf, P_kf)
+max_diff = 0.0
+for k in range(30):
+    u = np.array([0.1 * np.sin(0.2 * k)])
+    x_true = F @ x_true + B @ u + rng.multivariate_normal(np.zeros(2), Q)
+    z = H @ x_true + rng.multivariate_normal(np.zeros(2), R)
+
+    # Kalman filter (covariance form)
+    x_kf, P_kf = F @ x_kf + B @ u, F @ P_kf @ F.T + Q
+    S = H @ P_kf @ H.T + R
+    K = np.linalg.solve(S, H @ P_kf).T
+    x_kf, P_kf = x_kf + K @ (z - H @ x_kf), P_kf - K @ S @ K.T
+
+    # Check the M-form prediction against the closed form before predicting.
+    M = np.linalg.solve(F.T, np.linalg.solve(F.T, Omega_if.T).T)   # F^-T Omega F^-1
+    Q_inv = np.linalg.solve(Q, np.eye(2))
+    G = np.linalg.solve(M + Q_inv, M).T             # M (M + Q^-1)^-1 (both symmetric)
+    Omega_m = M - G @ M
+    xi_m = (np.eye(2) - G) @ (np.linalg.solve(F.T, xi_if) + M @ B @ u)
+
+    # Information filter
+    Omega_if, xi_if = information_predict(Omega_if, xi_if, F, B, u, Q)
+    assert np.allclose(Omega_m, Omega_if) and np.allclose(xi_m, xi_if)
+    Omega_if, xi_if = information_update(Omega_if, xi_if, z, H, R)
+
+    x_if, P_if = information_to_covariance(Omega_if, xi_if)
+    max_diff = max(max_diff, np.abs(x_if - x_kf).max(), np.abs(P_if - P_kf).max())
+
+print(f"max difference between KF and IF over 30 steps: {max_diff:.1e}")
+print("M-form prediction matches the closed form at every step")
+```
+
+## The Kalman–Information Duality {#sec-information-filter-kf-duality}
+
+Put the two filters side by side and the pattern is hard to miss:
+
+| | Covariance form (KF) | Information form (IF) |
+|---|---|---|
+| Prediction | $\mathbf{F}\mathbf{P}\mathbf{F}^T + \mathbf{Q}$: products only | @eq-information-predict: state-sized inverses |
+| Update | gain needs an $m \times m$ solve with $\mathbf{S}_k$ | add $\mathbf{H}^T\mathbf{R}^{-1}\mathbf{H}$: no state-sized inverse |
+| Read the mean | stored directly | solve $\boldsymbol{\Omega}\hat{\mathbf{x}} = \boldsymbol{\xi}$ |
+| No prior | impossible ($\mathbf{P} = \infty$) | $\boldsymbol{\Omega} = \mathbf{0}$ |
+| Marginalize a variable | keep the remaining block | Schur complement |
+| Condition on a variable | Schur complement | keep the remaining block, shift $\boldsymbol{\xi}$ |
+
+The cost trade follows from the first two rows. A Kalman filter with $n$
+states and $m$ measurements per step pays $O(n^3)$ in matrix products to
+predict, then $O(n^2 m + n m^2 + m^3)$ to form and factor $\mathbf{S}_k$ and
+apply the gain, and every measurement touches the whole covariance. An
+information filter pays $O(n^3)$ in factorizations to predict, then only the
+cost of forming $\mathbf{H}^T\mathbf{R}^{-1}\mathbf{H}$: at most $O(n^2 m)$,
+and far less when each measurement involves only a few states, because its
+contribution is then a small block in a few rows and columns. The terms from
+different sensors are also independent of each other. So the information filter wins when
+measurements are plentiful relative to predictions: many sensors per step,
+measurements arriving in large batches, or many nodes in a network each adding
+their own terms (the sum is the same whatever order they arrive in). The Kalman
+filter wins when predictions are frequent and measurements sparse, which is the
+usual inertial navigation situation: a 400 Hz prediction and a 1 Hz GNSS fix.
+
+The last two rows deserve their own section, because they are what make
+information form the language of large-scale SLAM.
+
+## Marginalization and Conditioning {#sec-information-filter-marginalization-conditioning}
+
+Partition the state into two blocks, $\mathbf{x} = [\mathbf{a}; \mathbf{b}]$, and
+write the joint Gaussian both ways:
+
+$$
+\mathbf{P} =
+\begin{bmatrix}
+\mathbf{P}_{aa} & \mathbf{P}_{ab} \\
+\mathbf{P}_{ba} & \mathbf{P}_{bb}
+\end{bmatrix},
+\qquad
+\boldsymbol{\Omega} =
+\begin{bmatrix}
+\boldsymbol{\Omega}_{aa} & \boldsymbol{\Omega}_{ab} \\
+\boldsymbol{\Omega}_{ba} & \boldsymbol{\Omega}_{bb}
+\end{bmatrix},
+\qquad
+\boldsymbol{\xi} =
+\begin{bmatrix}
+\boldsymbol{\xi}_a \\ \boldsymbol{\xi}_b
+\end{bmatrix}.
+$$
+
+**Marginalizing** $\mathbf{b}$ away (asking for $p(\mathbf{a})$, whatever
+$\mathbf{b}$ is) is trivial in covariance form: the answer is
+$\mathcal{N}(\hat{\mathbf{a}}, \mathbf{P}_{aa})$, just read off the block. In
+information form it takes a Schur complement:
+
+$$
+\boldsymbol{\Omega}_{a}^{\text{marg}}
+=
+\boldsymbol{\Omega}_{aa} - \boldsymbol{\Omega}_{ab}\boldsymbol{\Omega}_{bb}^{-1}\boldsymbol{\Omega}_{ba},
+\qquad
+\boldsymbol{\xi}_{a}^{\text{marg}}
+=
+\boldsymbol{\xi}_{a} - \boldsymbol{\Omega}_{ab}\boldsymbol{\Omega}_{bb}^{-1}\boldsymbol{\xi}_{b}.
+$$ {#eq-information-marginal}
+
+**Conditioning** on a known value of $\mathbf{b}$ (asking for
+$p(\mathbf{a} \mid \mathbf{b})$) is the reverse. In covariance form it is the
+Schur complement,
+
+$$
+\hat{\mathbf{a}}_{|b} = \hat{\mathbf{a}} + \mathbf{P}_{ab}\mathbf{P}_{bb}^{-1}(\mathbf{b} - \hat{\mathbf{b}}),
+\qquad
+\mathbf{P}_{a|b} = \mathbf{P}_{aa} - \mathbf{P}_{ab}\mathbf{P}_{bb}^{-1}\mathbf{P}_{ba},
+$$
+
+which you have seen before: it is the Kalman update in disguise. In
+information form you just read off the block:
+
+$$
+\boldsymbol{\Omega}_{a|b} = \boldsymbol{\Omega}_{aa},
+\qquad
+\boldsymbol{\xi}_{a|b} = \boldsymbol{\xi}_{a} - \boldsymbol{\Omega}_{ab}\mathbf{b}.
+$$ {#eq-information-conditional}
+
+(Plug the known $\mathbf{b}$ into @eq-information-quadratic and collect the
+terms in $\mathbf{a}$ to see why.) The cell below checks all four formulas on a
+random five-dimensional Gaussian.
+
+```{python}
+#| label: information-marginal-conditional-check
+
+rng = np.random.default_rng(3)
+A = rng.normal(size=(5, 5))
+P_joint = A @ A.T + 0.5 * np.eye(5)
+x_joint = rng.normal(size=5)
+Omega_joint, xi_joint = covariance_to_information(x_joint, P_joint)
+a, b = slice(0, 3), slice(3, 5)
+b_known = np.array([0.7, -1.2])
+
+# Marginal p(a): covariance form reads the block; information form needs a Schur complement.
+Omega_marg = Omega_joint[a, a] - Omega_joint[a, b] @ np.linalg.solve(Omega_joint[b, b], Omega_joint[b, a])
+xi_marg = xi_joint[a] - Omega_joint[a, b] @ np.linalg.solve(Omega_joint[b, b], xi_joint[b])
+x_m, P_m = information_to_covariance(Omega_marg, xi_marg)
+print("marginal matches covariance blocks:   ",
+      np.allclose(x_m, x_joint[a]) and np.allclose(P_m, P_joint[a, a]))
+
+# Conditional p(a | b): information form reads the block; covariance form needs a Schur complement.
+gain = np.linalg.solve(P_joint[b, b], P_joint[b, a]).T          # P_ab P_bb^-1
+x_c = x_joint[a] + gain @ (b_known - x_joint[b])
+P_c = P_joint[a, a] - gain @ P_joint[b, a]
+x_c_info, P_c_info = information_to_covariance(Omega_joint[a, a], xi_joint[a] - Omega_joint[a, b] @ b_known)
+print("conditional matches information blocks:",
+      np.allclose(x_c, x_c_info) and np.allclose(P_c, P_c_info))
+```
+
+This duality is the bridge to SLAM (@sec-slam). In a mapping problem, the
+information matrix has a nonzero block between two variables only if some
+measurement connected them: a robot pose and the landmark it observed, or two
+consecutive poses linked by odometry. Keeping every pose (*smoothing*) keeps
+that matrix sparse. *Filtering* means marginalizing out each old pose as the
+robot moves on, and @eq-information-marginal shows what that does: the Schur
+complement $\boldsymbol{\Omega}_{ab}\boldsymbol{\Omega}_{bb}^{-1}\boldsymbol{\Omega}_{ba}$
+connects every pair of variables that the marginalized pose was connected to.
+Marginalize enough poses and every landmark is linked to every other one
+(@fig-information-fill-in).
+
+```{python}
+#| label: fig-information-fill-in
+#| fig-cap: "Why filtering densifies SLAM. Dark cells are nonzero entries of the information matrix. Left: a small 1D SLAM problem that keeps all six poses (smoothing). Odometry links consecutive poses and each observation links one pose to one landmark, so most entries are exactly zero. Right: the same belief after marginalizing out the five past poses (filtering; the light gray rows and columns no longer exist). The Schur complement has connected every landmark to every other landmark and to the current pose."
+#| code-fold: true
+
+n_poses, n_landmarks = 6, 4
+n_vars = n_poses + n_landmarks
+sees = {0: [0, 1], 1: [1], 2: [1, 2], 3: [2], 4: [2, 3], 5: [3]}   # pose -> landmarks
+sigma_odo, sigma_obs, sigma_prior = 0.3, 0.5, 0.1
+
+
+def add_relative_factor(Omega, i, j, sigma):
+    """Information of a measurement z = x_j - x_i with noise std sigma."""
+    J = np.zeros(n_vars)
+    J[i], J[j] = -1.0, 1.0
+    Omega += np.outer(J, J) / sigma**2
+
+
+Omega_slam = np.zeros((n_vars, n_vars))
+Omega_slam[0, 0] += 1.0 / sigma_prior**2                 # prior anchors the first pose
+for k in range(n_poses - 1):
+    add_relative_factor(Omega_slam, k, k + 1, sigma_odo)
+for pose, marks in sees.items():
+    for m in marks:
+        add_relative_factor(Omega_slam, pose, n_poses + m, sigma_obs)
+
+keep = np.r_[n_poses - 1, np.arange(n_poses, n_vars)]   # current pose and landmarks
+drop = np.arange(n_poses - 1)                            # past poses
+Omega_filter = Omega_slam[np.ix_(keep, keep)] - Omega_slam[np.ix_(keep, drop)] @ np.linalg.solve(
+    Omega_slam[np.ix_(drop, drop)], Omega_slam[np.ix_(drop, keep)])
+
+labels = [f"x{k}" for k in range(n_poses)] + [f"l{m}" for m in range(n_landmarks)]
+filtered_full = np.full((n_vars, n_vars), np.nan)      # NaN marks marginalized variables
+filtered_full[np.ix_(keep, keep)] = np.abs(Omega_filter) > 1e-9
+
+cmap = plt.get_cmap("Greys").copy()
+cmap.set_bad("0.93")
+fig, axes = plt.subplots(1, 2, figsize=(10, 4.8))
+panels = [(np.abs(Omega_slam) > 1e-9, "smoothing: all poses kept", "entries"),
+          (filtered_full, "filtering: past poses marginalized", "remaining entries")]
+for ax, (pattern, title, what) in zip(axes, panels):
+    pattern = pattern.astype(float)
+    ax.imshow(np.ma.masked_invalid(pattern), cmap=cmap, vmin=0, vmax=1.4)
+    ax.set_title(f"{title}\n{np.nanmean(pattern):.0%} of {what} nonzero")
+    ax.set_xticks(range(n_vars), labels)
+    ax.set_yticks(range(n_vars), labels)
+    ax.set_xticks(np.arange(-0.5, n_vars), minor=True)
+    ax.set_yticks(np.arange(-0.5, n_vars), minor=True)
+    ax.grid(which="minor", color="white", linewidth=1.5)
+    ax.tick_params(which="minor", length=0)
+plt.tight_layout()
+plt.show()
+```
+
+That fill-in is the reason the memory and per-step cost of EKF-SLAM and plain
+EIF-SLAM grow at least quadratically with the number of landmarks. The research
+that followed took the two obvious ways out. **Sparse extended information
+filters** keep filtering but deliberately *sparsify*: they periodically cut the
+links between the robot and all but a few recently observed landmarks, so the
+matrix stays sparse, accepting a controlled approximation [@ProbRob]. **Smoothing and
+factor graphs** refuse to marginalize at all: they keep every pose, so the
+information matrix stays as sparse as the left panel, and solve the whole
+trajectory with sparse factorizations. Most modern visual-inertial and lidar
+SLAM back ends are of the second kind, often with a sliding window that
+marginalizes only the oldest poses, which brings a small, controlled amount of
+fill-in back.
 
 ## Linear Information Filter Algorithm {#sec-information-filter-linear-information-filter}
 
@@ -405,23 +775,22 @@ For each time step:
 
 ```text
 predict:
-    convert Omega, xi to x, P
-    x_bar = F x + B u
-    P_bar = F P F.T + Q
-    Omega_bar = inv(P_bar)
-    xi_bar = Omega_bar x_bar
+    Omega_bar = inv(F inv(Omega) F.T + Q)        # factor and solve, never invert
+    xi_bar    = Omega_bar (F inv(Omega) xi + B u)
 
 update:
     Omega = Omega_bar + H.T inv(R) H
-    xi = xi_bar + H.T inv(R) z
+    xi    = xi_bar + H.T inv(R) z
 ```
 
-The update can also be applied measurement by measurement:
+Read every `inv` above as "solve with a factorization", as in
+`information_predict`. The update can also be applied measurement by
+measurement, in any order:
 
 ```text
 for each independent measurement:
     Omega += H_i.T inv(R_i) H_i
-    xi += H_i.T inv(R_i) z_i
+    xi    += H_i.T inv(R_i) z_i
 ```
 
 That incremental structure is one reason the information view shows up in
@@ -430,67 +799,111 @@ multi-sensor fusion and graph-based estimation.
 ## Extended Information Filter {#sec-information-filter-extended-information-filter}
 
 The Extended Information Filter (EIF) is the information-form analogue of the
-Extended Kalman Filter. For a nonlinear measurement
+Extended Kalman Filter (@sec-ekf). It linearizes exactly where the EKF does,
+which means it needs the *mean* at exactly the points where the EKF needs it,
+and the mean is precisely the quantity information form does not store.
+
+For a nonlinear motion model $\mathbf{x}_k = f(\mathbf{x}_{k-1}, \mathbf{u}_k) + \mathbf{w}_k$,
+the EIF prediction first recovers the mean, then linearizes around it with
+$\mathbf{F}_k = \partial f / \partial \mathbf{x}$ evaluated at that mean:
 
 $$
-\mathbf{z} = h(\mathbf{x}) + \mathbf{v},
+\hat{\mathbf{x}}_{k-1|k-1} = \boldsymbol{\Omega}_{k-1|k-1}^{-1}\boldsymbol{\xi}_{k-1|k-1},
 $$
 
-linearize around the predicted estimate $\hat{\mathbf{x}}^-$:
+$$
+\boldsymbol{\Omega}_{k|k-1}
+=
+\left(\mathbf{F}_k\boldsymbol{\Omega}_{k-1|k-1}^{-1}\mathbf{F}_k^T + \mathbf{Q}_k\right)^{-1},
+\qquad
+\boldsymbol{\xi}_{k|k-1}
+=
+\boldsymbol{\Omega}_{k|k-1}\, f(\hat{\mathbf{x}}_{k-1|k-1}, \mathbf{u}_k).
+$$
+
+Note that the predicted information vector uses the *nonlinear* model
+evaluated at the recovered mean, not $\mathbf{F}_k\hat{\mathbf{x}}$, just as the
+EKF propagates its mean through $f$ itself.
+
+For a nonlinear measurement
 
 $$
-h(\mathbf{x})
+\mathbf{z}_k = h(\mathbf{x}_k) + \mathbf{v}_k,
+$$
+
+recover the predicted mean
+$\hat{\mathbf{x}}_{k|k-1} = \boldsymbol{\Omega}_{k|k-1}^{-1}\boldsymbol{\xi}_{k|k-1}$
+and linearize around it:
+
+$$
+h(\mathbf{x}_k)
 \approx
-h(\hat{\mathbf{x}}^-)
+h(\hat{\mathbf{x}}_{k|k-1})
 +
-\mathbf{H}(\mathbf{x} - \hat{\mathbf{x}}^-).
+\mathbf{H}_k(\mathbf{x}_k - \hat{\mathbf{x}}_{k|k-1}).
 $$
 
-Rearrange this into a linear pseudo-measurement:
+Rearranged, this is a linear measurement of $\mathbf{x}_k$ with the
+pseudo-measurement
 
 $$
-\mathbf{z}
+\tilde{\mathbf{z}}_k
+=
+\mathbf{z}_k
 -
-h(\hat{\mathbf{x}}^-)
+h(\hat{\mathbf{x}}_{k|k-1})
 +
-\mathbf{H}\hat{\mathbf{x}}^-
+\mathbf{H}_k\hat{\mathbf{x}}_{k|k-1}
 \approx
-\mathbf{H}\mathbf{x}
+\mathbf{H}_k\mathbf{x}_k
 +
-\mathbf{v}.
+\mathbf{v}_k,
 $$
 
-Define
+so the update is the linear one with $\tilde{\mathbf{z}}_k$ in place of
+$\mathbf{z}_k$:
 
 $$
-\tilde{\mathbf{z}}
+\boldsymbol{\Omega}_{k|k}
 =
-\mathbf{z}
--
-h(\hat{\mathbf{x}}^-)
+\boldsymbol{\Omega}_{k|k-1}
 +
-\mathbf{H}\hat{\mathbf{x}}^-.
-$$
-
-Then the information update is
-
-$$
-\boldsymbol{\Omega}
+\mathbf{H}_k^T\mathbf{R}^{-1}\mathbf{H}_k,
+\qquad
+\boldsymbol{\xi}_{k|k}
 =
-\boldsymbol{\Omega}^-
+\boldsymbol{\xi}_{k|k-1}
 +
-\mathbf{H}^T\mathbf{R}^{-1}\mathbf{H},
+\mathbf{H}_k^T\mathbf{R}^{-1}\tilde{\mathbf{z}}_k.
 $$
 
-$$
-\boldsymbol{\xi}
-=
-\boldsymbol{\xi}^-
-+
-\mathbf{H}^T\mathbf{R}^{-1}\tilde{\mathbf{z}}.
-$$
+The full EIF step is then:
 
-The linearization risks are the same as the EKF: poor initial estimates,
+```text
+predict:
+    x      = solve(Omega, xi)                    # mean recovery #1
+    F      = df/dx at x
+    Omega_bar = inv(F inv(Omega) F.T + Q)
+    xi_bar    = Omega_bar f(x, u)
+
+update:
+    x_bar  = solve(Omega_bar, xi_bar)            # mean recovery #2
+    H      = dh/dx at x_bar
+    Omega  = Omega_bar + H.T inv(R) H
+    xi     = xi_bar + H.T inv(R) (z - h(x_bar) + H x_bar)
+```
+
+Those two `solve` lines are the EIF's real cost, and they are easy to miss
+because the update equations look so cheap. Every relinearization needs the
+current mean, and getting the mean out of information form means solving an
+$n \times n$ linear system. For a dense $\boldsymbol{\Omega}$ that is
+$O(n^3)$, the same price as the inversions the information form was supposed
+to avoid. Large-scale EIF-SLAM systems therefore approximate the mean
+recovery, for example with a few iterations of an iterative solver warm-started
+from the previous estimate, and factor-graph solvers fold it into the
+relinearization of the whole problem.
+
+The linearization risks are the same as the EKF's: poor initial estimates,
 strong curvature, angle wrapping, and bad Jacobians can still cause trouble.
 Information form did not make the nonlinear problem disappear. It just changed
 the accounting.
@@ -507,12 +920,12 @@ x & y
 \end{bmatrix}^T
 $$
 
-and a range measurement to a known landmark $\mathbf{m}$:
+and a range measurement to a known landmark $\boldsymbol{\ell}$:
 
 $$
 z = h(\mathbf{x}) + v
 =
-\|\mathbf{x} - \mathbf{m}\| + v.
+\|\mathbf{x} - \boldsymbol{\ell}\| + v.
 $$
 
 The Jacobian is
@@ -521,20 +934,17 @@ $$
 \mathbf{H}
 =
 \begin{bmatrix}
-\frac{x-m_x}{r} &
-\frac{y-m_y}{r}
+\frac{x-\ell_x}{r} &
+\frac{y-\ell_y}{r}
 \end{bmatrix},
 \qquad
-r = \|\mathbf{x} - \mathbf{m}\|.
+r = \|\mathbf{x} - \boldsymbol{\ell}\|.
 $$
 
 ```{python}
 #| label: fig-extended-information-range-update
 #| fig-cap: "Extended Information Filter update for a nonlinear range measurement. The update is equivalent to an EKF-style linearized measurement update, stored in information form."
 #| code-fold: true
-
-import numpy as np
-import matplotlib.pyplot as plt
 
 
 def covariance_ellipse(mean, covariance, n_std=1.0, points=200):
@@ -561,17 +971,14 @@ landmark = np.array([0.0, 0.0])
 z = np.array([2.25])
 R = np.array([[0.12**2]])
 
-Omega_prior = np.linalg.inv(P_prior)
-xi_prior = Omega_prior @ x_prior
+Omega_prior, xi_prior = covariance_to_information(x_prior, P_prior)
 
-H = range_jacobian(x_prior, landmark)
-z_tilde = z - range_model(x_prior, landmark) + H @ x_prior
+x_lin = np.linalg.solve(Omega_prior, xi_prior)        # mean recovery for linearization
+H = range_jacobian(x_lin, landmark)
+z_tilde = z - range_model(x_lin, landmark) + H @ x_lin
+Omega_post, xi_post = information_update(Omega_prior, xi_prior, z_tilde, H, R)
 
-Omega_post = Omega_prior + H.T @ np.linalg.inv(R) @ H
-xi_post = xi_prior + H.T @ np.linalg.inv(R) @ z_tilde
-
-P_post = np.linalg.inv(Omega_post)
-x_post = P_post @ xi_post
+x_post, P_post = information_to_covariance(Omega_post, xi_post)
 
 prior_ellipse = covariance_ellipse(x_prior, P_prior, n_std=1.0)
 post_ellipse = covariance_ellipse(x_post, P_post, n_std=1.0)
@@ -597,15 +1004,16 @@ plt.show()
 ```
 
 This example is intentionally small. The useful idea is the same in larger
-systems: linearize the measurement, add its information contribution, and then
-recover the mean if you need a state estimate.
+systems: recover the mean you need for linearization, add the measurement's
+information contribution, and recover the mean again when you need a state
+estimate.
 
 ## Unscented and Square-Root Variants {#sec-information-filter-unscented-square-root}
 
 An Unscented Information Filter uses sigma points to propagate or update a
 Gaussian approximation, then stores the resulting Gaussian in information form.
-Conceptually, it combines the UKF's nonlinear transformation machinery with the
-Information Filter's inverse-covariance representation.
+Conceptually, it combines the UKF's nonlinear transformation machinery
+(@sec-ukf) with the Information Filter's inverse-covariance representation.
 
 The usual pattern is:
 
@@ -617,20 +1025,28 @@ The usual pattern is:
 This is useful when the system wants information-form storage or fusion but the
 models are nonlinear enough that sigma points are preferable to Jacobians.
 
-A Square-Root Information Filter stores a matrix square root of the information
-matrix rather than the information matrix itself. This improves numerical
-conditioning and can be more stable for large systems. It is not a new
-probabilistic estimator. It is a numerically careful way to carry the same
-information-form belief.
+A **Square-Root Information Filter** (SRIF) stores an upper-triangular factor
+$\mathbf{U}$ with $\mathbf{U}^T\mathbf{U} = \boldsymbol{\Omega}$ instead of the
+information matrix itself [@bierman1977]. (Bierman calls this factor
+$\mathbf{R}$; we avoid the letter because it means measurement noise here.) A
+measurement update stacks the measurement rows $\mathbf{H}$, whitened by
+$\mathbf{R}^{-1/2}$, under $\mathbf{U}$ and re-triangularizes the stack with an
+orthogonal (QR) transformation, which is exactly how a linear least-squares
+problem is solved.
+Because the factor's condition number is the square root of
+$\boldsymbol{\Omega}$'s, the SRIF effectively doubles the usable precision. It
+is not a new probabilistic estimator. It is a numerically careful way to carry
+the same information-form belief, and it has long been used in deep-space orbit
+determination for exactly that reason.
 
 ## Comparison with Kalman-Style Filters {#sec-information-filter-comparison-kalman-style}
 
 | Filter | Stored belief | Update style | Prediction style | Good fit |
 |---|---|---|---|---|
-| Kalman Filter | $\hat{\mathbf{x}}, \mathbf{P}$ | Innovation and gain | Direct covariance propagation | Small to medium linear Gaussian systems |
-| Information Filter | $\boldsymbol{\xi}, \boldsymbol{\Omega}$ | Add information terms | Less natural; often convert or use identities | Many independent measurements, sparse fusion |
+| Kalman Filter | $\hat{\mathbf{x}}, \mathbf{P}$ | Innovation and gain | Direct covariance propagation | Frequent predictions, few measurements |
+| Information Filter | $\boldsymbol{\xi}, \boldsymbol{\Omega}$ | Add information terms | State-sized solves (@eq-information-predict) | Many independent measurements, no prior, sparse fusion |
 | EKF | $\hat{\mathbf{x}}, \mathbf{P}$ | Linearized innovation | Linearized covariance propagation | Nonlinear systems near current estimate |
-| EIF | $\boldsymbol{\xi}, \boldsymbol{\Omega}$ | Add linearized information terms | Same prediction challenge as IF | Nonlinear sparse measurement fusion |
+| EIF | $\boldsymbol{\xi}, \boldsymbol{\Omega}$ | Add linearized information terms | As IF, plus mean recovery to relinearize | Nonlinear sparse measurement fusion |
 | UKF / UIF | Gaussian parameters, often converted | Sigma-point measurement transform | Sigma-point process transform | Nonlinear systems where Jacobians are painful |
 
 Use information form when the additive measurement structure matters. Use
@@ -647,14 +1063,10 @@ that sparsity can matter more than the elegance of any single recursive update.
 There are also practical hazards. The most obvious one is inversion. The
 definition $\boldsymbol{\Omega}=\mathbf{P}^{-1}$ is mathematically clean, but a
 production implementation should prefer factorizations and solves over explicit
-matrix inverses where possible.
+matrix inverses, as every function in this chapter does.
 
 ```{python}
 #| label: information-form-conversion-code
-#| eval: false
-
-import numpy as np
-
 
 def information_mean(Omega: np.ndarray, xi: np.ndarray) -> np.ndarray:
     """Recover the mean without explicitly forming inv(Omega)."""
@@ -669,8 +1081,9 @@ def covariance_from_information(Omega: np.ndarray) -> np.ndarray:
 
 Conditioning matters. A nearly singular covariance becomes an enormous and
 ill-conditioned information matrix. A nearly singular information matrix means
-some direction in the state is weakly constrained. Both cases deserve attention,
-not quiet acceptance.
+some direction in the state is weakly constrained, like the along-line
+direction after a single line of position. Both cases deserve attention, not
+quiet acceptance.
 
 For large sparse systems:
 
@@ -681,9 +1094,10 @@ For large sparse systems:
   factorization.
 
 Square-root information filters carry a factor of the information matrix rather
-than the full matrix. This is usually more stable and is closely related to the
-least-squares view of estimation. The trade is that the implementation becomes
-more about numerical linear algebra than about the short recursive equations.
+than the full matrix [@bierman1977]. This is usually more stable and is closely
+related to the least-squares view of estimation. The trade is that the
+implementation becomes more about numerical linear algebra than about the short
+recursive equations.
 
 Conversion between covariance form and information form is not free. Repeatedly
 converting a large state back and forth can destroy the computational advantage
@@ -701,8 +1115,50 @@ Practical checklist:
   if roundoff introduces tiny asymmetry.
 - Remember that high information means low variance, not high truth.
 - Linearized information filters inherit the same local-validity problems as
-  EKFs.
+  EKFs, and pay for a mean recovery every time they relinearize.
 
 The Information Filter is best viewed as another representation of Gaussian
 belief. It is not more correct than the Kalman filter. It is sometimes more
 convenient.
+
+## Exercises {#sec-information-filter-exercises}
+
+1. **Two roads to the same update.** (a) Starting from the Kalman update
+   $\mathbf{P}_{k|k} = (\mathbf{I} - \mathbf{K}\mathbf{H})\mathbf{P}_{k|k-1}$
+   with $\mathbf{K} = \mathbf{P}_{k|k-1}\mathbf{H}^T\mathbf{S}^{-1}$, use the
+   matrix inversion lemma to show that
+   $\mathbf{P}_{k|k}^{-1} = \mathbf{P}_{k|k-1}^{-1} + \mathbf{H}^T\mathbf{R}^{-1}\mathbf{H}$.
+   (b) Show that $\mathbf{P}_{k|k}^{-1}\hat{\mathbf{x}}_{k|k} = \mathbf{P}_{k|k-1}^{-1}\hat{\mathbf{x}}_{k|k-1} + \mathbf{H}^T\mathbf{R}^{-1}\mathbf{z}_k$.
+   (Hint: first show $\mathbf{K} = \mathbf{P}_{k|k}\mathbf{H}^T\mathbf{R}^{-1}$.)
+
+2. **Where does the information go?** Derive @eq-information-predict-m from
+   @eq-information-predict using the matrix inversion lemma. For the scalar
+   random walk $x_k = x_{k-1} + w_k$, write $\Omega_{k|k-1}$ as a function of
+   $\Omega_{k-1|k-1}$ and $Q$, and show that it is always less than both
+   $\Omega_{k-1|k-1}$ and $1/Q$. Interpret the result for a GNSS receiver that
+   loses lock in a tunnel.
+
+3. **Marginalization by Schur complement.** Using the block-matrix inverse,
+   derive @eq-information-marginal. Then extend the 1D SLAM example of
+   @fig-information-fill-in to $N$ poses with each landmark seen by three
+   consecutive poses, and plot the number of nonzero entries in the smoothing
+   and filtering information matrices for $N = 10, 20, 50, 100$. What is the
+   asymptotic growth of each?
+
+4. **Cocked hats and cut angles.** Using the line-of-position example, place
+   two landmarks at equal range from the ship and vary the angle between their
+   bearings from 10 to 170 degrees. Plot the semi-major axis of the fix's 1-sigma
+   error ellipse against the cut angle. At what angle is the fix best? Explain
+   why celestial navigators prefer star pairs roughly 90 degrees apart, and why
+   a third star that is close in azimuth to one of the first two adds little.
+
+5. **Distributed fusion and double counting.** Two ships track the same
+   contact. Each starts from the same prior $\mathcal{N}(\hat{\mathbf{x}}_0, \mathbf{P}_0)$,
+   takes its own independent position measurement, and computes a local
+   posterior in information form. (a) Show that the centralized posterior is
+   $\boldsymbol{\Omega}_1 + \boldsymbol{\Omega}_2 - \boldsymbol{\Omega}_0$, not
+   $\boldsymbol{\Omega}_1 + \boldsymbol{\Omega}_2$, and similarly for
+   $\boldsymbol{\xi}$. (b) Simulate 1000 trials and compute the NEES
+   (@sec-kf-consistency) of both fused estimates. What does naive addition do
+   to consistency, and why is this the central difficulty of decentralized
+   data fusion?

@@ -5,14 +5,16 @@ efficient, but it commits us to a Gaussian-shaped story about uncertainty. Some
 navigation problems do not have a Gaussian-shaped story.
 
 A robot in a symmetric hallway may reasonably believe it is in one of several
-places. A kidnapped robot may have no useful prior at all. A sensor model with
-ambiguous landmarks may produce multiple plausible hypotheses. In those cases,
-a single mean can be worse than useless because it may sit in a place the robot
-almost certainly is not.
+places. A kidnapped robot may have no useful prior at all. An aircraft
+navigating by the shape of the terrain below it sees ridge after similar ridge,
+and a single altimeter reading is consistent with dozens of places on the map.
+In those cases, a single mean can be worse than useless because it may sit in a
+place the vehicle almost certainly is not.
 
 Nonparametric filters represent belief with a finite collection of values
 instead of a fixed analytic distribution. This chapter covers two important
-examples: histogram filters and particle filters.
+examples, histogram filters and particle filters, and ends with a complete
+terrain-aided navigation filter that no Gaussian filter could replace.
 
 ## What Nonparametric Means Here {#sec-pf-what-nonparametric-means}
 
@@ -62,8 +64,8 @@ p(\mathbf{z} \mid c_i)
 \overline{\operatorname{bel}}(c_i).
 $$
 
-This is the discrete Bayes filter again, but with cells instead of exact state
-values.
+This is the discrete Bayes filter of @sec-bayes again, but with cells instead of
+exact state values.
 
 ## Grid Decomposition Choices {#sec-pf-grid-decomposition-choices}
 
@@ -80,13 +82,12 @@ mapping and planning systems, adaptive grids can be worth the complexity.
 
 ```{python}
 #| label: histogram-filter-code
-#| eval: false
 
 import numpy as np
 
 
 def histogram_predict(belief, transition):
-    """transition[i, j] = p(cell i at t | cell j at t-1)."""
+    """transition[i, j] = p(cell i at k | cell j at k-1)."""
     predicted = transition @ belief
     return predicted / predicted.sum()
 
@@ -108,11 +109,13 @@ $100^6 = 10^{12}$ cells. That is not a filter. That is a funding proposal.
 A particle filter represents the belief with weighted samples:
 
 $$
-\operatorname{bel}(\mathbf{x})
+\operatorname{bel}(\mathbf{x}_k)
 \approx
 \left\{
-(\mathbf{x}^{[i]}, w^{[i]})
-\right\}_{i=1}^N.
+(\mathbf{x}_k^{[i]}, w_k^{[i]})
+\right\}_{i=1}^N,
+\qquad
+\sum_i w_k^{[i]} = 1.
 $$
 
 Each particle is a hypothesis about the state. Its weight says how plausible
@@ -120,17 +123,18 @@ that hypothesis is.
 
 The particle filter loop has three basic operations:
 
-1. **Prediction**: sample a new state for each particle from the motion model.
-2. **Weighting**: assign each particle a weight using the measurement
-   likelihood.
-3. **Resampling**: draw a new particle set from the old one with probability
-   proportional to the weights.
+1. **Prediction**: sample a new state for each particle from a proposal
+   distribution, usually the motion model.
+2. **Weighting**: update each particle's weight so the weighted set represents
+   the posterior.
+3. **Resampling**: occasionally draw a new particle set from the old one with
+   probability proportional to the weights.
 
 This is also called sequential Monte Carlo estimation.
 
 ## Prediction {#sec-pf-prediction}
 
-The prediction step samples
+The usual prediction step samples from the motion model:
 
 $$
 \mathbf{x}_k^{[i]}
@@ -139,24 +143,23 @@ p(\mathbf{x}_k \mid \mathbf{x}_{k-1}^{[i]}, \mathbf{u}_k).
 $$
 
 In code, this usually means propagating each particle through the motion model
-and adding process noise:
+with its own random draw of the process noise. For the planar robot of
+@sec-motion-models, with state $[x, y, \theta]$ (heading $\theta$ measured
+counterclockwise from the world $x$ axis) and inputs of speed $v$ and yaw rate
+$\omega$, the noise goes on the inputs:
 
 ```{python}
 #| label: particle-predict-code
-#| eval: false
 
-import numpy as np
-
-
-def predict_particles(particles, control, dt, rng, linear_std, angular_std):
-    """Simple planar unicycle prediction for particles [x, y, theta]."""
-    noisy_v = control[0] + rng.normal(0.0, linear_std, size=particles.shape[0])
-    noisy_w = control[1] + rng.normal(0.0, angular_std, size=particles.shape[0])
+def predict_particles(particles, control, dt, rng, speed_std, yaw_rate_std):
+    """Planar unicycle prediction for particles [x, y, theta], control [v, omega]."""
+    noisy_speed = control[0] + rng.normal(0.0, speed_std, size=particles.shape[0])
+    noisy_yaw_rate = control[1] + rng.normal(0.0, yaw_rate_std, size=particles.shape[0])
 
     theta = particles[:, 2]
-    particles[:, 0] += noisy_v * np.cos(theta) * dt
-    particles[:, 1] += noisy_v * np.sin(theta) * dt
-    particles[:, 2] += noisy_w * dt
+    particles[:, 0] += noisy_speed * np.cos(theta) * dt
+    particles[:, 1] += noisy_speed * np.sin(theta) * dt
+    particles[:, 2] += noisy_yaw_rate * dt
     particles[:, 2] = (particles[:, 2] + np.pi) % (2.0 * np.pi) - np.pi
     return particles
 ```
@@ -166,17 +169,87 @@ to be sampled.
 
 ## Weighting {#sec-pf-weighting}
 
-After receiving measurement $\mathbf{z}_k$, each particle weight is updated by
-the likelihood:
+Where do the weights come from? From **importance sampling**. Suppose we want
+expectations under a target density $p(\mathbf{x})$ that we cannot sample
+directly, but we can sample from a *proposal* density $q(\mathbf{x})$ and
+evaluate both up to constants. Then
+
+$$
+\mathbb{E}_p[g(\mathbf{x})]
+=
+\int g(\mathbf{x}) \frac{p(\mathbf{x})}{q(\mathbf{x})} q(\mathbf{x})\, d\mathbf{x}
+\approx
+\sum_{i=1}^N w^{[i]} g(\mathbf{x}^{[i]}),
+\qquad
+\mathbf{x}^{[i]} \sim q,
+\qquad
+w^{[i]} \propto \frac{p(\mathbf{x}^{[i]})}{q(\mathbf{x}^{[i]})},
+$$
+
+with the weights normalized to sum to one. The weight corrects for having
+sampled from the wrong distribution.
+
+A particle filter applies this recursively to the whole state history. By
+Bayes' rule and the Markov assumptions of @sec-bayes, the target factors as
+
+$$
+p(\mathbf{x}_{0:k} \mid \mathbf{z}_{1:k}, \mathbf{u}_{1:k})
+\propto
+p(\mathbf{z}_k \mid \mathbf{x}_k)\,
+p(\mathbf{x}_k \mid \mathbf{x}_{k-1}, \mathbf{u}_k)\,
+p(\mathbf{x}_{0:k-1} \mid \mathbf{z}_{1:k-1}, \mathbf{u}_{1:k-1}).
+$$
+
+Choose a proposal that factors the same way, so that each step only extends
+every particle's history with one new sample,
+
+$$
+\mathbf{x}_k^{[i]} \sim q(\mathbf{x}_k \mid \mathbf{x}_{k-1}^{[i]}, \mathbf{z}_k, \mathbf{u}_k).
+$$
+
+Then the target-to-proposal ratio factors too, and the weight updates
+recursively:
 
 $$
 w_k^{[i]}
 \propto
-w_{k-1}^{[i]}
-p(\mathbf{z}_k \mid \mathbf{x}_k^{[i]}).
-$$
+w_{k-1}^{[i]}\,
+\frac{p(\mathbf{z}_k \mid \mathbf{x}_k^{[i]})\, p(\mathbf{x}_k^{[i]} \mid \mathbf{x}_{k-1}^{[i]}, \mathbf{u}_k)}
+     {q(\mathbf{x}_k^{[i]} \mid \mathbf{x}_{k-1}^{[i]}, \mathbf{z}_k, \mathbf{u}_k)}.
+$$ {#eq-pf-sis-weight}
 
-For a range measurement to a known landmark, a simple likelihood is
+This is **sequential importance sampling** (SIS) [@arulampalam2002]. The
+proposal is a design choice. Any $q$ works in principle, as long as it puts
+probability everywhere the posterior does.
+
+The simplest choice is the motion model itself,
+$q = p(\mathbf{x}_k \mid \mathbf{x}_{k-1}, \mathbf{u}_k)$, which is exactly what
+the prediction step above samples. The transition densities cancel, leaving
+
+$$
+w_k^{[i]}
+\propto
+w_{k-1}^{[i]}\,
+p(\mathbf{z}_k \mid \mathbf{x}_k^{[i]}).
+$$ {#eq-pf-bootstrap-weight}
+
+This is the **bootstrap filter** of Gordon, Salmond, and Smith [@gordon1993],
+and the particle filter of most robotics texts [@ProbRob]. All the code in this
+chapter uses it. It is easy, because you only need to sample the motion model
+and evaluate the likelihood, but it proposes particles without looking at the
+measurement. When the measurement is much more precise than the motion
+prediction, most particles land where $p(\mathbf{z}_k \mid \mathbf{x})$ is
+negligible and only a handful carry any weight. Better proposals look at
+$\mathbf{z}_k$. The optimal one,
+$q = p(\mathbf{x}_k \mid \mathbf{x}_{k-1}, \mathbf{z}_k, \mathbf{u}_k)$,
+makes the weight $w_{k-1}\,p(\mathbf{z}_k \mid \mathbf{x}_{k-1}, \mathbf{u}_k)$
+independent of the sampled $\mathbf{x}_k$, which minimizes the weight variance.
+It is rarely available in closed form, but a Gaussian approximation of it, built
+with an EKF step inside each particle, is the key idea of FastSLAM 2.0
+(@sec-slam).
+
+For a range measurement to a known landmark with Gaussian noise, the bootstrap
+likelihood is
 
 $$
 p(z \mid \mathbf{x}^{[i]})
@@ -187,16 +260,13 @@ p(z \mid \mathbf{x}^{[i]})
 \right).
 $$
 
-The weights are normalized so they sum to one.
+The weights are then normalized so they sum to one.
 
 ```{python}
 #| label: particle-weight-code
-#| eval: false
-
-import numpy as np
-
 
 def update_range_weights(particles, weights, measured_range, landmark, sigma):
+    """Bootstrap weight update, eq-pf-bootstrap-weight, for a range measurement."""
     dx = particles[:, 0] - landmark[0]
     dy = particles[:, 1] - landmark[1]
     expected = np.sqrt(dx * dx + dy * dy)
@@ -224,15 +294,11 @@ N_\text{eff}
 $$
 
 If all particles have equal weights, $N_\text{eff}=N$. If one particle has all
-the weight, $N_\text{eff}=1$. A common rule is to resample when
-$N_\text{eff} < N/2$.
+the weight, $N_\text{eff}=1$. A common rule is to resample when $N_\text{eff}$
+falls below a threshold $N_\text{thresh}$, typically $N/2$.
 
 ```{python}
 #| label: particle-neff-code
-#| eval: false
-
-import numpy as np
-
 
 def effective_particle_count(weights):
     return 1.0 / np.sum(weights * weights)
@@ -244,26 +310,103 @@ Resampling draws a new particle set from the current set with replacement. High
 weight particles are likely to be copied. Low weight particles are likely to
 disappear.
 
-The simplest method is multinomial resampling, but it can add unnecessary
-randomness. Low-variance resampling uses one random offset and walks through
-the cumulative weight distribution at evenly spaced intervals.
+The simplest method is multinomial resampling, but it adds unnecessary
+randomness. Stratified resampling draws one uniform position inside each of $N$
+equal-probability strata. Low-variance (systematic) resampling uses a single
+random offset and walks through the cumulative weight distribution at evenly
+spaced intervals. All three find each position's particle the same way: search
+the cumulative sum of the weights.
+
+That search hides a classic bug. In floating point, `np.cumsum(weights)` of
+weights that sum to one may end at `0.9999999999999999`. A resampling position
+that lands above that last value (a systematic position that rounds up to
+exactly 1.0, or a multinomial draw in the last sliver) makes `np.searchsorted`
+return index $N$, one past the end of the particle array. The filter then dies
+with an `IndexError` hours into a run, or, in a language without bounds
+checking, quietly reads garbage. The fix is one line, and it is the same one
+filterpy uses [@labbe2020]: force the last cumulative value to exactly one.
 
 ```{python}
 #| label: particle-low-variance-resampling-code
-#| eval: false
 
-import numpy as np
+def cumulative_weights(weights):
+    """Cumulative sum of normalized weights, with the last entry forced to 1.0.
+
+    Without the last line, round-off can leave cumulative[-1] slightly below
+    1.0 and np.searchsorted can return an index one past the end.
+    """
+    cumulative = np.cumsum(weights)
+    cumulative[-1] = 1.0
+    return cumulative
+
+
+def multinomial_resample(particles, weights, rng):
+    n = len(weights)
+    indexes = np.searchsorted(cumulative_weights(weights), rng.random(n))
+    return particles[indexes].copy(), np.full(n, 1.0 / n)
+
+
+def stratified_resample(particles, weights, rng):
+    n = len(weights)
+    positions = (rng.random(n) + np.arange(n)) / n      # one draw per stratum
+    indexes = np.searchsorted(cumulative_weights(weights), positions)
+    return particles[indexes].copy(), np.full(n, 1.0 / n)
 
 
 def low_variance_resample(particles, weights, rng):
-    n = particles.shape[0]
+    """Systematic (low-variance) resampling: one random offset, N even steps."""
+    n = len(weights)
     positions = (rng.random() + np.arange(n)) / n
-    cumulative = np.cumsum(weights)
-    indexes = np.searchsorted(cumulative, positions)
+    indexes = np.searchsorted(cumulative_weights(weights), positions)
+    return particles[indexes].copy(), np.full(n, 1.0 / n)
 
-    resampled_particles = particles[indexes].copy()
-    resampled_weights = np.full(n, 1.0 / n)
-    return resampled_particles, resampled_weights
+
+systematic_resample = low_variance_resample
+```
+
+The stress test below first reproduces the failure deterministically: ten
+weights of 0.1 (which is not exactly representable in binary) have a cumulative
+sum of `0.9999999999999999`, and the largest offset `rng.random()` can return
+pushes the last systematic position to exactly 1.0. It then hammers all three
+fixed resamplers with thousands of random weight vectors, including extreme
+ones.
+
+```{python}
+#| label: particle-resampling-stress-test
+
+def low_variance_resample_unpatched(particles, weights, u):
+    """The buggy version: identical except for the cumulative[-1] = 1.0 line."""
+    n = len(weights)
+    positions = (u + np.arange(n)) / n
+    indexes = np.searchsorted(np.cumsum(weights), positions)
+    return particles[indexes].copy()
+
+
+weights = np.full(10, 0.1)
+particles = np.arange(10.0)
+u_max = np.nextafter(1.0, 0.0)                 # largest value rng.random() can return
+print(f"cumsum[-1] = {np.cumsum(weights)[-1]!r}, last position = {(u_max + 9) / 10!r}")
+try:
+    low_variance_resample_unpatched(particles, weights, u_max)
+    print("unpatched: no error")
+except IndexError as err:
+    print(f"unpatched: IndexError ({err})")
+indexes = np.searchsorted(cumulative_weights(weights), (u_max + np.arange(10)) / 10)
+print(f"patched:   largest index = {indexes.max()} (valid range 0..9)")
+
+# Randomized stress test of the patched resamplers.
+rng = np.random.default_rng(2024)
+n_trials = 3000
+for trial in range(n_trials):
+    n = int(rng.integers(2, 3000))
+    log_w = rng.normal(0.0, rng.uniform(0.1, 30.0), n)   # from benign to brutally peaked
+    w = np.exp(log_w - log_w.max())
+    w /= w.sum()
+    ids = np.arange(n, dtype=float)
+    for resample in (multinomial_resample, stratified_resample, low_variance_resample):
+        out, _ = resample(ids, w, rng)
+        assert out.shape == (n,) and out.max() < n
+print(f"{n_trials} random weight vectors x 3 resamplers: every index in range")
 ```
 
 Resampling focuses computation on plausible regions. It also reduces diversity.
@@ -274,7 +417,6 @@ That is the central resampling dilemma.
 #| fig-cap: "Particle weighting and resampling in 1D. The measurement favors particles near the measured position; resampling concentrates particles in that region and resets weights."
 #| code-fold: true
 
-import numpy as np
 import matplotlib.pyplot as plt
 
 rng = np.random.default_rng(7)
@@ -292,10 +434,7 @@ likelihood = np.exp(-0.5 * ((measurement - particles) / sigma_z) ** 2)
 weights = weights * likelihood
 weights = weights / weights.sum()
 
-positions = (rng.random() + np.arange(n)) / n
-cumulative = np.cumsum(weights)
-indexes = np.searchsorted(cumulative, positions)
-resampled = particles[indexes]
+resampled, _ = low_variance_resample(particles, weights, rng)
 
 fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
 axes[0].scatter(particles, weights, s=12, alpha=0.65)
@@ -343,13 +482,17 @@ some systems deliberately inject random particles:
 
 ```{python}
 #| label: particle-recovery-code
-#| eval: false
-
-import numpy as np
-
 
 def inject_random_particles(particles, weights, fraction, bounds, rng):
+    """Replace a random fraction of particles with uniform draws over bounds.
+
+    Call this only immediately after resampling. It resets every weight to 1/N,
+    which is harmless when the weights are already uniform and silently throws
+    away the weight information of a weighted particle set otherwise.
+    """
     n = particles.shape[0]
+    if not np.allclose(weights, 1.0 / n):
+        raise ValueError("expected a freshly resampled, uniformly weighted particle set")
     m = int(np.ceil(fraction * n))
     indexes = rng.choice(n, size=m, replace=False)
 
@@ -361,8 +504,77 @@ def inject_random_particles(particles, weights, fraction, bounds, rng):
 ```
 
 This is deliberately blunt. It says: "Some of our hypotheses may be terrible;
-keep a few alternatives alive." The right fraction depends on the environment,
-sensor reliability, and how catastrophic localization failure would be.
+keep a few alternatives alive." Note the last line: the function resets *all*
+weights to uniform, so it is only correct right after resampling, when they
+are uniform already; the guard at the top enforces that. A fixed injection
+fraction also wastes particles when the filter is healthy and may be too small
+when it is lost.
+
+**Augmented Monte Carlo localization** makes the fraction adaptive [@ProbRob].
+It tracks two exponentially smoothed averages of the mean measurement
+likelihood, a slow one $w_\text{slow}$ and a fast one $w_\text{fast}$, with
+smoothing rates $0 \le \gamma_\text{slow} \ll \gamma_\text{fast}$. (Thrun,
+Burgard, and Fox call these rates $\alpha_\text{slow}$ and $\alpha_\text{fast}$;
+we rename them because $\alpha$ belongs to the UKF.) When the measurements
+suddenly fit the particles much worse than they used to, $w_\text{fast}$ drops
+below $w_\text{slow}$, and during resampling each new particle is drawn at
+random with probability $\max(0,\, 1 - w_\text{fast}/w_\text{slow})$ instead of
+from the weights. A healthy filter injects nothing; a kidnapped one injects a
+lot.
+
+```{python}
+#| label: particle-augmented-mcl-code
+
+def augmented_mcl_resample(particles, weights, mean_likelihood, state, bounds, rng,
+                           gamma_slow=0.001, gamma_fast=0.1):
+    """Systematic resampling with adaptive random-particle injection.
+
+    mean_likelihood : average unnormalized measurement likelihood this step,
+                      (1/N) * sum_i p(z | x_i)
+    state           : dict holding the running averages "w_slow" and "w_fast"
+    bounds          : [(low, high), ...] per state dimension for random particles
+    """
+    state["w_slow"] += gamma_slow * (mean_likelihood - state["w_slow"])
+    state["w_fast"] += gamma_fast * (mean_likelihood - state["w_fast"])
+    p_inject = max(0.0, 1.0 - state["w_fast"] / state["w_slow"]) if state["w_slow"] > 0 else 0.0
+
+    n = particles.shape[0]
+    resampled, uniform = low_variance_resample(particles, weights, rng)
+    n_random = rng.binomial(n, p_inject)
+    if n_random > 0:
+        indexes = rng.choice(n, size=n_random, replace=False)
+        for dim, (low, high) in enumerate(bounds):
+            resampled[indexes, dim] = rng.uniform(low, high, size=n_random)
+    return resampled, uniform, p_inject
+
+
+# Smoke test: a healthy filter, then a "kidnapping" where the fit collapses.
+rng = np.random.default_rng(5)
+state = {"w_slow": 0.5, "w_fast": 0.5}
+cloud = rng.normal(0.0, 1.0, size=(1000, 2))
+w_uniform = np.full(1000, 1e-3)
+for k in range(80):
+    mean_lik = 0.5 if k < 60 else 0.02            # measurements stop fitting at k = 60
+    cloud, w_uniform, p = augmented_mcl_resample(cloud, w_uniform, mean_lik, state,
+                                                 [(-50, 50), (-50, 50)], rng)
+    if k in (10, 59, 60, 62, 70, 79):
+        print(f"step {k:2d}: injection probability {p:.2f}")
+```
+
+The injection probability is zero while the filter is healthy. When the fit
+collapses it climbs steadily as $w_\text{fast}$ follows the new, low
+likelihood while $w_\text{slow}$ barely moves, so within a few tens of steps
+most new particles are random guesses. If the filter relocalizes, the fit
+recovers and injection stops; if the new normal persists, $w_\text{slow}$
+eventually accepts it and injection fades. Exercise 5 puts this to work on a
+kidnapped aircraft.
+
+A related idea adapts the *number* of particles instead. **KLD-sampling** keeps
+drawing particles while counting how many histogram bins they occupy, and stops
+once there are enough that, with probability $1 - \delta$, the Kullback-Leibler
+divergence between the particle approximation and the true posterior is below
+$\epsilon$ [@ProbRob]. A globally uncertain robot ends up with tens of
+thousands of particles, a well-localized one with a few hundred.
 
 ## Practical Implementation Considerations {#sec-pf-practical-implementation-considerations}
 
@@ -374,38 +586,36 @@ Use log weights when likelihoods can become very small:
 
 ```{python}
 #| label: particle-log-weight-code
-#| eval: false
-
-import numpy as np
-
 
 def normalize_log_weights(log_weights: np.ndarray) -> np.ndarray:
+    """Normalized weights from log weights, without underflow."""
     shifted = log_weights - np.max(log_weights)
     weights = np.exp(shifted)
     return weights / np.sum(weights)
+
+
+def normalize_log(log_weights: np.ndarray) -> np.ndarray:
+    """Normalized log weights (log-sum-exp), which never become -inf by underflow."""
+    peak = np.max(log_weights)
+    return log_weights - (peak + np.log(np.sum(np.exp(log_weights - peak))))
 ```
 
-Resample only when needed. The usual threshold is
-$N_\text{eff} < \alpha N$, with $\alpha$ often around $0.5$. Resampling at
-every step can erase diversity. Never resampling lets all weight collapse onto a
-few particles.
+Resample only when needed. The usual rule is to resample when
+$N_\text{eff} < N_\text{thresh}$, with $N_\text{thresh}$ often around $N/2$.
+Resampling at every step can erase diversity. Never resampling lets all weight
+collapse onto a few particles.
 
 ```{python}
 #| label: particle-thresholded-resampling-code
-#| eval: false
 
-import numpy as np
-
-
-def maybe_resample(particles, weights, rng, threshold_fraction=0.5):
+def maybe_resample(particles, weights, rng, n_thresh=None):
+    """Systematic resampling when N_eff drops below n_thresh (default N/2)."""
     n = particles.shape[0]
-    n_eff = 1.0 / np.sum(weights * weights)
-    if n_eff >= threshold_fraction * n:
+    n_thresh = 0.5 * n if n_thresh is None else n_thresh
+    if effective_particle_count(weights) >= n_thresh:
         return particles, weights, False
-
-    positions = (rng.random() + np.arange(n)) / n
-    indexes = np.searchsorted(np.cumsum(weights), positions)
-    return particles[indexes].copy(), np.full(n, 1.0 / n), True
+    resampled, uniform = low_variance_resample(particles, weights, rng)
+    return resampled, uniform, True
 ```
 
 Resampling methods differ:
@@ -413,7 +623,7 @@ Resampling methods differ:
 | Method | Basic idea | Practical behavior |
 |---|---|---|
 | Multinomial | Draw every new particle independently from the weight distribution | Simple, but highest sampling variance |
-| Residual | Deterministically copy the integer part of $Nw_i$, then sample the remainder | Lower variance, slightly more bookkeeping |
+| Residual | Deterministically copy the integer part of $N w^{[i]}$, then sample the remainder | Lower variance, slightly more bookkeeping |
 | Stratified | Draw one sample from each of $N$ equal probability intervals | Lower variance than multinomial |
 | Systematic / low variance | Use one random offset and evenly spaced samples | Simple, fast, common in robotics |
 
@@ -426,10 +636,6 @@ For circular states, compute estimates with circular statistics:
 
 ```{python}
 #| label: particle-circular-estimate-code
-#| eval: false
-
-import numpy as np
-
 
 def weighted_heading_mean(headings: np.ndarray, weights: np.ndarray) -> float:
     s = np.sum(weights * np.sin(headings))
@@ -444,7 +650,7 @@ the downstream system can handle them. A particle filter that correctly knows
 
 ## A Planar Particle Filter {#sec-pf-planar-particle-filter}
 
-For the common 2D robot state
+For the common 2D robot state of @sec-motion-models,
 
 $$
 \mathbf{x}
@@ -454,7 +660,8 @@ x & y & \theta
 \end{bmatrix}^T,
 $$
 
-a control input might be linear and angular velocity:
+with heading $\theta$ measured counterclockwise from the world $x$ axis, a
+control input might be speed and yaw rate:
 
 $$
 \mathbf{u}
@@ -491,27 +698,30 @@ $$
 $$
 
 Here $\tilde{v}^{[i]}$ and $\tilde{\omega}^{[i]}$ are noisy samples around the
-commanded motion. The measurement update then scores each particle using the
-sensor model: range-bearing landmarks, lidar likelihood fields, camera feature
-likelihoods, or any other model that can return $p(\mathbf{z}\mid
-\mathbf{x}^{[i]})$.
+commanded motion, exactly what `predict_particles` draws. The measurement
+update then scores each particle using the sensor model: range-bearing
+landmarks (as in `update_range_weights`), lidar likelihood fields
+(@sec-measurement-models), camera feature likelihoods, or any other model that
+can return $p(\mathbf{z}\mid \mathbf{x}^{[i]})$. The pieces in this chapter
+assemble into a planar filter directly; the complete example below is
+one-dimensional only so that its belief can be drawn honestly at every time
+step.
 
 ## Particle Filter Algorithm {#sec-pf-particle-filter-algorithm}
 
 ```text
-initialize particles and weights
+initialize particles and log weights
 
 for each time step:
     for each particle:
-        sample new particle from motion model
-        compute measurement likelihood
-        update particle weight
+        sample new particle from the proposal (here, the motion model)
+        log_w += log p(z | particle)          # bootstrap weight, in logs
 
-    normalize weights
+    normalize weights (log-sum-exp)
 
-    if effective particle count is too low:
-        resample particles
-        reset weights
+    if effective particle count < N_thresh:
+        resample particles (systematic, cumulative[-1] = 1)
+        reset weights to 1/N
 
     estimate state from weighted particles
 ```
@@ -520,13 +730,225 @@ The state estimate can be the weighted mean, but be careful with circular
 variables and multimodal beliefs. If half the particles are in one hallway and
 half are in another, the mean may be a confidently bad summary.
 
+## Terrain-Aided Navigation: A Complete Particle Filter {#sec-pf-terrain-aided-navigation}
+
+Cruise missiles have navigated by terrain since the 1970s. TERCOM (terrain
+contour matching) compares a strip of radar-altimeter readings with a stored
+elevation map to find where along the map the measured profile fits. Modern
+terrain-aided navigation (TAN) does the same thing recursively on aircraft,
+and its underwater cousin, bathymetric navigation, does it on autonomous
+underwater vehicles, where a Doppler velocity log or multibeam sonar measures
+height above a charted seafloor. Neither needs GNSS, which is the point. TAN
+is one of the canonical particle filter applications [@gustafsson2002],
+because its likelihood is exactly what a Gaussian filter cannot handle: terrain
+repeats, so one elevation reading is consistent with many places at once.
+
+The measurement model is pleasingly simple. The aircraft knows its altitude
+above sea level from a barometric altimeter, and a radar altimeter measures its
+clearance above the ground. Their difference is the terrain elevation directly
+beneath it, which the filter compares with a digital elevation map $t(x)$:
+
+$$
+z_k = t(x_k) + v_k,
+\qquad
+p(z_k \mid x_k^{[i]}) \propto \exp\!\left(-\frac{(z_k - t(x_k^{[i]}))^2}{2\sigma_z^2}\right),
+$$
+
+where $\sigma_z$ lumps together altimeter noise, barometric error, and map
+error. To keep the picture readable the aircraft flies a known straight track,
+so the state is the along-track position $x_k$, dead-reckoned from a noisy
+ground-speed estimate $\tilde{v}_k$:
+
+$$
+x_k = x_{k-1} + (\tilde{v}_k + w_k)\,\Delta t,
+\qquad
+w_k \sim \mathcal{N}(0, \sigma_v^2).
+$$
+
+The terrain is rolling ridges about 1.5 km apart with smaller random
+roughness on top, plus a 6 km lake in the middle of the route where the ground
+is perfectly flat. The navigator's prior is honest and vague: somewhere in the
+first 10 km of the route, uniformly. The truth starts at 2 km.
+
+```{python}
+#| label: pf-terrain-aided-navigation
+
+# The map: a 1D digital elevation model on a 30 m grid.
+rng_map = np.random.default_rng(2)
+grid = np.arange(0.0, 30_000.0 + 30.0, 30.0)               # along-track distance [m]
+wavelengths = np.geomspace(150.0, 6000.0, 40)
+phases = rng_map.uniform(0.0, 2.0 * np.pi, wavelengths.size)
+roughness = (0.002 * wavelengths[:, None]
+             * np.sin(2.0 * np.pi * grid / wavelengths[:, None] + phases[:, None])).sum(axis=0)
+terrain = 400.0 + 60.0 * np.sin(2.0 * np.pi * grid / 1500.0) + roughness   # ridges [m]
+lake_start, lake_end = 11_000.0, 17_000.0
+lake = np.clip(np.minimum(grid - lake_start, lake_end - grid) / 300.0, 0.0, 1.0)
+terrain = (1.0 - lake) * terrain + lake * 320.0              # flat water, 320 m
+
+
+def terrain_height(x):
+    """Map lookup: terrain elevation [m] at along-track position x [m]."""
+    return np.interp(x, grid, terrain)
+
+
+# The flight: truth, dead-reckoned speed, and terrain-elevation measurements.
+rng = np.random.default_rng(33)
+dt, n_steps, n_particles = 1.0, 180, 2000
+sigma_v, sigma_z = 3.0, 12.0                 # speed noise [m/s], terrain-measurement noise [m]
+t = dt * np.arange(n_steps)
+v_true = 110.0 + 5.0 * np.sin(0.05 * t)
+x_true = 2_000.0 + np.concatenate([[0.0], np.cumsum(v_true[1:] * dt)])
+v_dr = v_true + rng.normal(0.0, sigma_v, n_steps)                  # dead-reckoned speed
+z_terrain = terrain_height(x_true) + rng.normal(0.0, sigma_z, n_steps)
+
+# The particle filter (bootstrap proposal, log weights, systematic resampling).
+particles = rng.uniform(0.0, 10_000.0, n_particles)               # uniform prior
+log_w = np.full(n_particles, -np.log(n_particles))
+n_thresh = 0.5 * n_particles
+plot_positions = (0.5 + np.arange(150)) / 150                      # for drawing the cloud
+cloud, n_eff_hist, est_mean, est_std, resampled_at = [], [], [], [], []
+
+for k in range(n_steps):
+    if k > 0:                                                      # predict
+        particles = particles + (v_dr[k] + rng.normal(0.0, sigma_v, n_particles)) * dt
+    residual = z_terrain[k] - terrain_height(particles)            # weight
+    log_w = normalize_log(log_w - 0.5 * (residual / sigma_z) ** 2)
+    weights = np.exp(log_w)
+
+    mean = weights @ particles                                     # summarize
+    est_mean.append(mean)
+    est_std.append(np.sqrt(weights @ (particles - mean) ** 2))
+    n_eff = effective_particle_count(weights)
+    n_eff_hist.append(n_eff)
+    cloud.append(particles[np.searchsorted(cumulative_weights(weights), plot_positions)])
+
+    if n_eff < n_thresh:                                           # resample
+        particles, weights = low_variance_resample(particles, weights, rng)
+        log_w = np.log(weights)
+        resampled_at.append(k)
+
+est_mean, est_std, n_eff_hist = np.array(est_mean), np.array(est_std), np.array(n_eff_hist)
+error = est_mean - x_true
+converged = np.argmax(est_std < 50.0)
+over_lake = (x_true > lake_start) & (x_true < lake_end)
+after = t >= t[converged]
+print(f"converged (std < 50 m) after {t[converged]:.0f} s")
+print(f"RMS error after convergence: {np.sqrt(np.mean(error[after] ** 2)):.1f} m")
+print(f"mean std over ridges: {est_std[after & ~over_lake].mean():.1f} m,"
+      f" max std over the lake: {est_std[over_lake].max():.1f} m")
+print(f"error inside the 2-sigma bound {np.mean(np.abs(error[after]) < 2 * est_std[after]):.0%}"
+      f" of the time; resampled on {len(resampled_at)} of {n_steps} steps")
+```
+
+```{python}
+#| label: fig-pf-terrain-aided-navigation
+#| fig-cap: "Terrain-aided navigation with 2000 particles. (a) The elevation map; the shaded band is the route actually flown and the hatched band is the prior. (b) The particle cloud over time: the prior covers 10 km, the first readings leave several hypotheses roughly one ridge spacing apart, and the terrain's roughness eliminates the impostors early in the flight. (c) Estimation error with the filter's own 2-sigma bound; over the flat lake (gray) the measurements carry no information and the bound grows like a random walk until the far shore. (d) The effective number of particles, with the resampling threshold dashed and resampling events marked at the bottom; it goes flat over the lake because every particle explains a flat reading equally well."
+#| code-fold: true
+
+lake_times = t[over_lake]
+fig, axes = plt.subplots(4, 1, figsize=(9, 11), gridspec_kw={"height_ratios": [1, 1.4, 1, 0.9]})
+
+ax = axes[0]
+ax.plot(grid / 1000, terrain, color="C2", linewidth=1.2)
+ax.axvspan(x_true[0] / 1000, x_true[-1] / 1000, color="C0", alpha=0.12, label="route flown")
+ax.axvspan(0, 10, facecolor="none", edgecolor="0.4", hatch="//", linewidth=0.8, label="prior")
+ax.set_xlabel("along-track distance [km]")
+ax.set_ylabel("elevation [m]")
+ax.set_title("(a) terrain elevation map")
+ax.legend(loc="upper right", fontsize=8)
+ax.grid(True, alpha=0.25)
+
+ax = axes[1]
+for k in range(n_steps):
+    ax.scatter(np.full(len(cloud[k]), t[k]), cloud[k] / 1000, s=1, color="C0", alpha=0.25,
+               linewidths=0)
+ax.plot(t, x_true / 1000, color="black", linewidth=1.2, label="truth")
+ax.set_ylabel("position [km]")
+ax.set_title("(b) particle cloud (weighted sample of 150 particles per step)")
+ax.legend(loc="upper left", fontsize=8)
+ax.grid(True, alpha=0.25)
+
+ax = axes[2]
+ax.axvspan(lake_times[0], lake_times[-1], color="0.85", label="over the lake")
+ax.fill_between(t, -2 * est_std, 2 * est_std, color="C0", alpha=0.2, label="filter 2-sigma")
+ax.plot(t, error, color="C0", linewidth=1.2, label="error (mean - truth)")
+ax.set_ylim(-150, 150)
+ax.set_ylabel("error [m]")
+ax.set_title("(c) estimation error and filter uncertainty")
+ax.legend(loc="lower right", fontsize=8, ncol=3)
+ax.grid(True, alpha=0.25)
+
+ax = axes[3]
+ax.axvspan(lake_times[0], lake_times[-1], color="0.85")
+ax.plot(t, n_eff_hist, color="C1", linewidth=1.2, label=r"$N_\mathrm{eff}$")
+ax.axhline(n_thresh, color="black", linestyle="--", linewidth=1, label=r"$N_\mathrm{thresh}$")
+ax.plot(t[resampled_at], np.full(len(resampled_at), 60.0), "|", color="black", markersize=8,
+        label="resampled")
+ax.set_ylim(0, n_particles * 1.05)
+ax.set_xlabel("time [s]")
+ax.set_ylabel("particles")
+ax.set_title("(d) effective number of particles")
+ax.legend(loc="lower right", fontsize=8, ncol=3)
+ax.grid(True, alpha=0.25)
+
+for ax in axes[1:]:
+    ax.set_xlim(t[0] - 2.0, t[-1] + 2.0)                     # common time axis
+plt.tight_layout()
+plt.show()
+```
+
+Read the four panels together. During the opening stretch of the flight the
+belief is genuinely multimodal: several clusters, each sitting on a ridge whose
+height profile matches what the altimeters have seen so far. A Kalman filter
+would have had to pick one Gaussian, and its mean would have sat between the
+clusters, on a ridge nobody believed in. As the roughness on top of the ridges
+accumulates evidence, the wrong clusters lose weight and vanish at the next
+resampling; the printout gives the time this took on this run. Over the lake
+the filter does the right thing by doing nothing: flat terrain gives every
+particle the same likelihood, so the weights stop changing, $N_\text{eff}$
+goes flat, no resampling happens, and the uncertainty grows exactly as fast as
+dead reckoning says it should. The far shore collapses it again.
+
+Is the 2-sigma band honest? That is the consistency question of
+@sec-kf-consistency, and it applies to nonparametric filters too. In any
+single run the error will wander outside the band now and then (the printout
+reports how often). Averaged over many random seeds, the NEES of this filter
+comes out close to its expected value of one, so the band can be trusted.
+Exercise 4 sets up that check and then breaks it on purpose.
+
+The same structure, with a 2D or 3D state and a 2D map, is what operational
+TAN and bathymetric navigation systems run, usually with a few thousand
+particles and with the inertial errors carried in the state.
+
+## Rao-Blackwellized Particle Filters {#sec-pf-rao-blackwellized}
+
+Particles get expensive as the state grows, but many navigation states are
+nonlinear in only a few of their components. Split the state into a nonlinear
+part $\mathbf{x}^n$ and a part $\mathbf{x}^l$ that, *given* the history of
+$\mathbf{x}^n$, is linear and Gaussian. Then sample only $\mathbf{x}^n$, and
+carry an exact Kalman filter for $\mathbf{x}^l$ inside each particle. Doing
+part of the integral analytically can only reduce the variance of the estimate
+(that is the Rao-Blackwell theorem), so a Rao-Blackwellized (or marginalized)
+particle filter needs far fewer particles for the same accuracy. In terrain
+navigation the position is nonlinear through the map, but velocity errors and
+sensor biases enter linearly, so marginalized TAN filters carry a small Kalman
+filter per particle for them [@gustafsson2002].
+
+The most famous Rao-Blackwellized filter in robotics is FastSLAM
+[@Montemerlo2002FastSLAM]. Its particles sample the robot's *path*, and because
+landmarks are conditionally independent given the path, each particle carries
+a separate two-by-two EKF for every landmark instead of one enormous joint
+covariance. That is the back end of Project 2 (@sec-project2), and @sec-slam
+builds it step by step.
+
 ## When Particle Filters Are a Good Choice {#sec-pf-when-particle-filters}
 
 Particle filters are useful when:
 
 - the belief can be multimodal;
-- measurement likelihoods are strongly nonlinear;
-- the state dimension is modest;
+- measurement likelihoods are strongly nonlinear, or come from a map;
+- the state dimension is modest, or can be Rao-Blackwellized down to a modest
+  nonlinear core;
 - the motion model can be sampled;
 - ambiguous data association is central to the problem.
 
@@ -539,5 +961,51 @@ They struggle when:
 - runtime constraints are tight.
 
 In navigation, particle filters are especially common in localization against
-maps, global relocalization, and teaching examples where the shape of the belief
-matters more than raw runtime.
+maps (lidar maps for ground robots, terrain and bathymetry for aircraft and
+submarines), global relocalization, and teaching examples where the shape of
+the belief matters more than raw runtime.
+
+## Exercises {#sec-pf-exercises}
+
+1. **Sequential importance sampling.** (a) Starting from the importance
+   sampling identity applied to whole trajectories $\mathbf{x}_{0:k}$, derive
+   @eq-pf-sis-weight, stating every assumption you use. (b) Show that the
+   bootstrap proposal gives @eq-pf-bootstrap-weight. (c) Show that with the
+   optimal proposal $q = p(\mathbf{x}_k \mid \mathbf{x}_{k-1}, \mathbf{z}_k, \mathbf{u}_k)$
+   the weight does not depend on the sampled $\mathbf{x}_k$, and compute it in
+   closed form for the scalar linear-Gaussian model $x_k = x_{k-1} + w_k$,
+   $z_k = x_k + v_k$.
+
+2. **What $N_\text{eff}$ measures.** Show that $1 \le N_\text{eff} \le N$ and
+   that $N_\text{eff} = M$ when $M$ particles share the weight equally and the
+   rest have none. Then show that
+   $N_\text{eff} = N / (1 + \mathrm{CV}^2)$, where $\mathrm{CV}$ is the
+   coefficient of variation of the unnormalized weights $N w^{[i]}$.
+
+3. **Resampling variance.** For a fixed weight vector of your choice with
+   $N = 50$, run multinomial, stratified, and systematic resampling 10,000
+   times each and compute, for every particle, the variance of the number of
+   copies it receives. Plot the three variance profiles. Which method is
+   lowest, and what is the smallest variance any unbiased resampler can achieve
+   for a particle with $N w^{[i]} = 2.3$?
+
+4. **An unmodeled speed bias.** In the terrain-aided navigation example, add a
+   constant 0.8 m/s bias to the dead-reckoned speed. Over 20 random seeds,
+   compute the average NEES of the position estimate (@sec-kf-consistency)
+   with and without the bias. Then augment the particle state to
+   $[x_k, b_k]$ with a slowly varying bias $b_k$, rerun, and compare. Explain
+   why $b_k$ is a natural candidate for Rao-Blackwellization.
+
+5. **Kidnapping an aircraft.** In the terrain-aided navigation example, move
+   the true aircraft forward by 3 km at $t = 120$ s without telling the filter.
+   Show that the plain filter fails to recover, and diagnose the failure from
+   $N_\text{eff}$ and the mean measurement likelihood. Then switch the
+   resampling step to `augmented_mcl_resample` with random particles drawn over
+   the whole map, and report how long recovery takes. Does the flat lake ever
+   trigger a false alarm? Why or why not?
+
+6. **How many particles?** Rerun the terrain-aided navigation example for
+   $N \in \{100, 250, 500, 1000, 2000, 5000\}$ over 20 seeds each. For every
+   $N$, report the fraction of runs that lock onto the wrong ridge, the RMS
+   error of the runs that do not, and the runtime. Compare your conclusions with
+   the particle-count study Project 1 Part C asks for (@sec-project1c).

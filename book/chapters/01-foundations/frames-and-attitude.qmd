@@ -4,7 +4,10 @@ Every navigation result is meaningful only with a frame attached. A position in
 meters, a velocity vector, and a quaternion can all look perfectly reasonable
 while describing different worlds. This chapter establishes the convention used
 throughout the book before the IMU, camera, GNSS, and filter chapters make the
-same choices less visibly.
+same choices less visibly. It then builds the attitude machinery a strapdown
+inertial navigation system (INS) runs on: rotation vectors, attitude kinematics,
+small-angle errors, the Earth-referenced frames, and the camera and pose
+transforms that connect navigation to perception.
 
 ## The Convention Contract {#sec-frames-convention-contract}
 
@@ -173,31 +176,109 @@ print("Z-Y-X Euler and Hamilton quaternion conventions check out.")
 
 | Frame | Purpose | Typical axes |
 |---|---|---|
-| Body ($b$) | Attached to the vehicle and IMU | Forward-right-down (FRD) for aerospace; forward-left-up (FLU) is common in robotics |
+| Body ($b$) | Attached to the vehicle and IMU | Forward-right-down (FRD) for aerospace and marine; forward-left-up (FLU) is common in robotics |
+| Camera ($c$) | Image geometry and vision measurements | Optical: $x$ right, $y$ down, $z$ along the optical axis |
 | Local navigation ($n$) | Local estimation and control | North-east-down (NED) in this book |
 | ENU | Common robotics/map convention | East-north-up |
-| ECEF ($e$) | Earth-fixed global geometry | Origin at Earth's center, rotating with Earth |
-| ECI ($i$) | Inertial dynamics | Origin at Earth's center, not Earth-fixed |
+| Project world ($w$) | Project 1 AprilTag mat | Defined in @sec-pnp |
+| ECEF ($e$) | Earth-fixed global geometry | Origin at Earth's center, $z$ through the North Pole, $x$ through the equator at the prime meridian; rotates with Earth |
+| ECI ($i$) | Inertial dynamics; what IMUs sense against | Origin at Earth's center, axes fixed relative to distant stars |
 
 NED and ENU are not interchangeable relabelings: their vertical axes have
 opposite signs and their horizontal axes are permuted. The GNSS chapters use NED for
 local velocity and positive-down vertical position errors. A camera or middleware
 interface may use a different convention; its adapter must make the conversion
-explicit. [@groves]
+explicit. [@groves] The Earth-referenced frames are developed in
+@sec-frames-earth-frames, and the camera frame in @sec-frames-camera-transforms.
 
 ## Rotation Matrices and Euler Angles {#sec-frames-rotation-matrices-euler}
 
 A direction-cosine matrix (DCM) is simply a $3\times3$ rotation matrix. It must
 remain orthonormal with determinant one. Euler angles are useful for displaying
 roll, pitch, and yaw, but their meaning depends on the stated rotation sequence.
+The elementary rotations in the conventions block are
+
+$$
+\mathbf{R}_x(\phi) = \begin{bmatrix} 1 & 0 & 0 \\ 0 & c_\phi & -s_\phi \\ 0 & s_\phi & c_\phi \end{bmatrix},
+\quad
+\mathbf{R}_y(\theta) = \begin{bmatrix} c_\theta & 0 & s_\theta \\ 0 & 1 & 0 \\ -s_\theta & 0 & c_\theta \end{bmatrix},
+\quad
+\mathbf{R}_z(\psi) = \begin{bmatrix} c_\psi & -s_\psi & 0 \\ s_\psi & c_\psi & 0 \\ 0 & 0 & 1 \end{bmatrix},
+$$
+
+with $c_\phi = \cos\phi$ and so on. Multiplying out the Z-Y-X product and reading
+off entries $C_{ij}$ of $\mathbf{C}_b^n$ recovers the display angles:
+$\phi = \operatorname{atan2}(C_{32}, C_{33})$, $\theta = -\arcsin C_{31}$, and
+$\psi = \operatorname{atan2}(C_{21}, C_{11})$.
+
 Every sequence has a singularity (gimbal lock) where its middle rotation reaches
 $\pm90^\circ$: pitch for the Z-Y-X sequence used in this book, roll for the
-Z-X-Y sequence of the Project 1 dataset. That makes Euler angles poor internal
-states for a vehicle that can point in arbitrary directions.
+Z-X-Y sequence of the Project 1 dataset. There the extraction above divides zero
+by zero, because roll and yaw turn the body about the same axis. That makes Euler
+angles poor internal states for a vehicle that can point in arbitrary directions.
+Heading is also not automatically yaw (@sec-frames-heading-course-yaw).
 
-Heading is also not automatically yaw. Heading is a direction relative to a
-chosen north reference; yaw is an attitude component under a specified frame and
-rotation sequence. On a tilted vehicle the distinction matters.
+## Rotation Vectors and the Exponential Map {#sec-frames-rotation-vector}
+
+Euler's rotation theorem says that any rotation is a single turn by an angle
+$\theta$ about a unit axis $\mathbf{u}$. Packing both into one vector gives the
+**rotation vector** (axis-angle) $\boldsymbol{\theta} = \theta\mathbf{u}$: three
+parameters and no singularity near the identity, which is exactly where
+navigation uses it (a gyro increment over one IMU sample, an attitude error, a
+filter correction). Its rotation matrix is the matrix exponential of its skew
+matrix, given in closed form by Rodrigues' formula:
+
+$$
+\mathbf{C} = \exp\!\left([\boldsymbol{\theta}]_\times\right)
+= \mathbf{I} + \sin\theta\,[\mathbf{u}]_\times + (1 - \cos\theta)\,[\mathbf{u}]_\times^2 .
+$$ {#eq-frames-rodrigues}
+
+To derive it, expand $\exp(\mathbf{A}) = \sum_k \mathbf{A}^k/k!$
+(@sec-linalg-matrix-exponential). For a unit vector
+$[\mathbf{u}]_\times^2 = \mathbf{u}\mathbf{u}^T - \mathbf{I}$, hence
+$[\mathbf{u}]_\times^3 = -[\mathbf{u}]_\times$ and the powers cycle. The odd
+powers collect into $(\theta - \theta^3/3! + \cdots)[\mathbf{u}]_\times = \sin\theta\,[\mathbf{u}]_\times$
+and the even powers into $(\theta^2/2! - \theta^4/4! + \cdots)[\mathbf{u}]_\times^2 = (1-\cos\theta)[\mathbf{u}]_\times^2$.
+
+Since $\mathbf{C}\mathbf{u} = \mathbf{u}$, the axis has the same coordinates in
+both frames: if $\mathbf{C}_b^n = \exp([\boldsymbol{\theta}]_\times)$, the body
+axes are the navigation axes turned by $\theta$ about $\mathbf{u}$. The map also
+runs backward (the logarithm), through $\operatorname{tr}\mathbf{C} = 1 + 2\cos\theta$
+and $\mathbf{C} - \mathbf{C}^T = 2\sin\theta\,[\mathbf{u}]_\times$; near
+$\theta = \pi$ that inversion is ill-conditioned and libraries switch methods.
+The equivalent unit quaternion is $\mathbf{q} = [\cos(\theta/2),\ \mathbf{u}^T\sin(\theta/2)]^T$.
+The half angle is why $\mathbf{q}$ and $-\mathbf{q}$, which differ by a $2\pi$
+turn, describe the same attitude [@sola2017].
+
+```{python}
+#| label: frames-rodrigues-check
+#| echo: true
+
+from scipy.linalg import expm
+
+
+def skew(a: np.ndarray) -> np.ndarray:
+    """Return [a]_x, so that skew(a) @ b == np.cross(a, b)."""
+    return np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
+
+
+def rotvec_to_dcm(rotvec: np.ndarray) -> np.ndarray:
+    """Rodrigues' formula: C = exp([theta]_x) for the rotation vector theta * u."""
+    theta = np.linalg.norm(rotvec)
+    if theta < 1e-12:
+        return np.eye(3) + skew(rotvec)      # first order is exact to rounding here
+    U = skew(rotvec / theta)
+    return np.eye(3) + np.sin(theta) * U + (1.0 - np.cos(theta)) * (U @ U)
+
+
+rotvec = np.deg2rad(40.0) * np.array([1.0, 2.0, 2.0]) / 3.0   # 40 deg about (1,2,2)/3
+C_rodrigues = rotvec_to_dcm(rotvec)
+np.testing.assert_allclose(C_rodrigues, expm(skew(rotvec)), atol=1e-12)   # power series
+np.testing.assert_allclose(C_rodrigues, Rotation.from_rotvec(rotvec).as_matrix(), atol=1e-12)
+np.testing.assert_allclose(C_rodrigues @ rotvec, rotvec, atol=1e-12)      # axis is fixed
+print("Rodrigues == expm == SciPy from_rotvec; trace =", round(np.trace(C_rodrigues), 6),
+      "= 1 + 2 cos(40 deg) =", round(1 + 2 * np.cos(np.deg2rad(40.0)), 6))
+```
 
 ## Quaternions in Software {#sec-frames-quaternions-software}
 
@@ -235,6 +316,436 @@ np.testing.assert_allclose(
 )
 ```
 
+## Attitude Kinematics {#sec-frames-attitude-kinematics}
+
+Over a short interval $\delta t$ the body turns relative to the navigation frame
+by the small rotation vector $\boldsymbol{\omega}_{nb}^b\,\delta t$, written in
+body axes because that is where the gyros ride. Composing rotations,
+$\mathbf{C}_b^n(t+\delta t) = \mathbf{C}_b^n(t)\,\mathbf{C}_{b(t+\delta t)}^{b(t)} \approx \mathbf{C}_b^n(t)\left(\mathbf{I} + [\boldsymbol{\omega}_{nb}^b]_\times\delta t\right)$;
+subtracting and dividing by $\delta t$ gives the DCM kinematics. The same
+argument with $\delta\mathbf{q} \approx [1,\ \tfrac12(\boldsymbol{\omega}_{nb}^b)^T\delta t]^T$
+gives the quaternion version:
+
+$$
+\dot{\mathbf{C}}_b^n = \mathbf{C}_b^n\,[\boldsymbol{\omega}_{nb}^b]_\times ,
+\qquad
+\dot{\mathbf{q}}_b^n = \tfrac{1}{2}\,\mathbf{q}_b^n \otimes \begin{bmatrix} 0 \\ \boldsymbol{\omega}_{nb}^b \end{bmatrix}.
+$$ {#eq-frames-attitude-kinematics}
+
+With $\mathbf{q} = [q_w,\ \mathbf{q}_v^T]^T$, the Hamilton product is
+$\mathbf{p} \otimes \mathbf{q} = [\,p_w q_w - \mathbf{p}_v \cdot \mathbf{q}_v,\ \ (p_w \mathbf{q}_v + q_w \mathbf{p}_v + \mathbf{p}_v \times \mathbf{q}_v)^T\,]^T$,
+which `quat_multiply` above computes component by component. If
+$\boldsymbol{\omega}_{nb}^b$ is constant over a sample interval $\Delta t$,
+@eq-frames-attitude-kinematics integrates exactly to
+$\mathbf{C}_{k+1} = \mathbf{C}_k \exp([\boldsymbol{\omega}_{nb}^b\Delta t]_\times)$
+and $\mathbf{q}_{k+1} = \mathbf{q}_k \otimes \mathbf{q}(\boldsymbol{\omega}_{nb}^b\Delta t)$:
+the rotation vector is the natural attitude increment. Production strapdown
+algorithms refine this when the rate vector changes direction within an interval
+(coning) [@savage2000].
+
+Additive integrators, and plain rounding, let $\|\mathbf{q}\|$ wander. A first-order
+step $\mathbf{q} \leftarrow \mathbf{q} + \dot{\mathbf{q}}\Delta t = \mathbf{q} \otimes [1,\ \tfrac12\boldsymbol{\omega}^T\Delta t]^T$
+multiplies the norm by $\sqrt{1 + \|\boldsymbol{\omega}\|^2\Delta t^2/4}$ every
+step. We renormalize because everything downstream assumes a unit quaternion: the
+quaternion-to-DCM formula applied to $s\,\mathbf{q}$ returns $s^2\mathbf{C}$, which
+stretches every vector it touches, gravity included. Renormalizing does not
+remove integration error, because scaling a quaternion does not change the
+rotation it represents; accuracy comes from the integrator. Likewise an
+integrated DCM slowly loses orthonormality and is periodically replaced by its
+nearest rotation ($\mathbf{U}\mathbf{V}^T$ from its SVD).
+
+```{python}
+#| label: frames-quaternion-integration
+#| echo: true
+
+def quat_exp(rotvec: np.ndarray) -> np.ndarray:
+    """Scalar-first unit quaternion for a rotation vector."""
+    angle = np.linalg.norm(rotvec)
+    if angle < 1e-12:
+        return np.array([1.0, *(0.5 * rotvec)])      # first order, avoids 0/0
+    return np.array([np.cos(angle / 2), *(np.sin(angle / 2) * rotvec / angle)])
+
+
+def quat_to_dcm(q: np.ndarray) -> np.ndarray:
+    """Homogeneous quaternion-to-DCM formula; returns |q|^2 * C for a non-unit q."""
+    w, x, y, z = q
+    return np.array([[w*w + x*x - y*y - z*z, 2*(x*y - w*z), 2*(x*z + w*y)],
+                     [2*(x*y + w*z), w*w - x*x + y*y - z*z, 2*(y*z - w*x)],
+                     [2*(x*z - w*y), 2*(y*z + w*x), w*w - x*x - y*y + z*z]])
+
+
+dt, duration = 1.0 / 200.0, 10.0                             # 200 Hz IMU for 10 s
+omega_nb_b = np.deg2rad(90.0) * np.array([0.6, 0.0, 0.8])     # constant 90 deg/s
+q0 = scalar_first(Rotation.from_euler("ZYX", [30.0, 5.0, -3.0], degrees=True))
+omega_quat = np.array([0.0, *omega_nb_b])
+
+q_euler, q_renorm, q_exp = q0.copy(), q0.copy(), q0.copy()
+for _ in range(round(duration / dt)):
+    q_euler = q_euler + 0.5 * quat_multiply(q_euler, omega_quat) * dt
+    q_renorm = q_renorm + 0.5 * quat_multiply(q_renorm, omega_quat) * dt
+    q_renorm /= np.linalg.norm(q_renorm)
+    q_exp = quat_multiply(q_exp, quat_exp(omega_nb_b * dt))
+
+# Truth for a constant body rate: C_b^n(t) = C_b^n(0) exp([omega t]_x).
+truth = Rotation.from_quat(np.roll(q0, -1)) * Rotation.from_rotvec(omega_nb_b * duration)
+g_n = np.array([0.0, 0.0, 9.80665])
+for name, q in [("first order", q_euler), ("first order + renorm", q_renorm),
+                ("exponential", q_exp)]:
+    error = (Rotation.from_quat(np.roll(q, -1)).inv() * truth).magnitude()  # SciPy normalizes
+    g_error = abs(np.linalg.norm(quat_to_dcm(q).T @ g_n) - 9.80665)
+    print(f"{name:21s} |q| = {np.linalg.norm(q):.6f}   attitude error = "
+          f"{np.degrees(error):.1e} deg   |gravity error| = {g_error:.3f} m/s^2")
+```
+
+Without renormalization the attitude is no worse, but its DCM inflates gravity by
+0.3 m/s², a phantom acceleration that would wreck a velocity solution within
+seconds. The exponential update is exact for a constant rate.
+
+On the Earth one more step is needed. A gyro measures
+$\boldsymbol{\omega}_{ib}^b$, rotation relative to inertial space, and the
+angular velocities of chained frames add
+($\boldsymbol{\omega}_{ib} = \boldsymbol{\omega}_{in} + \boldsymbol{\omega}_{nb}$), so
+
+$$
+\boldsymbol{\omega}_{nb}^b = \boldsymbol{\omega}_{ib}^b - \mathbf{C}_n^b\,\boldsymbol{\omega}_{in}^n,
+\qquad
+\boldsymbol{\omega}_{in}^n = \boldsymbol{\omega}_{ie}^n + \boldsymbol{\omega}_{en}^n,
+$$
+
+with the Earth rate and transport rate of @sec-frames-earth-frames; @sec-ins-gnss
+builds the full mechanization on this. For a small drone flying a few minutes
+over a lab floor, $\boldsymbol{\omega}_{in}^n$ is buried under MEMS gyro bias and
+$\boldsymbol{\omega}_{nb}^b \approx \boldsymbol{\omega}_{ib}^b$ is fair. A ship
+or aircraft navigating for hours cannot make that approximation.
+
+## Small-Angle Attitude Errors {#sec-frames-small-angle-error}
+
+Following the conventions block, the attitude error is the small rotation that
+carries the estimate onto the truth, resolved in the navigation frame:
+
+$$
+\mathbf{C}_b^n = \exp([\delta\boldsymbol{\theta}]_\times)\,\hat{\mathbf{C}}_b^n
+\approx \left(\mathbf{I} + [\delta\boldsymbol{\theta}]_\times\right)\hat{\mathbf{C}}_b^n,
+\qquad
+\mathbf{q}_b^n \approx \delta\mathbf{q} \otimes \hat{\mathbf{q}}_b^n,
+\quad
+\delta\mathbf{q} \approx \begin{bmatrix} 1 \\ \tfrac12\delta\boldsymbol{\theta} \end{bmatrix}.
+$$
+
+The neglected terms are of order $\|\delta\boldsymbol{\theta}\|^2/2$. Given a
+truth and an estimate, $\delta\boldsymbol{\theta}$ is the logarithm of
+$\mathbf{C}_b^n(\hat{\mathbf{C}}_b^n)^T$, or to first order the vector inside its
+skew-symmetric part. A filter that has estimated $\delta\hat{\boldsymbol{\theta}}$
+corrects with $\hat{\mathbf{C}}_b^n \leftarrow \exp([\delta\hat{\boldsymbol{\theta}}]_\times)\hat{\mathbf{C}}_b^n$
+(or $\hat{\mathbf{q}}_b^n \leftarrow \mathbf{q}(\delta\hat{\boldsymbol{\theta}}) \otimes \hat{\mathbf{q}}_b^n$).
+
+Why not estimate the four quaternion components directly? A unit quaternion has
+three degrees of freedom in four numbers, so its $4 \times 4$ covariance is
+singular, and an additive Kalman update pushes it off the unit sphere. The
+three-component $\delta\boldsymbol{\theta}$ is minimal and unconstrained, stays
+near zero where linearization is accurate and nothing is singular, and means
+something physical: its north and east components are tilt errors. A tilted
+estimate resolves gravity into the wrong axes, giving a specific-force error of
+$\delta\boldsymbol{\theta} \times \hat{\mathbf{f}}^n$ to first order, so one
+milliradian of tilt produces about $9.8\ \text{mm/s}^2$ of false horizontal
+acceleration. That is why error-state filters carry $\delta\boldsymbol{\theta}$
+and leave the quaternion in the nominal state (@sec-ekf-error-state-filtering).
+
+```{python}
+#| label: frames-small-angle-error
+#| echo: true
+
+C_hat = Rotation.from_euler("ZYX", [120.0, 4.0, -2.0], degrees=True).as_matrix()
+dtheta = np.deg2rad([0.5, -0.3, 1.0])                    # true nav-frame error [rad]
+C_true = Rotation.from_rotvec(dtheta).as_matrix() @ C_hat
+
+residual = np.linalg.norm(C_true - (np.eye(3) + skew(dtheta)) @ C_hat)
+print(f"first-order residual = {residual:.1e}   |dtheta|^2/2 = {np.linalg.norm(dtheta)**2/2:.1e}")
+
+E = C_true @ C_hat.T
+skew_part = 0.5 * (E - E.T)
+print("dtheta from log       [deg]:", np.round(np.degrees(Rotation.from_matrix(E).as_rotvec()), 5))
+print("dtheta from skew part [deg]:", np.round(np.degrees([skew_part[2, 1], skew_part[0, 2],
+                                                           skew_part[1, 0]]), 5))
+```
+
+## Earth-Referenced Frames {#sec-frames-earth-frames}
+
+Inertial sensors measure motion relative to inertial space, GNSS reports
+positions on a rotating Earth, and people want latitude and longitude. Three
+frames and one ellipsoid connect them [@groves; @farrell2008]. The
+**Earth-centered inertial** frame $i$ has its origin at Earth's center, $z$ along
+the spin axis, and $x$ fixed relative to distant stars (toward the vernal equinox
+at a reference epoch); it falls around the Sun with Earth, which is close enough
+to inertial for navigation. The **Earth-centered, Earth-fixed** frame $e$ shares
+the origin and $z$ axis but puts $x$ through the equator at the prime meridian,
+so it rotates relative to $i$ at the Earth rate
+$\omega_{ie} = 7.292115 \times 10^{-5}$ rad/s (one turn per sidereal day, about
+$15.04^\circ$/h).
+
+### Geodetic coordinates on WGS-84
+
+WGS-84, the GPS datum, models the Earth as an oblate ellipsoid with semi-major
+axis $a = 6378137.0$ m and flattening $f = 1/298.257223563$, so the first
+eccentricity squared is $e^2 = f(2 - f) \approx 6.694 \times 10^{-3}$. Geodetic
+latitude $L$ is the angle between the equatorial plane and the ellipsoid
+*normal* at the point (not the line to Earth's center), longitude $\lambda$ is
+measured east from the prime meridian, and $h$ is height along the normal. With
+the prime-vertical radius $R_N = a/\sqrt{1 - e^2\sin^2 L}$,
+
+$$
+\mathbf{r}^e =
+\begin{bmatrix}
+(R_N + h)\cos L\cos\lambda \\
+(R_N + h)\cos L\sin\lambda \\
+\left(R_N(1 - e^2) + h\right)\sin L
+\end{bmatrix}.
+$$ {#eq-frames-geodetic-ecef}
+
+The inverse has no tidy closed form, but it iterates quickly. Longitude is
+$\lambda = \operatorname{atan2}(y, x)$. With $p = \sqrt{x^2 + y^2}$, the rows of
+@eq-frames-geodetic-ecef rearrange to $\tan L = (z + e^2 R_N \sin L)/p$, a
+fixed-point iteration that contracts by roughly $e^2$ per pass. Starting from the
+$h = 0$ solution $L = \operatorname{atan2}(z, p(1 - e^2))$, a handful of passes
+reaches the rounding limit. Height then follows from
+$h = p\cos L + z\sin L - a^2/R_N$, which, unlike $p/\cos L - R_N$, behaves at
+the poles.
+
+### The local NED frame
+
+The navigation axes point north, east, and down along the ellipsoid normal at the
+vehicle. Each row of $\mathbf{C}_e^n$ is one of those unit vectors written in
+ECEF coordinates (north is $\partial\mathbf{r}^e/\partial L$ normalized; down is
+minus the normal):
+
+$$
+\mathbf{C}_e^n =
+\begin{bmatrix}
+-\sin L\cos\lambda & -\sin L\sin\lambda & \cos L \\
+-\sin\lambda & \cos\lambda & 0 \\
+-\cos L\cos\lambda & -\cos L\sin\lambda & -\sin L
+\end{bmatrix},
+\qquad
+\mathbf{C}_n^e = (\mathbf{C}_e^n)^T.
+$$ {#eq-frames-cen}
+
+A local displacement is $\Delta\mathbf{r}^n = \mathbf{C}_e^n(\mathbf{r}^e - \mathbf{r}_0^e)$.
+For small moves the other way, $\Delta N \approx (R_M + h)\Delta L$ and
+$\Delta E \approx (R_N + h)\cos L\,\Delta\lambda$, with meridian radius
+$R_M = a(1 - e^2)/(1 - e^2\sin^2 L)^{3/2}$. Converting NED to ENU is the fixed
+matrix
+
+$$
+\mathbf{C}_{\text{NED}}^{\text{ENU}} =
+\begin{bmatrix} 0 & 1 & 0 \\ 1 & 0 & 0 \\ 0 & 0 & -1 \end{bmatrix},
+$$
+
+a proper rotation (a half turn about the north-east bisector) that is its own
+inverse. ROS uses ENU world frames and FLU bodies [@rep103]. The FRD-to-FLU body
+swap is $\operatorname{diag}(1, -1, -1)$, and yaw measured counterclockwise from
+east is $\psi_{\text{ENU}} = \pi/2 - \psi_{\text{NED}}$.
+
+### Earth rate and transport rate
+
+Resolved in NED, Earth rate is
+$\boldsymbol{\omega}_{ie}^n = [\omega_{ie}\cos L,\ 0,\ -\omega_{ie}\sin L]^T$.
+At WPI ($L \approx 42.3^\circ$) that is about $11.1^\circ$/h north and
+$10.1^\circ$/h up. A gyrocompass or navigation-grade INS finds true north by
+sensing the horizontal component, which works with gyro biases near
+$0.01^\circ$/h; a smartphone gyro's bias is comparable to or larger than Earth
+rate itself, which is why phones lean on magnetometers. The **transport rate**
+$\boldsymbol{\omega}_{en}^n$ is the rotation of the NED frame relative to ECEF
+that happens because the vehicle moves over a curved surface and north and down
+keep turning to follow it. Its size is roughly speed over Earth radius: about
+$0.33^\circ$/h for a ship at 20 knots, $8^\circ$/h for an airliner at 250 m/s. Its
+components are in @sec-ins-gnss-wgs84-geometry.
+
+### Ellipsoidal versus orthometric height
+
+Height above the ellipsoid is not height above mean sea level. The geoid, the
+equipotential surface that mean sea level approximates, departs from the
+ellipsoid by the undulation $N_g$, between roughly $-106$ m and $+85$ m worldwide
+(about $-28$ m in central Massachusetts), and orthometric height is
+$H \approx h - N_g$. Many receivers report $H$: the NMEA `GGA` sentence gives
+altitude above mean sea level and the geoid separation in a separate field.
+Feeding that altitude into @eq-frames-geodetic-ecef as $h$ is a classic bug that
+shifts every fix tens of meters vertically while every horizontal plot still
+looks perfect.
+
+```{python}
+#| label: frames-geodesy
+#| echo: true
+
+WGS84_A = 6378137.0                    # semi-major axis [m]
+WGS84_E2 = (1 / 298.257223563) * (2 - 1 / 298.257223563)   # e^2 = f (2 - f)
+
+
+def radii(lat: float) -> tuple[float, float]:
+    """Meridian R_M and prime-vertical R_N radii of curvature [m]."""
+    den = 1.0 - WGS84_E2 * np.sin(lat) ** 2
+    return WGS84_A * (1.0 - WGS84_E2) / den**1.5, WGS84_A / np.sqrt(den)
+
+
+def geodetic_to_ecef(lat: float, lon: float, h: float) -> np.ndarray:
+    """Geodetic (rad, rad, m) to the ECEF position r^e [m]."""
+    R_N = radii(lat)[1]
+    return np.array([(R_N + h) * np.cos(lat) * np.cos(lon),
+                     (R_N + h) * np.cos(lat) * np.sin(lon),
+                     (R_N * (1.0 - WGS84_E2) + h) * np.sin(lat)])
+
+
+def ecef_to_geodetic(r_e: np.ndarray, tol: float = 1e-13) -> tuple[float, float, float]:
+    """ECEF [m] to geodetic (rad, rad, m) by fixed-point iteration on latitude."""
+    x, y, z = r_e
+    p = np.hypot(x, y)
+    lat = np.arctan2(z, p * (1.0 - WGS84_E2))             # exact when h = 0
+    for _ in range(20):
+        lat_prev = lat
+        lat = np.arctan2(z + WGS84_E2 * radii(lat)[1] * np.sin(lat), p)
+        if abs(lat - lat_prev) < tol:
+            break
+    h = p * np.cos(lat) + z * np.sin(lat) - WGS84_A**2 / radii(lat)[1]
+    return lat, np.arctan2(y, x), h
+
+
+def C_e_to_n(lat: float, lon: float) -> np.ndarray:
+    """C_e^n: ECEF coordinates into the local NED frame."""
+    sL, cL, sl, cl = np.sin(lat), np.cos(lat), np.sin(lon), np.cos(lon)
+    return np.array([[-sL * cl, -sL * sl, cL], [-sl, cl, 0.0], [-cL * cl, -cL * sl, -sL]])
+
+
+# Round trip: WPI, Sydney Harbour, near the South Pole, an airliner, a GPS satellite.
+for lat_d, lon_d, h in [(42.2742, -71.8080, 150.0), (-33.8568, 151.2153, 0.0),
+                        (-89.99, 45.0, 2835.0), (51.0, -30.0, 11e3), (55.0, 10.0, 20.2e6)]:
+    lat, lon, h_back = ecef_to_geodetic(geodetic_to_ecef(np.radians(lat_d), np.radians(lon_d), h))
+    assert np.allclose([lat, lon], np.radians([lat_d, lon_d]), rtol=0, atol=1e-12)
+    assert abs(h_back - h) < 1e-6
+print("geodetic -> ECEF -> geodetic round trip: OK at all five sites")
+
+# Step 100 m north and 50 m east of WPI at constant h, then look back in NED.
+lat0, lon0, h0 = np.radians(42.2742), np.radians(-71.8080), 150.0
+R_M, R_N = radii(lat0)
+r1 = geodetic_to_ecef(lat0 + 100.0 / (R_M + h0), lon0 + 50.0 / ((R_N + h0) * np.cos(lat0)), h0)
+d_ned = C_e_to_n(lat0, lon0) @ (r1 - geodetic_to_ecef(lat0, lon0, h0))
+print(f"NED displacement: N = {d_ned[0]:.4f} m, E = {d_ned[1]:.4f} m, "
+      f"D = {1e3 * d_ned[2]:.2f} mm (down > 0: the Earth curves away)")
+```
+
+The surface drops below the local tangent plane by about $d^2/2R$: a millimeter
+over 100 m, 8 cm over a kilometer, 8 m over 10 km. A flat local frame is fine for
+a drone over a lab floor and wrong for a ship crossing a bay.
+
+## Camera Frames and Homogeneous Transforms {#sec-frames-camera-transforms}
+
+Vision libraries describe the camera in the **optical frame**: $x$ right in the
+image, $y$ down, $z$ out of the lens, so a point in front of the camera has
+positive depth (@sec-pnp). For a forward-looking camera on an FRD vehicle,
+optical $z$ is body forward, optical $x$ is body right, and optical $y$ is body
+down. The columns of $\mathbf{C}_c^b$ are the camera axes in body coordinates:
+
+$$
+\mathbf{C}_c^b =
+\begin{bmatrix} 0 & 0 & 1 \\ 1 & 0 & 0 \\ 0 & 1 & 0 \end{bmatrix}.
+$$
+
+ROS keeps the same distinction between a camera "link" frame (FLU) and its
+"optical" frame [@rep103]. Real mounts add a small rotation and a lever arm, both
+found by calibration.
+
+Rotation alone is not a pose. A point's coordinates in frame $a$ are
+$\mathbf{p}^a = \mathbf{C}_b^a\mathbf{p}^b + \mathbf{r}_{ab}^a$, where
+$\mathbf{r}_{ab}^a$ is the position of $b$'s origin relative to $a$'s, resolved
+in $a$. Appending a 1 to the point turns this into one matrix product with the
+**homogeneous transform**
+
+$$
+\mathbf{T}_b^a = \begin{bmatrix} \mathbf{C}_b^a & \mathbf{r}_{ab}^a \\ \mathbf{0}^T & 1 \end{bmatrix},
+\qquad
+\mathbf{T}_c^a = \mathbf{T}_b^a\mathbf{T}_c^b,
+\qquad
+(\mathbf{T}_b^a)^{-1} = \mathbf{T}_a^b = \begin{bmatrix} (\mathbf{C}_b^a)^T & -(\mathbf{C}_b^a)^T\mathbf{r}_{ab}^a \\ \mathbf{0}^T & 1 \end{bmatrix}.
+$$
+
+These $4 \times 4$ matrices form the special Euclidean group $SE(3)$; they
+compose with the same index rule as rotations and invert without a general matrix
+inverse. $\mathbf{T}_b^a$ reads two ways: it maps $b$ coordinates into $a$, and
+it is the pose of $b$ in $a$. In this chapter's code `T_b_w` is
+$\mathbf{T}_b^w$ (subscript first, like `C_b_n`), while @sec-pnp follows the
+robotics habit of writing the destination first, so its `T_wc` is
+$\mathbf{T}_c^w$; trust the docstring, not the name. Free vectors such as velocities
+get a 0 appended instead of a 1 so that the translation never touches them;
+pushing a velocity through the full transform is a classic bug.
+
+```{python}
+#| label: frames-se3-composition
+#| echo: true
+
+def make_transform(C_b_a: np.ndarray, r_ab_a: np.ndarray) -> np.ndarray:
+    """T_b^a from the rotation C_b^a and the origin offset r_ab^a."""
+    T = np.eye(4)
+    T[:3, :3], T[:3, 3] = C_b_a, r_ab_a
+    return T
+
+
+def invert_transform(T_b_a: np.ndarray) -> np.ndarray:
+    """T_a^b = (T_b^a)^-1 using the rotation transpose."""
+    C, r = T_b_a[:3, :3], T_b_a[:3, 3]
+    return make_transform(C.T, -C.T @ r)
+
+
+# World w = local NED. Vehicle 20 m north, 5 m east, 2 m up, heading 030, level.
+C_b_w = Rotation.from_euler("ZYX", [30.0, 0.0, 0.0], degrees=True).as_matrix()
+T_b_w = make_transform(C_b_w, np.array([20.0, 5.0, -2.0]))
+# Forward-looking camera, lens 0.30 m forward of and 0.10 m above the body origin.
+C_c_b = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+T_c_b = make_transform(C_c_b, np.array([0.30, 0.0, -0.10]))
+
+T_c_w = T_b_w @ T_c_b                      # camera pose in the world: w <- b <- c
+T_w_c = invert_transform(T_c_w)            # world coordinates into the camera frame
+np.testing.assert_allclose(T_w_c, np.linalg.inv(T_c_w), atol=1e-12)
+
+# A landmark 10 m ahead of the lens, 1 m right, 0.5 m below (built in body axes).
+landmark_w = T_c_w[:3, 3] + C_b_w @ np.array([10.0, 1.0, 0.5])
+p_c = (T_w_c @ np.append(landmark_w, 1.0))[:3]
+K = np.array([[400.0, 0.0, 320.0], [0.0, 400.0, 240.0], [0.0, 0.0, 1.0]])
+u, v, _ = K @ (p_c / p_c[2])
+print("landmark in camera frame [m]:", np.round(p_c, 6), f"-> pixel ({u:.1f}, {v:.1f})")
+```
+
+## Heading, Course, and Yaw {#sec-frames-heading-course-yaw}
+
+Three different angles get called "heading" in casual conversation. **Heading**
+is the direction the vehicle's longitudinal axis points, projected onto the local
+horizontal and measured clockwise from north. **Course over ground** (COG) is the
+direction it actually moves, $\chi = \operatorname{atan2}(v_E, v_N)$. **Yaw** is
+the third Euler angle of a stated sequence. In the Z-Y-X sequence with NED, the
+first column of $\mathbf{C}_b^n$ (the body $x$ axis) is
+$[\cos\psi\cos\theta,\ \sin\psi\cos\theta,\ -\sin\theta]^T$, so yaw equals heading
+for any roll and any pitch short of $\pm 90^\circ$, a quiet advantage of the
+aerospace sequence. In Project 1's Z-X-Y sequence, yaw and heading differ when
+the vehicle is both rolled and pitched; in ENU, yaw is counterclockwise from east.
+
+Heading and course differ whenever the vehicle does not move the way it points:
+a ship crabbing through a cross current (set and drift, to a mariner), an
+aircraft holding a wind-correction angle, a car sliding on ice, a quadrotor
+strafing. A single-antenna GNSS receiver measures course, not heading, and course
+is meaningless at low speed because it is the direction of a nearly zero vector.
+Initializing yaw from GNSS velocity while tied up at the dock is a rite of passage
+nobody needs to repeat.
+
+North also comes in flavors. A magnetic compass points to magnetic north, which
+differs from true north by the **variation** (declination, to aviators and
+geophysicists), a function of position and year tabulated by the World Magnetic
+Model; it is about $14^\circ$ W in central Massachusetts. A particular compass is
+further disturbed by the vessel's own steel and electrical currents. This
+**deviation** changes with heading and is recorded on a deviation card after
+"swinging" the ship through a full circle. With easterly values positive,
+$\psi_{\text{true}} = \psi_{\text{compass}} + \delta_{\text{dev}} + D_{\text{var}}$,
+which generations of mariners memorize as "Can Dead Men Vote Twice At Elections":
+compass, deviation, magnetic, variation, true, add east [@bowditch2019]. A
+robot's magnetometer has both problems. Hard- and soft-iron calibration is its
+deviation correction, and the World Magnetic Model supplies the variation.
+
 ## Checks Before Trusting a Transform {#sec-frames-checks-before-trusting}
 
 - State both source and destination frames in variable names and documentation.
@@ -242,7 +753,48 @@ np.testing.assert_allclose(
 - Test an identity, a known quarter turn, and a round trip through the inverse.
 - Record angle units, quaternion ordering, and gravity/vertical sign at every
   sensor boundary.
+- Record which north (true or magnetic) a heading uses and which height
+  (ellipsoidal or mean sea level) a position uses.
 
 The rest of the book assumes these checks are routine. They are cheaper than
 debugging a navigation failure whose plot is only wrong by one very persuasive
 sign.
+
+## Exercises {#sec-frames-exercises}
+
+1. **Rodrigues backward.** (a) Using $[\mathbf{u}]_\times^2 = \mathbf{u}\mathbf{u}^T - \mathbf{I}$,
+   show from @eq-frames-rodrigues that $\operatorname{tr}\mathbf{C} = 1 + 2\cos\theta$
+   and $\mathbf{C} - \mathbf{C}^T = 2\sin\theta\,[\mathbf{u}]_\times$. (b) Implement
+   `log_so3(C)` returning the rotation vector, test it against
+   `Rotation.from_matrix(C).as_rotvec()` on 1000 seeded random rotations, and
+   plot the error against $\theta$. What happens as $\theta \to \pi$, and why?
+
+2. **Earth-referenced attitude rate.** (a) Prove that
+   $[\mathbf{C}\mathbf{a}]_\times = \mathbf{C}[\mathbf{a}]_\times\mathbf{C}^T$ for
+   any rotation matrix $\mathbf{C}$. (b) Use it with
+   $\boldsymbol{\omega}_{nb}^b = \boldsymbol{\omega}_{ib}^b - \mathbf{C}_n^b\boldsymbol{\omega}_{in}^n$
+   to show
+   $\dot{\mathbf{C}}_b^n = \mathbf{C}_b^n[\boldsymbol{\omega}_{ib}^b]_\times - [\boldsymbol{\omega}_{in}^n]_\times\mathbf{C}_b^n$.
+   (c) For a ship at $L = 42.3^\circ$ steaming north at 20 knots, compute
+   $\|\boldsymbol{\omega}_{ie}^n\|$ and $\|\boldsymbol{\omega}_{en}^n\|$ in degrees
+   per hour and compare them with a 10 °/h gyro bias.
+
+3. **The MSL bug.** A receiver at WPI reports latitude $42.2742^\circ$, longitude
+   $-71.8080^\circ$, altitude 160.0 m above mean sea level, and geoid separation
+   $-28.5$ m. (a) What is $h$? (b) With this chapter's functions, compute the
+   ECEF position using the correct $h$ and using the altitude as $h$. Express the
+   difference in NED and explain its direction. (c) Why would this bug pass every
+   horizontal-position test you are likely to write?
+
+4. **Compass, current, and GNSS.** A ship steers 045° by compass. The deviation
+   card gives 3° W on that heading and the chart gives variation 14° W. GNSS
+   reports course over ground 025° true at 12.0 knots. (a) Find the true heading.
+   (b) Find the angle between heading and course, and the component of velocity
+   over ground perpendicular to the keel. (c) Which way is the ship being set?
+
+5. **Composition order.** A teammate computes the camera pose as
+   `T_c_w = T_c_b @ T_b_w`. (a) Explain from the index rule why this is wrong.
+   (b) Using the vehicle, camera, and landmark of @sec-frames-camera-transforms,
+   compute the landmark's camera coordinates both ways and report the difference.
+   (c) Describe a vehicle pose for which the wrong order happens to give the right
+   answer, and explain why such cases make the bug hard to catch.

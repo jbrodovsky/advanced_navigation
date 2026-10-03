@@ -7,8 +7,8 @@ observation tests whether the state estimate is plausible.
 
 ## A Sensor Is Not a State Estimate {#sec-sensing-sensor-not-state}
 
-It is tempting to say that a GNSS receiver “gives position” or an IMU “gives
-attitude.” What each device actually provides is a measurement with a frame,
+It is tempting to say that a GNSS receiver "gives position" or an IMU "gives
+attitude." What each device actually provides is a measurement with a frame,
 timestamp, uncertainty, and failure modes. The estimator supplies the model that
 relates that measurement to the state:
 
@@ -34,7 +34,7 @@ Two broad sensor classes make the division of work clear:
 
 | Class | Typical sensors | Navigation role | Common failure pattern |
 |---|---|---|---|
-| Proprioceptive | IMU, wheel encoder, airspeed, DVL | High-rate propagation | Bias and noise accumulate into drift |
+| Proprioceptive | IMU, wheel encoder | High-rate propagation | Bias and noise accumulate into drift |
 | Exteroceptive | Camera, lidar, radar, sonar, GNSS, landmark detector | Measurement update or map constraint | Visibility, geometry, association, and outliers |
 
 Neither class is sufficient everywhere. A vehicle can dead reckon smoothly for a
@@ -43,7 +43,64 @@ may be obstructed, delayed, or fooled by a repeated-looking environment. Robust
 navigation uses the different failure modes rather than pretending one sensor is
 truth.
 
+The boundary is blurrier than the table suggests. A Doppler velocity log pings
+the seafloor, an airspeed probe samples the air, and visual odometry looks at
+the world, so all three are exteroceptive by mechanism. Yet each reports a
+velocity or a motion increment that is integrated like wheel odometry, and each
+drifts like a proprioceptive sensor when used that way. The useful question is
+not which box a sensor belongs in but what its errors do when you integrate it.
+
+## A Sensor Taxonomy {#sec-sensing-sensor-taxonomy}
+
+@tbl-sensing-taxonomy lists the sensors this course meets, from a wheeled lab
+robot to a submarine to a spacecraft. The rates and error sources are typical
+rather than definitive; any given product can sit well outside them.
+
+| Sensor | What it measures | Resolved in | Typical rate | Dominant error |
+|---|---|---|---|---|
+| Gyroscope (IMU) | Angular rate $\boldsymbol{\omega}_{ib}^b$ relative to inertial space | Body | 100 Hz to 2 kHz | Bias drift, angle random walk |
+| Accelerometer (IMU) | Specific force $\mathbf{f}^b$ (not acceleration) | Body | 100 Hz to 2 kHz | Bias, misalignment; gravity leaks in through attitude error |
+| Wheel odometry | Wheel rotation, hence distance and heading change | Body, at the ground contact | 10 to 100 Hz | Slip, wheel-radius (scale) error, uneven terrain |
+| Camera | Bearings to features as pixel coordinates | Camera (optical) | 10 to 60 Hz | Association errors, blur, lighting; a single camera cannot see scale |
+| Lidar | Range and bearing along each beam | Sensor | 10 to 20 Hz scans | Dark or specular surfaces, rain and fog, motion during the scan |
+| Radar | Range, bearing, and radial (Doppler) velocity | Sensor | 10 to 20 Hz automotive; about once per antenna sweep (1 to 3 s) for marine | Clutter, multipath, coarse angular resolution |
+| Sonar | Acoustic range, sometimes bearing | Sensor | 1 to 30 Hz, limited by the speed of sound | Sound-speed errors, multipath, low rate |
+| GNSS receiver | Pseudoranges and carrier phase, or a position, velocity, and time solution | Earth-fixed, at the antenna | 1 to 20 Hz | Blockage, multipath, atmospheric delay, jamming and spoofing |
+| Barometer | Static air pressure, hence altitude | Vertical | 10 to 100 Hz | Weather-driven drift, propwash and airflow, temperature |
+| Magnetometer | Magnetic field vector, hence heading | Body | 10 to 100 Hz | Vehicle hard- and soft-iron distortion, local anomalies |
+| Doppler velocity log (DVL) | Velocity relative to the seafloor (or water) | Instrument / body | 1 to 10 Hz | Loss of bottom lock, misalignment, sound-speed scale error |
+| Star tracker / celestial | Attitude from star patterns; a sextant gives altitude angles of stars | Inertial (star tracker); local level (sextant) | 1 to 10 Hz (star tracker) | Sun and Moon exclusion, stray light, clouds; celestial fixes need accurate time |
+
+: Sensors that appear in robot, maritime, and aerospace navigation. {#tbl-sensing-taxonomy}
+
+A more useful grouping than the rows of a table is the question each sensor
+answers. Gyroscopes, accelerometers, wheel encoders, DVLs, and Doppler radar
+answer *how am I moving?* They run fast, they need no infrastructure, and they
+drift when integrated. Cameras, lidar, radar, and sonar answer *what is around me?*
+They correct drift only if the robot has a map, or builds one, and can work out
+which feature it is looking at. GNSS, barometers, magnetometers, and star trackers
+answer *where am I relative to something the whole world agrees on?* Satellites,
+the atmosphere, Earth's magnetic field, and the star catalog are shared
+references, so these sensors bound drift globally, but each reference has its own
+way of going missing or being wrong.
+
+![A three-axis IMU senses specific force $\mathbf{f}$ and angular rate $\boldsymbol{\omega}$ along its body axes. This drawing uses the $z$-up drone body frame of Project 1; the inertial chapters use forward-right-down.](../../images/imu.png){#fig-sensing-imu-axes width=65%}
+
+Real vehicles carry sensor suites whose members fail differently. A ground robot
+pairs wheel odometry and an IMU with lidar or cameras. An airliner pairs a
+navigation-grade inertial system with GNSS, barometric altitude, and radio aids.
+A submarine cannot receive GNSS underwater, so it combines an inertial system, a
+DVL, and a pressure depth sensor, and surfaces or uses acoustic beacons when the
+drift grows too large. A spacecraft pairs gyros with star trackers. IMU quality
+itself spans several orders of magnitude, from the MEMS chips in phones and drones
+to the ring-laser and fiber-optic gyros of airliners and ships, at prices that run
+from pocket change to that of a house. @sec-ins-errors quantifies those grades.
+
 ## From Hardware to an Estimator {#sec-sensing-from-hardware-estimator}
+
+@fig-sensor-measurement-contract traces a measurement from the physical world to
+the estimator. Each box can add delay, correlation, or a frame change, and each
+one is a place where information the estimator needs can be lost.
 
 ```{mermaid}
 %%| label: fig-sensor-measurement-contract
@@ -60,7 +117,96 @@ flowchart LR
 The hardware front end may include filtering, synchronization, feature
 extraction, or a receiver solution. Those operations can change latency and
 correlation, so they belong in the measurement model rather than being treated as
-invisible plumbing.
+invisible plumbing. A GNSS receiver's position output, for example, is already the
+output of the receiver's own internal filter, so successive fixes are correlated in
+time, and a navigation filter that treats them as independent will become
+overconfident.
+
+## Timing Is Part of the Measurement {#sec-sensing-timing-measurement}
+
+@fig-sensor-measurement-contract places "timestamped measurement" right after the
+sensor for a reason. A measurement is a claim about the world *at a particular
+time*, and an estimator that applies it at the wrong time is solving a different
+problem from the one it thinks it is solving. Four timing properties belong in the
+measurement contract.
+
+The **timestamp** should mark when the quantity was valid: the middle of a camera
+exposure, the instant a GNSS solution refers to, the moment a lidar beam fired.
+The time a packet arrived at the computer is usually later and jittery. The
+**latency** is that difference. It includes exposure or integration time, on-board
+filtering and processing, and transport, and it can be anywhere from a millisecond
+or less for an IMU to hundreds of milliseconds for a vision pipeline or a GNSS
+receiver.
+The **rate** sets how often information arrives and, for high-rate sensors, whether
+the signal is sampled fast enough: an IMU sampled too slowly aliases engine or
+propeller vibration into spurious low-frequency motion that can masquerade as a
+slowly varying bias. **Synchronization** is the
+question of whether different sensors' timestamps refer to the same clock.
+Hardware triggering, the pulse-per-second output of a GNSS receiver, and network
+time protocols such as IEEE 1588 PTP all exist to answer yes.
+
+Some sensors do not even have a single measurement time. A rolling-shutter camera
+exposes its rows one after another, and a spinning lidar takes a tenth of a second
+to complete a sweep, so a fast-moving platform sees a smeared world unless each
+point is corrected for the motion during the scan. And because measurements arrive
+late, they arrive *out of order* with respect to the IMU stream. A filter has to
+buffer recent states and apply a delayed measurement at its validity time, then
+re-propagate to the present.
+
+The size of a timing error is easy to estimate. An uncompensated timing error
+$\delta t$ on a vehicle moving at speed $v$ produces a position error of about
+$v\,\delta t$, and on a vehicle rotating at rate $\omega$ an attitude error of
+about $\omega\,\delta t$. @fig-sensing-timing-error compares that error with the
+accuracy of two common position sensors. Timing matters as soon as $v\,\delta t$
+approaches the sensor's own accuracy.
+
+```{python}
+#| label: fig-sensing-timing-error
+#| fig-cap: "Position error caused by an uncompensated timing error, compared with typical accuracies of RTK and standalone GNSS. A 10 ms error is invisible to standalone GNSS on a car but exceeds RTK accuracy on a drone."
+#| code-fold: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+speeds = np.logspace(-0.5, 2.6, 200)        # m/s, about 0.3 to 400
+platforms = {
+    "walking robot": 1.5,
+    "quadrotor": 5.0,
+    "car (highway)": 30.0,
+    "airliner": 250.0,
+}
+
+fig, ax = plt.subplots(figsize=(8, 4.5))
+for dt_ms in [1.0, 10.0, 100.0]:
+    ax.loglog(speeds, speeds * dt_ms * 1e-3, lw=2, label=f"timing error {dt_ms:g} ms")
+
+# Reference accuracies; labels placed where they do not collide with the lines.
+for name, accuracy, x_text, align in [
+    ("RTK GNSS, about 2 cm", 0.02, speeds[-1], "right"),
+    ("standalone GNSS, about 3 m", 3.0, speeds[0] * 1.1, "left"),
+]:
+    ax.axhline(accuracy, color="gray", ls="--", lw=1)
+    ax.text(x_text, accuracy * 1.15, name, color="gray", fontsize=9, ha=align)
+
+for name, speed in platforms.items():
+    ax.axvline(speed, color="k", ls=":", lw=0.8)
+    ax.text(speed * 1.05, 2e-4, name, rotation=90, fontsize=8, va="bottom")
+
+ax.set_xlabel("platform speed (m/s)")
+ax.set_ylabel(r"position error $v\,\delta t$ (m)")
+ax.set_ylim(1e-4, 1e2)
+ax.grid(True, which="both", alpha=0.25)
+ax.legend(loc="upper left")
+plt.show()
+```
+
+Timing is the oldest problem in navigation, not a modern robotics nuisance. The
+Earth turns 15 degrees per hour, so a navigator taking a celestial fix who reads
+the time 4 seconds wrong places the ship one minute of arc of longitude off, which
+is one nautical mile at the equator. Before Harrison's marine chronometers, ships
+could measure latitude well and longitude badly for precisely this reason. A
+modern drone with a 40 ms camera latency has the same disease in a smaller
+package.
 
 ## What This Part Covers {#sec-sensing-what-this-part}
 
@@ -68,5 +214,42 @@ invisible plumbing.
 @sec-measurement-models turns physical observations into likelihoods;
 @sec-feature-association addresses which feature generated an observation; and
 @sec-pnp builds the camera observation model used in Module 1. The
-global-navigation chapters (@sec-global-nav onward) return to this contract for GNSS, where signal quality and time validity matter just as
-much as position.
+global-navigation chapters (@sec-global-nav onward) return to this contract for
+GNSS, where signal quality and time validity matter just as much as position.
+
+## Exercises {#sec-sensing-exercises}
+
+1. **Equip an AUV.** An autonomous underwater vehicle must survey a pipeline on the
+   seafloor at 500 m depth for six hours and return to within 50 m of a recovery
+   vessel. Choose a sensor suite from @tbl-sensing-taxonomy. For each sensor, state
+   what it measures, the frame its measurement is resolved in, and its dominant
+   error. Identify which sensors propagate the state, which bound its drift, and
+   which absolute reference (if any) is available at depth.
+
+2. **Timing on a drone and on a ship.** (a) A quadrotor flies at 4 m/s while yawing
+   at 60 deg/s. Its camera images are stamped with arrival time, which lags the
+   middle of the exposure by 40 ms. Find the resulting position and heading errors
+   if the images are fused as though they were current, and compare them with a
+   PnP position accuracy of a few centimeters. (b) An eighteenth-century navigator's
+   chronometer has gained 2 minutes since leaving port. How large is the resulting
+   longitude error in degrees, and in nautical miles at latitude 40 degrees?
+
+3. **A measurement contract in code.** Write a Python `dataclass` for a timestamped
+   measurement with fields for validity time, arrival time, value, frame name,
+   covariance, sensor identifier, and a validity flag. Then write a function that
+   takes a buffer of timestamped states `(t_i, x_i)` and returns the state linearly
+   interpolated to a measurement's validity time, raising an error if the time
+   falls outside the buffer. Test it with a synthetic constant-velocity trajectory.
+
+4. **Find the clock offset.** Two sensors observe the same yaw-rate signal: a gyro
+   at 200 Hz and a visual-odometry pipeline at 20 Hz whose clock is offset by an
+   unknown delay. Simulate a yaw-rate signal made of a few sinusoids, add noise to
+   both streams, delay the visual stream by 65 ms, and estimate the offset by
+   cross-correlating the two signals after resampling them onto a common time base.
+   How does the estimate degrade if the motion is nearly constant?
+
+5. **Which box?** Argue whether each of the following is better treated as
+   proprioceptive or exteroceptive *for the purpose of filter design*: wheel
+   odometry, a DVL in bottom-track mode, an airspeed sensor on a fixed-wing
+   aircraft, and visual odometry. For each, describe the failure that would surprise
+   a designer who placed it in the wrong category.
