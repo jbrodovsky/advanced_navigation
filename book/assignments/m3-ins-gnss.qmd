@@ -8,13 +8,13 @@ You will implement the strapdown mechanization equations in a WGS84 geodetic fra
 
 **Learning outcomes:**
 
-- Implement strapdown mechanization on curved Earth (Chapter 7)
+- Implement strapdown mechanization on curved Earth
 
-- Understand IMU error models and characterization (Chapter 8)
+- Understand IMU error models and characterization
 
-- Design and implement ESKF with proper error-state dynamics (Chapter 2)
+- Design and implement ESKF with proper error-state dynamics
 
-- Analyze INS drift and GNSS aiding effectiveness (Chapter 15)
+- Analyze INS drift and GNSS aiding effectiveness
 
 - Work with real-world high-rate sensor data
 
@@ -23,7 +23,7 @@ You will implement the strapdown mechanization equations in a WGS84 geodetic fra
 ## Project Architecture
 
 ```         
-Raw IMU (400 Hz) → Strapdown Mechanization → Dead Reckoning Navigation
+Raw IMU → Strapdown Mechanization → Dead Reckoning Navigation
                           ↓
                     ESKF Prediction (error-state propagation)
                           ↓
@@ -47,7 +47,7 @@ GNSS Position/Velocity (1-10 Hz) → ESKF Update (measurement fusion)
 
 ### Background
 
-Unlike flat-earth navigation, when traveling long distances the Earth's curvature and rotation become significant. The mechanization equations in the NED (North-East-Down) frame must account for:
+Unlike flat-earth small-scale navigation, when traveling long distances the Earth's curvature and rotation become significant. The mechanization equations in the NED (North-East-Down) frame must account for:
 
 1.  **Gravity variation:** Depends on latitude and altitude (WGS84 model)
 2.  **Earth rotation rate** $\omega_{ie}$: Creates Coriolis effect on accelerometers

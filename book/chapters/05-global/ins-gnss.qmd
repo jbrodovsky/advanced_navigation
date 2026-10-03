@@ -1,27 +1,24 @@
 # Curved-Earth INS and Loose GNSS Integration
 
-The previous chapter introduced GNSS as the external radio-navigation system that
-keeps long-duration navigation tied to a global reference. This chapter focuses on
-the other half of the problem: propagating an inertial navigation solution on a
-curved, rotating Earth, then correcting that solution with loosely coupled GNSS
-position and velocity measurements.
+The previous chapter introduced GNSS as the external radio-navigation system that keeps long-duration navigation tied to a global reference. This chapter focuses on the other half of the problem: propagating an inertial navigation solution on a curved, rotating Earth, then correcting that solution with loosely coupled GNSS position and velocity measurements.
 
 The central idea is simple:
 
-1. Use the IMU at high rate to propagate attitude, velocity, and position.
-2. Use GNSS at lower rate to estimate the accumulated INS errors.
-3. Inject the estimated error back into the nominal navigation state.
+1.  Use the IMU at high rate to propagate attitude, velocity, and position.
+2.  Use GNSS at lower rate to estimate the accumulated INS errors.
+3.  Inject the estimated error back into the nominal navigation state.
 
-That is the practical workflow behind the INS/GNSS project. The details matter
-because small frame mistakes and sign mistakes can produce navigation errors that
-look like bad filtering, bad data, or a cursed IMU. It is usually just geometry.
+That is the practical workflow behind the INS/GNSS project. The details matter because small frame mistakes and sign mistakes can produce navigation errors that look like bad filtering, bad data, or a cursed IMU. It is usually just geometry.
 
 ## State and Frames
 
+The way typical strapdown INSs represent state can be somewhat confusing and variable, primarily due to the mixed-frame state representation. Remeber, what were are concerned about is a vehicle navigating on or close to the surface of the Earth (as opposed to orbital mechanics). Sometimes, we can keep a local flat-earth frame and cartesian axes and assume the gravity vector is along the negative z-axis (local level frame). For some larger scale navigation applications, we can account for the curvature of the Earth while still using such an approximation by periodically resetting the origin of such a frame to a new geodetic location on the Earth (latitude and longitude).
+
+For most practical large scale global navigation problems, that periodic resetting is an unnecessary step. We *are* concerned about our geodetic position *directly.* That said, it is difficult to relate cartesian body-frame accelerations and angular velocities to equations of motion directly in the ECEF frame in geodetic coordinates. As such, a typical INS mechanization uses a "mixed" basis state vector and continuously resolves the "origin" of the local level frame as the vehicle's current location.
+
 For this chapter, the nominal navigation state is
 
-$$
-\mathbf{x}_{nom}
+$$\mathbf{x}_{nom}
 =
 \left[
 \phi,\lambda,h,
@@ -29,23 +26,74 @@ $$
 \mathbf{q}_b^n,
 \mathbf{b}_a,
 \mathbf{b}_g
-\right],
-$$
+\right],$$
 
 where:
 
-- $\phi,\lambda,h$ are geodetic latitude, longitude, and height above the WGS84
-  ellipsoid;
-- $\mathbf{v}^n = [v_N, v_E, v_D]^T$ is velocity resolved in the local
-  North-East-Down frame;
-- $\mathbf{q}_b^n$ or $\mathbf{C}_b^n$ represents attitude from body axes to
-  navigation axes;
+- $\phi,\lambda,h$ are geodetic latitude (degrees), longitude (degrees), and height (meters) above the WGS84 ellipsoid;
+- $\mathbf{v}^n = [v_N, v_E, v_D]^T$ is velocity resolved in the local North-East-Down frame (meters per second);
+- $\mathbf{q}_b^n = \left[\phi, \theta, \psi \right]$ represents attitude from body axes to navigation axes (roll, pitch, yaw XYZ rotation);
 - $\mathbf{b}_a$ and $\mathbf{b}_g$ are accelerometer and gyro bias estimates.
+
+For our purposes, we will adopt the conventions and notation in Groves Chapter 5.4 and used an X-Y-Z rotation scheme and an Euler angle representation. Alternative approaches exist (such as using a quaternion representation), however this is one of the more intuitive approaches. Mathematically, we will use the rotation matrix form ($\mathbf{C}_b^n$) for ease of computation.
+
+## WGS84 Geometry
+
+The local navigation frame changes with position, so the position update needs the local radii of curvature. For WGS84, let $a$ be the semi-major axis and $e^2$ the first eccentricity squared:
+
+$$a = 6378137.0 \text{ m},
+\qquad
+e^2 = 6.69437999014132 \times 10^{-3}.$$
+
+The meridian radius of curvature is
+
+$$R_M(\phi)
+=
+\frac{a(1-e^2)}
+{(1-e^2\sin^2\phi)^{3/2}},$$
+
+and the prime vertical radius of curvature is
+
+$$R_N(\phi)
+=
+\frac{a}
+{\sqrt{1-e^2\sin^2\phi}}.$$
+
+The Earth rotation rate (rotation of the ECEF frame ($e$) with respect to the ECI frame ($i$) is
+
+$$\omega_{ie} = 7.2921150 \times 10^{-5} \text{ rad/s}.$$
+
+Resolved in the local NED frame, Earth rate vector is
+
+$$\boldsymbol{\omega}_{ie}^n
+=
+\begin{bmatrix}
+\omega_{ie}\cos\phi \\
+0 \\
+-\omega_{ie}\sin\phi
+\end{bmatrix}.$$
+
+The transport rate accounts for the rotation of the local navigation frame as the vehicle moves over the ellipsoid:
+
+$$\boldsymbol{\omega}_{en}^n
+=
+\begin{bmatrix}
+\frac{v_E}{R_N + h} \\
+-\frac{v_N}{R_M + h} \\
+-\frac{v_E\tan\phi}{R_N + h}
+\end{bmatrix}.$$
+
+Some references use a different sign convention for NED transport rate depending on whether the angular rate is written as frame-with-respect-to-frame or the reverse. The convention above is paired with the velocity and attitude equations in this chapter. Do not mix formulas from two sources without checking the frame subscripts.
+
+## Navigation equations in the Local Navigation Frame
+
+Follow along with Groves Chapter 5.4 for a more detailed approach. Here we provide an abbreviated set of notes. We will use a trapezoidal integration approximation. Under such an approximation the $X(\cdot)$ notation defines a posterior value using a plus sign (e.g. $X(+)$) where as a prior value is denoted using a minus sign (e.g. $X(-)$). In other words $x_{t-1} = X(-)$ and $x_t = X(+)$.
+
+### IMU pre-processing
 
 The IMU measurements are body-frame specific force and body-frame angular rate:
 
-$$
-\tilde{\mathbf{f}}^b
+$$\tilde{\mathbf{f}}^b
 =
 \mathbf{f}^b
 + \mathbf{b}_a
@@ -55,231 +103,98 @@ $$
 =
 \boldsymbol{\omega}_{ib}^b
 + \mathbf{b}_g
-+ \mathbf{n}_g.
-$$
++ \mathbf{n}_g.$$
 
 Before propagation, subtract the current bias estimates:
 
-$$
-\hat{\mathbf{f}}^b = \tilde{\mathbf{f}}^b - \hat{\mathbf{b}}_a,
+$$\hat{\mathbf{f}}^b = \tilde{\mathbf{f}}^b - \hat{\mathbf{b}}_a,
 \qquad
 \hat{\boldsymbol{\omega}}_{ib}^b
 =
-\tilde{\boldsymbol{\omega}}_{ib}^b - \hat{\mathbf{b}}_g.
-$$
+\tilde{\boldsymbol{\omega}}_{ib}^b - \hat{\mathbf{b}}_g.$$
 
-The error behavior of those bias terms is handled in the next chapter. Here, the
-important point is that the strapdown equations consume corrected IMU
-measurements and propagate the nominal state.
-
-## WGS84 Geometry
-
-The local navigation frame changes with position, so the position update needs the
-local radii of curvature. For WGS84, let $a$ be the semi-major axis and $e^2$ the
-first eccentricity squared:
-
-$$
-a = 6378137.0 \text{ m},
-\qquad
-e^2 = 6.69437999014132 \times 10^{-3}.
-$$
-
-The meridian radius of curvature is
-
-$$
-R_M(\phi)
-=
-\frac{a(1-e^2)}
-{(1-e^2\sin^2\phi)^{3/2}},
-$$
-
-and the prime vertical radius of curvature is
-
-$$
-R_N(\phi)
-=
-\frac{a}
-{\sqrt{1-e^2\sin^2\phi}}.
-$$
-
-The Earth rotation rate is
-
-$$
-\omega_{ie} = 7.2921150 \times 10^{-5} \text{ rad/s}.
-$$
-
-Resolved in the local NED frame, Earth rate is
-
-$$
-\boldsymbol{\omega}_{ie}^n
-=
-\begin{bmatrix}
-\omega_{ie}\cos\phi \\
-0 \\
--\omega_{ie}\sin\phi
-\end{bmatrix}.
-$$
-
-The transport rate accounts for the rotation of the local navigation frame as the
-vehicle moves over the ellipsoid:
-
-$$
-\boldsymbol{\omega}_{en}^n
-=
-\begin{bmatrix}
-\frac{v_E}{R_N + h} \\
--\frac{v_N}{R_M + h} \\
--\frac{v_E\tan\phi}{R_N + h}
-\end{bmatrix}.
-$$
-
-Some references use a different sign convention for NED transport rate depending
-on whether the angular rate is written as frame-with-respect-to-frame or the
-reverse. The convention above is paired with the velocity and attitude equations in
-this chapter. Do not mix formulas from two sources without checking the frame
-subscripts.
+The error behavior of those bias terms is handled in the next chapter. Here, the important point is that the strapdown equations consume corrected IMU measurements and propagate the nominal state.
 
 ## Attitude Propagation
 
-The gyroscope measures body angular rate with respect to inertial space, resolved
-in body axes. To update attitude with respect to the local navigation frame, remove
-the rotation of the navigation frame itself:
+The gyroscope measures body angular rate with respect to inertial space, resolved in body axes. We can use the trapezoidal approximation to calculate the change in attitude:
 
-$$
-\boldsymbol{\omega}_{nb}^b
-=
-\hat{\boldsymbol{\omega}}_{ib}^b
-- \mathbf{C}_n^b
-\left(
-\boldsymbol{\omega}_{ie}^n
-+ \boldsymbol{\omega}_{en}^n
-\right).
-$$
+$$\mathbf{C}_b^n \approx \mathbf{C}_b^n(-) (\mathbf{I} + \boldsymbol{\Omega}_{ib}^b t) - (\boldsymbol{\Omega}_{ie}^n(-) + \boldsymbol{\Omega_{en}^n(-)}) \mathbf{C}_b^n(-) t $$
 
-Using a body-to-navigation direction cosine matrix, the attitude dynamics may be
-written compactly as
+where $\boldsymbold{\Omega}_{en}^n = \begin{bmatrix}\boldsymbol{\omega}_{en}^n & \wedge \end{bmatrix}$, $\boldsymbol{\Omega}_{ie}^n = \begin{bmatrix}\boldsymbold{\omega}_{ie}^n & \wedge \end{bmatrix}$ and $\boldsymbol{\Omega}_{ib}^n$ is the skew-symmetric form of the gyroscope output.
 
-$$
-\dot{\mathbf{C}}_b^n
-=
-\mathbf{C}_b^n
-\left[\boldsymbol{\omega}_{nb}^b\right]_\times.
-$$
+### Specific force transformation
 
-In software, quaternions are usually preferable to directly integrating a rotation
-matrix. A quaternion update applies the incremental rotation
-$\Delta \boldsymbol{\theta} = \boldsymbol{\omega}_{nb}^b \Delta t$ and then
-renormalizes the quaternion. Renormalization is not optional. Floating-point math
-will happily turn a rotation into a scaling operation if you let it.
+The corrected specific force output from IMU must be transformed into the navigation frame using the updated rotation matrix:
+
+$$\mathbf{f}_{ib}^n \approx \frac{1}{2} ( \mathbf{C}_b^n(-) + \mathbf{C}_b^n(+)) \hat{\mathbf{f}}^b$$
 
 ## Velocity Propagation
 
-Specific force is transformed into the navigation frame with the current attitude:
+Specific force is transformed into the navigation frame with the current attitude. This is then used to update the velocity vector:
 
-$$
-\hat{\mathbf{f}}^n
-=
-\mathbf{C}_b^n \hat{\mathbf{f}}^b.
-$$
+$$\mathbf{v}_{eb}^n (+) \approx \mathbf{v}_{eb}^n$$
 
-The NED velocity dynamics are
+The first term is the sensed specific force rotated into the navigation frame. The second term accounts for Earth rotation and transport-rate effects. The final term adds gravity back because accelerometers measure specific force, not total acceleration.
 
-$$
-\dot{\mathbf{v}}^n
-=
-\hat{\mathbf{f}}^n
--\left(
-2\boldsymbol{\omega}_{ie}^n
-+\boldsymbol{\omega}_{en}^n
-\right)
-\times \mathbf{v}^n
-+ \mathbf{g}^n.
-$$
+For the NED convention used here, gravity is positive in the down component and the frame is constantly rotated such that this is true (Somigliana model):
 
-The first term is the sensed specific force rotated into the navigation frame. The
-second term accounts for Earth rotation and transport-rate effects. The final term
-adds gravity back because accelerometers measure specific force, not total
-acceleration.
-
-For the NED convention used here, gravity is positive in the down component:
-
-$$
-\mathbf{g}^n
+$$\mathbf{g}^n
 =
 \begin{bmatrix}
 0 \\
 0 \\
 g(\phi,h)
-\end{bmatrix}.
-$$
+\end{bmatrix}.$$
 
 A simple WGS84-compatible gravity approximation is
 
-$$
-g(\phi,h)
+$$g(\phi,h)
 =
 9.7803253359
 \left(
 1 + 0.0053024\sin^2\phi - 0.0000058\sin^2(2\phi)
 \right)
-- 3.086 \times 10^{-6}h.
-$$
+- 3.086 \times 10^{-6}h.$$
 
-This is sufficient for course-scale examples. Precision navigation systems use more
-careful gravity modeling, especially over large altitude ranges or for high-grade
-inertial sensors.
+This is sufficient for course-scale examples. Precision navigation systems use more careful gravity modeling, especially over large altitude ranges or for high-grade inertial sensors.
 
 ## Position Propagation
 
 The geodetic position rates follow from NED velocity:
 
-$$
-\dot{\phi}
+$$\dot{\phi}
 =
-\frac{v_N}{R_M + h},
-$$
+\frac{v_N}{R_M + h},$$
 
-$$
-\dot{\lambda}
+$$\dot{\lambda}
 =
-\frac{v_E}{(R_N + h)\cos\phi},
-$$
+\frac{v_E}{(R_N + h)\cos\phi},$$
 
-$$
-\dot{h}
+$$\dot{h}
 =
--v_D.
-$$
+-v_D.$$
 
-The latitude and longitude equations are a common source of unit bugs. They
-produce radians per second, not meters per second. If the filter stores position
-errors in meters, convert between curvilinear coordinate errors and local metric
-errors explicitly.
+The latitude and longitude equations are a common source of unit bugs. They produce radians per second, not meters per second. If the filter stores position errors in meters, convert between curvilinear coordinate errors and local metric errors explicitly.
 
 ## Strapdown Processing Order
 
 At each IMU epoch:
 
-1. Read $\tilde{\mathbf{f}}^b$ and
-   $\tilde{\boldsymbol{\omega}}_{ib}^b$.
-2. Subtract bias estimates and apply any scale-factor or misalignment calibration.
-3. Compute $R_M$, $R_N$, $\boldsymbol{\omega}_{ie}^n$, and
-   $\boldsymbol{\omega}_{en}^n$ from the current state.
-4. Update attitude.
-5. Transform specific force into the navigation frame.
-6. Update velocity.
-7. Update latitude, longitude, and height.
-8. Normalize attitude and store the timestamped state.
+1.  Read $\tilde{\mathbf{f}}^b$ and $\tilde{\boldsymbol{\omega}}_{ib}^b$.
+2.  Subtract bias estimates and apply any scale-factor or misalignment calibration.
+3.  Compute $R_M$, $R_N$, $\boldsymbol{\omega}_{ie}^n$, and $\boldsymbol{\omega}_{en}^n$ from the current state.
+4.  Update attitude.
+5.  Transform specific force into the navigation frame.
+6.  Update velocity.
+7.  Update latitude, longitude, and height.
+8.  Normalize attitude and store the timestamped state.
 
-That order is not arbitrary. Attitude determines how specific force is resolved.
-Velocity determines transport rate and position rate. Position determines gravity,
-Earth-rate resolution, and the curvature terms. Production systems may use
-midpoint or higher-order integration, but the dependency chain is the same.
+That order is not arbitrary. Attitude determines how specific force is resolved. Velocity determines transport rate and position rate. Position determines gravity, Earth-rate resolution, and the curvature terms. Production systems may use midpoint or higher-order integration, but the dependency chain is the same.
 
 ## Implementation Skeleton
 
-The example below is intentionally compact. It is not a full production INS, but it
-shows the pieces that need to be explicit in the project.
+The example below is intentionally compact. It is not a full production INS, but it shows the pieces that need to be explicit in the project.
 
 ```{python}
 #| label: strapdown-ned-skeleton
@@ -378,17 +293,13 @@ def propagate_one_step(state, accel_b, gyro_b, dt):
     }
 ```
 
-For a real implementation, use a quaternion or a carefully maintained rotation
-matrix, handle timestamps explicitly, and test stationary, constant-velocity, and
-known-trajectory cases before adding a Kalman filter.
+For a real implementation, use a quaternion or a carefully maintained rotation matrix, handle timestamps explicitly, and test stationary, constant-velocity, and known-trajectory cases before adding a Kalman filter.
 
 ## Error-State Formulation
 
-The nominal strapdown state is nonlinear. The ESKF keeps the nonlinear nominal
-state separate from a small error state:
+The nominal strapdown state is nonlinear. The ESKF keeps the nonlinear nominal state separate from a small error state:
 
-$$
-\delta \mathbf{x}
+$$\delta \mathbf{x}
 =
 \left[
 \delta \mathbf{p}^n,
@@ -396,167 +307,122 @@ $$
 \delta \boldsymbol{\theta}^n,
 \delta \mathbf{b}_a,
 \delta \mathbf{b}_g
-\right]^T.
-$$
+\right]^T.$$
 
 A common local error model is
 
-$$
-\delta \dot{\mathbf{p}}^n
+$$\delta \dot{\mathbf{p}}^n
 =
-\delta \mathbf{v}^n,
-$$
+\delta \mathbf{v}^n,$$
 
-$$
-\delta \dot{\mathbf{v}}^n
+$$\delta \dot{\mathbf{v}}^n
 \approx
 -\left[\hat{\mathbf{f}}^n\right]_\times
 \delta \boldsymbol{\theta}^n
 - \mathbf{C}_b^n \delta \mathbf{b}_a
-+ \mathbf{w}_v,
-$$
++ \mathbf{w}_v,$$
 
-$$
-\delta \dot{\boldsymbol{\theta}}^n
+$$\delta \dot{\boldsymbol{\theta}}^n
 \approx
 -\left[\boldsymbol{\omega}_{in}^n\right]_\times
 \delta \boldsymbol{\theta}^n
 - \mathbf{C}_b^n \delta \mathbf{b}_g
-+ \mathbf{w}_\theta,
-$$
++ \mathbf{w}_\theta,$$
 
 with bias dynamics such as
 
-$$
-\delta \dot{\mathbf{b}}_a = \mathbf{w}_{ba},
+$$\delta \dot{\mathbf{b}}_a = \mathbf{w}_{ba},
 \qquad
-\delta \dot{\mathbf{b}}_g = \mathbf{w}_{bg}.
-$$
+\delta \dot{\mathbf{b}}_g = \mathbf{w}_{bg}.$$
 
-This is not the only valid error-state model. Higher-grade systems include more
-Earth-model terms, scale-factor states, lever-arm states, clock states, or
-time-synchronization states. The project model should stay focused: position,
-velocity, attitude error, and IMU biases.
+This is not the only valid error-state model. Higher-grade systems include more Earth-model terms, scale-factor states, lever-arm states, clock states, or time-synchronization states. The project model should stay focused: position, velocity, attitude error, and IMU biases.
 
 ## Loose GNSS Measurement Update
 
 The GNSS primer used the convention
 
-$$
-\mathbf{y}_k
+$$\mathbf{y}_k
 =
 \begin{bmatrix}
 \mathbf{p}_{GNSS,k} - \mathbf{p}_{INS,k} \\
 \mathbf{v}_{GNSS,k} - \mathbf{v}_{INS,k}
-\end{bmatrix}.
-$$
+\end{bmatrix}.$$
 
 Using the error-state ordering above, the corresponding measurement matrix is
 
-$$
-\mathbf{H}_k
+$$\mathbf{H}_k
 =
 \begin{bmatrix}
 \mathbf{I}_3 & \mathbf{0}_3 & \mathbf{0}_3 & \mathbf{0}_3 & \mathbf{0}_3 \\
 \mathbf{0}_3 & \mathbf{I}_3 & \mathbf{0}_3 & \mathbf{0}_3 & \mathbf{0}_3
-\end{bmatrix}.
-$$
+\end{bmatrix}.$$
 
-If only GNSS position is available, use the first three rows. If GNSS velocity is
-available and trustworthy, include the velocity rows. Velocity measurements often
-help bias and attitude observability because they respond quickly to propagation
-errors.
+If only GNSS position is available, use the first three rows. If GNSS velocity is available and trustworthy, include the velocity rows. Velocity measurements often help bias and attitude observability because they respond quickly to propagation errors.
 
 The filter update is the standard Kalman measurement update:
 
-$$
-\mathbf{S}_k
+$$\mathbf{S}_k
 =
 \mathbf{H}_k\mathbf{P}_k^-\mathbf{H}_k^T
-+ \mathbf{R}_{GNSS,k},
-$$
++ \mathbf{R}_{GNSS,k},$$
 
-$$
-\mathbf{K}_k
+$$\mathbf{K}_k
 =
-\mathbf{P}_k^-\mathbf{H}_k^T\mathbf{S}_k^{-1},
-$$
+\mathbf{P}_k^-\mathbf{H}_k^T\mathbf{S}_k^{-1},$$
 
-$$
-\delta \hat{\mathbf{x}}_k
+$$\delta \hat{\mathbf{x}}_k
 =
-\mathbf{K}_k\mathbf{y}_k.
-$$
+\mathbf{K}_k\mathbf{y}_k.$$
 
-In software, solve the linear system for the gain instead of forming an explicit
-inverse. Use the Joseph covariance update when possible:
+In software, solve the linear system for the gain instead of forming an explicit inverse. Use the Joseph covariance update when possible:
 
-$$
-\mathbf{P}_k^+
+$$\mathbf{P}_k^+
 =
 (\mathbf{I}-\mathbf{K}_k\mathbf{H}_k)
 \mathbf{P}_k^-
 (\mathbf{I}-\mathbf{K}_k\mathbf{H}_k)^T
-+ \mathbf{K}_k\mathbf{R}_{GNSS,k}\mathbf{K}_k^T.
-$$
++ \mathbf{K}_k\mathbf{R}_{GNSS,k}\mathbf{K}_k^T.$$
 
 After the update, inject the error estimate into the nominal state:
 
-$$
-\mathbf{p} \leftarrow \mathbf{p} + \delta \hat{\mathbf{p}},
+$$\mathbf{p} \leftarrow \mathbf{p} + \delta \hat{\mathbf{p}},
 \qquad
-\mathbf{v} \leftarrow \mathbf{v} + \delta \hat{\mathbf{v}},
-$$
+\mathbf{v} \leftarrow \mathbf{v} + \delta \hat{\mathbf{v}},$$
 
-$$
-\mathbf{q}_b^n
+$$\mathbf{q}_b^n
 \leftarrow
 \delta \hat{\mathbf{q}} \otimes \mathbf{q}_b^n,
 \qquad
 \mathbf{b}_a \leftarrow \mathbf{b}_a + \delta \hat{\mathbf{b}}_a,
 \qquad
-\mathbf{b}_g \leftarrow \mathbf{b}_g + \delta \hat{\mathbf{b}}_g.
-$$
+\mathbf{b}_g \leftarrow \mathbf{b}_g + \delta \hat{\mathbf{b}}_g.$$
 
-Then reset the error-state mean to zero. The covariance may also need a reset
-Jacobian for the attitude injection. For the course project, the small-angle reset is
-usually sufficient if corrections are kept small and frequent.
+Then reset the error-state mean to zero. The covariance may also need a reset Jacobian for the attitude injection. For the course project, the small-angle reset is usually sufficient if corrections are kept small and frequent.
 
 ## Lever Arm and Timing
 
-Loose integration compares GNSS antenna motion against INS body motion. Those
-are not necessarily the same point on the vehicle.
+Loose integration compares GNSS antenna motion against INS body motion. Those are not necessarily the same point on the vehicle.
 
-If the lever arm from IMU to antenna is $\boldsymbol{\ell}^b$, the antenna
-position prediction is
+If the lever arm from IMU to antenna is $\boldsymbol{\ell}^b$, the antenna position prediction is
 
-$$
-\mathbf{p}_{ant}
+$$\mathbf{p}_{ant}
 \approx
 \mathbf{p}_{INS}
-+ \mathbf{C}_b^n\boldsymbol{\ell}^b.
-$$
++ \mathbf{C}_b^n\boldsymbol{\ell}^b.$$
 
 The antenna velocity prediction includes rotational motion of the lever arm:
 
-$$
-\mathbf{v}_{ant}^n
+$$\mathbf{v}_{ant}^n
 \approx
 \mathbf{v}_{INS}^n
 + \mathbf{C}_b^n
 \left(
 \boldsymbol{\omega}_{nb}^b \times \boldsymbol{\ell}^b
-\right).
-$$
+\right).$$
 
-For slow ground robots with a short lever arm, this may be negligible. For aircraft,
-marine systems, or aggressive vehicle motion, it is not.
+For slow ground robots with a short lever arm, this may be negligible. For aircraft, marine systems, or aggressive vehicle motion, it is not.
 
-Timing is equally important. A GNSS measurement should be compared with the INS
-state at the GNSS measurement time, not at the time the packet is processed. If the
-measurement is delayed, interpolate or buffer the INS state. A 100 ms timing error
-at 30 m/s creates a 3 m position innovation before sensor noise even enters the
-conversation.
+Timing is equally important. A GNSS measurement should be compared with the INS state at the GNSS measurement time, not at the time the packet is processed. If the measurement is delayed, interpolate or buffer the INS state. A 100 ms timing error at 30 m/s creates a 3 m position innovation before sensor noise even enters the conversation.
 
 ## Practical Failure Modes
 
@@ -571,21 +437,14 @@ Most bad INS/GNSS implementations fail for ordinary reasons:
 - the covariance is updated with an unstable form;
 - the attitude reset is skipped or applied with the wrong sign.
 
-These are not glamorous failure modes, but they are the ones that waste time. Test
-stationary cases, straight-line motion, and short GNSS outages before trusting a
-complex trajectory.
+These are not glamorous failure modes, but they are the ones that waste time. Test stationary cases, straight-line motion, and short GNSS outages before trusting a complex trajectory.
 
 ## Summary
 
 Curved-Earth INS/GNSS integration has three moving parts:
 
-- **Strapdown propagation**: use corrected IMU measurements to update attitude,
-  velocity, and geodetic position in the local NED frame.
-- **Error-state filtering**: propagate small position, velocity, attitude, and bias
-  errors with a linearized model.
-- **Loose GNSS updates**: compare GNSS position/velocity against the INS
-  prediction at the correct time and inject the estimated error back into the
-  nominal state.
+- **Strapdown propagation**: use corrected IMU measurements to update attitude, velocity, and geodetic position in the local NED frame.
+- **Error-state filtering**: propagate small position, velocity, attitude, and bias errors with a linearized model.
+- **Loose GNSS updates**: compare GNSS position/velocity against the INS prediction at the correct time and inject the estimated error back into the nominal state.
 
-The next chapter focuses on the IMU errors that drive the process-noise model and
-determine how quickly the INS drifts when GNSS is absent.
+The next chapter focuses on the IMU errors that drive the process-noise model and determine how quickly the INS drifts when GNSS is absent.
