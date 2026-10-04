@@ -128,7 +128,9 @@ def gnss_velocity_residual(
 
     ``z = [v_N, v_E]`` from speed and course (:meth:`GNSSSample.velocity_ne_mps`);
     the antenna moves at ``v + C_hat (omega_ib^b x l^b)`` (Earth-rate term
-    neglected). Only needed for the velocity-aiding extension.
+    neglected). With a lever arm, ``H`` has velocity, attitude, and gyro-bias
+    columns (the corrected rate ``omega_ib^b = gyro - b_g`` depends on the bias).
+    Only needed for the velocity-aiding extension.
     """
     raise NotImplementedError("Extension: implement gnss_velocity_residual(state, gnss, lever_arm_b, gyro_rps).")
 

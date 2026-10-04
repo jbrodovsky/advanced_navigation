@@ -167,7 +167,11 @@ def gnss_only_track(gnss_samples: Sequence[GNSSSample], t_query: np.ndarray, *, 
             else:
                 w = (tq - t[k]) / (t[k + 1] - t[k])
                 lat[i] = (1 - w) * data["latitude_rad"][k] + w * data["latitude_rad"][k + 1]
-                lon[i] = (1 - w) * data["longitude_rad"][k] + w * data["longitude_rad"][k + 1]
+                # Interpolate the wrapped longitude difference so a pair of fixes
+                # straddling the antimeridian takes the short way around.
+                lon_k = data["longitude_rad"][k]
+                d_lon = (data["longitude_rad"][k + 1] - lon_k + np.pi) % (2.0 * np.pi) - np.pi
+                lon[i] = (lon_k + w * d_lon + np.pi) % (2.0 * np.pi) - np.pi
                 h[i] = (1 - w) * data["altitude_m"][k] + w * data["altitude_m"][k + 1]
             continue
         lat[i], lon[i], h[i] = _extrapolate(gnss_samples[k], tq - t[k])

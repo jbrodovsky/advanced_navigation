@@ -12,7 +12,8 @@ must pass. Among them are the numerical checks of every sign: ``F`` against a
 finite-difference Jacobian of the mechanization, ``H`` (with a lever arm)
 against finite differences of the residual, and the reset Jacobian against
 the exact attitude reset. A skip in this run therefore means missing data,
-not a stub.
+not a stub. ``test_starter_stubs.py`` (instructor only) additionally checks that
+the starter source files still raise ``NotImplementedError``.
 """
 
 from __future__ import annotations
@@ -33,7 +34,10 @@ def main(argv: list[str]) -> int:
     for name in install():
         print(f"patched {name}")
     tests = REPO_ROOT / "projects" / "ins_gnss" / "tests"
-    return pytest.main([str(tests), "-ra", "-p", "no:cacheprovider", "--rootdir", str(REPO_ROOT), *argv])
+    starter_check = HERE / "test_starter_stubs.py"  # the shipped starter must still be stubs
+    return pytest.main(
+        [str(tests), str(starter_check), "-ra", "-p", "no:cacheprovider", "--rootdir", str(REPO_ROOT), *argv]
+    )
 
 
 if __name__ == "__main__":

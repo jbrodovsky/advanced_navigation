@@ -74,6 +74,9 @@ def gnss_velocity_residual(state: NavState, gnss: GNSSSample, lever_arm_b: np.nd
     H = np.zeros((2, STATE_DIM))
     H[:, VEL] = np.eye(3)[:2]
     H[:, ATT] = -skew(lever_velocity_n)[:2]
+    # The lever-arm velocity uses the bias-corrected gyro rate, so it depends on
+    # the gyro bias: d(C (w x l))/d(db_g) = C [l]_x.
+    H[:, GYRO_BIAS] = (C @ skew(np.asarray(lever_arm_b, dtype=np.float64)))[:2]
     return nu, H
 
 
