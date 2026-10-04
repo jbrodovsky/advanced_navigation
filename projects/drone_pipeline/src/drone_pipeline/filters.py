@@ -32,7 +32,7 @@ resampling. ``run_all`` summarizes these keys.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from typing import Any
 
 import numpy as np
@@ -73,6 +73,7 @@ class EKFNavigator:
     P0: np.ndarray
     Q: np.ndarray
     R: np.ndarray
+    _: KW_ONLY
     params: PropagationParams = field(default_factory=PropagationParams)
     nis_gate: float | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
@@ -109,17 +110,19 @@ class UKFNavigator:
     """Unscented Kalman filter on the 15-state model.
 
     Same parameters as :class:`EKFNavigator`, plus the scaled unscented
-    transform parameters ``alpha``, ``beta`` and ``kappa``.
+    transform parameters ``alpha``, ``beta`` and ``kappa`` (positional after
+    ``R``). ``params`` and ``nis_gate`` are keyword-only.
     """
 
     initial_state: np.ndarray
     P0: np.ndarray
     Q: np.ndarray
     R: np.ndarray
-    params: PropagationParams = field(default_factory=PropagationParams)
     alpha: float = 1e-3
     beta: float = 2.0
     kappa: float = 0.0
+    _: KW_ONLY
+    params: PropagationParams = field(default_factory=PropagationParams)
     nis_gate: float | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
     x: np.ndarray = field(init=False, repr=False)
@@ -161,24 +164,29 @@ class ParticleFilterNavigator:
         PnP pose.
     Q, R:
         Process-noise density (15, 15) and measurement covariance (6, 6).
-    params:
-        Propagation constants.
     weights:
         Optional initial weights (N,); uniform when ``None``. Holds the live,
         normalized weights after construction.
+    params:
+        Propagation constants (keyword-only, like the options below).
     resample_threshold:
         Resample when ``n_eff < resample_threshold * N``.
     seed:
         Seed for ``rng`` so runs are reproducible.
+    nis_gate:
+        Reject an update whose NIS exceeds this value, exactly as for the
+        Kalman filters. ``None`` disables gating.
     """
 
     initial_particles: np.ndarray
     Q: np.ndarray
     R: np.ndarray
-    params: PropagationParams = field(default_factory=PropagationParams)
     weights: np.ndarray | None = None
+    _: KW_ONLY
+    params: PropagationParams = field(default_factory=PropagationParams)
     resample_threshold: float = 0.5
     seed: int = 0
+    nis_gate: float | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
     particles: np.ndarray = field(init=False, repr=False)
     rng: np.random.Generator = field(init=False, repr=False)
@@ -237,10 +245,16 @@ class ParticleFilterNavigator:
         raise NotImplementedError("Part C: implement the particle-filter prediction step")
 
     def update(self, z: np.ndarray) -> bool:
-        """Reweight with the PnP likelihood (in log space).
+        """Gate, then reweight with the PnP likelihood (in log space).
 
-        Do not resample here: the caller records the point estimates first and
-        then calls :meth:`resample_if_needed`. Log ``"n_eff"`` in ``history``.
+        First compute the NIS from the *prior* (before reweighting): the
+        weighted mean ``z_hat`` and covariance of the predicted measurements
+        ``h(x_i)`` plus ``R`` give ``S``, and ``nu = z - z_hat`` with angles
+        wrapped. If ``nis_gate`` is set and the NIS exceeds it, log the update
+        as rejected and return False without touching the weights. Otherwise
+        reweight and return True. Do not resample here: the caller records the
+        point estimates first and then calls :meth:`resample_if_needed`. Log
+        ``"nis"``, ``"accepted"`` and ``"n_eff"`` in ``history``.
         """
         raise NotImplementedError("Part C: implement the particle-filter update step")
 

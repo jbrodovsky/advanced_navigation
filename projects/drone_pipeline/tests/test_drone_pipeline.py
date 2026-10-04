@@ -23,7 +23,7 @@ import cv2
 import numpy as np
 from scipy.io import savemat
 
-from drone_pipeline import filters, mechanization, observation
+from drone_pipeline import evaluation, filters, mechanization, observation
 from drone_pipeline.config import CAMERA_MATRIX, DIST_COEFFS, TAG_IDS
 from drone_pipeline.data_paths import DATA_ENV_VAR, DatasetNotFoundError, find_dataset_dir
 from drone_pipeline.datasets import (
@@ -257,6 +257,8 @@ class ParameterFileTests(unittest.TestCase):
         broken = {
             "Distortion": PARAMETERS_FIXTURE.replace("% Distortion parameters", "% Lens"),
             "Yaw": PARAMETERS_FIXTURE.replace("Yaw = pi/4;", "Yaw = import os;"),
+            "Yaw ": PARAMETERS_FIXTURE.replace("Yaw = pi/4;", "Yaw = 1/0;"),
+            "Yaw  ": PARAMETERS_FIXTURE.replace("Yaw = pi/4;", "Yaw = 1e308*10;"),
             "XYZ": PARAMETERS_FIXTURE.replace("XYZ = [-0.04, 0.0, -0.03];", "XYZ = [-0.04, 0.0];"),
             "Camera Matrix": PARAMETERS_FIXTURE.replace("0         0         1];", "0 0];"),
         }
@@ -264,7 +266,7 @@ class ParameterFileTests(unittest.TestCase):
             with self.subTest(item=item):
                 with self.assertRaises(ParameterFileError) as caught:
                     parse_drone_parameters(text, source="fixture.txt")
-                self.assertIn(item, str(caught.exception))
+                self.assertIn(item.strip(), str(caught.exception))
                 self.assertIn("fixture.txt", str(caught.exception))
 
 
@@ -543,12 +545,68 @@ class PartCTests(unittest.TestCase):
         np.testing.assert_allclose(nav.weights, 1.0 / 2000)
         self.assertEqual(nav.particles.shape, (2000, 15))
 
+    def test_constructors_keep_their_positional_order(self) -> None:
+        ukf = filters.UKFNavigator(_state(), P0_TEST, Q_TEST, R_TEST, 0.5)
+        self.assertEqual(ukf.alpha, 0.5)
+        particles = np.tile(_state(), (4, 1))
+        weights = np.array([1.0, 2.0, 3.0, 4.0])
+        pf = filters.ParticleFilterNavigator(particles, Q_TEST, R_TEST, weights)
+        np.testing.assert_allclose(pf.weights, weights / weights.sum())
+        with self.assertRaises(TypeError):  # new options are keyword-only
+            filters.EKFNavigator(_state(), P0_TEST, Q_TEST, R_TEST, mechanization.PropagationParams())
+
+    def test_particle_filter_gate_leaves_weights_untouched(self) -> None:
+        rng = np.random.default_rng(5)
+        particles = rng.multivariate_normal(_state(), P0_TEST, size=500)
+        nav = filters.ParticleFilterNavigator(particles, Q_TEST, R_TEST, nis_gate=22.46)
+        before = nav.weights.copy()
+        accepted = call_or_skip(self, nav.update, Z_OFFSET + np.array([5.0, 0, 0, 0, 0, 0]))
+        self.assertFalse(accepted)
+        np.testing.assert_array_equal(nav.weights, before)
+        self.assertFalse(nav.history[-1]["accepted"])
+
+    def test_particle_filter_nis_uses_the_prior(self) -> None:
+        rng = np.random.default_rng(6)
+        particles = rng.multivariate_normal(_state(), P0_TEST, size=400)
+        nav = filters.ParticleFilterNavigator(particles, Q_TEST, R_TEST)
+        z = Z_OFFSET
+        # Expected prior NIS: weighted (uniform) predicted-measurement mean and covariance plus R.
+        Z = particles[:, :6]
+        w = np.full(len(Z), 1.0 / len(Z))
+        z_hat = w @ Z
+        z_hat[3:6] = np.arctan2(w @ np.sin(Z[:, 3:6]), w @ np.cos(Z[:, 3:6]))
+        dz = Z - z_hat
+        dz[:, 3:6] = wrap_angles(dz[:, 3:6])
+        S = (w[:, None] * dz).T @ dz + R_TEST
+        nu = z - z_hat
+        nu[3:6] = wrap_angles(nu[3:6])
+        expected = float(nu @ np.linalg.solve(S, nu))
+        call_or_skip(self, nav.update, z)
+        self.assertAlmostEqual(nav.history[-1]["nis"], expected, places=6)
+
     def test_particle_mean_is_angle_aware(self) -> None:
         particles = np.tile(_state(), (4, 1))
         particles[:, 5] = [np.pi - 0.1, -np.pi + 0.1, np.pi - 0.05, -np.pi + 0.05]
         nav = filters.ParticleFilterNavigator(particles, Q_TEST, R_TEST)
         yaw = call_or_skip(self, nav.estimate, "mean")[5]
         self.assertAlmostEqual(abs(yaw), np.pi, places=6)
+
+
+class EvaluationTests(unittest.TestCase):
+    def test_nees_is_infinite_for_error_outside_a_singular_covariance(self) -> None:
+        errors = np.zeros((2, 9))
+        errors[0, 0] = 0.5  # error in a direction the filter claims to know exactly
+        covariances = np.zeros((2, 15, 15))
+        covariances[1, :9, :9] = np.eye(9)
+        errors[1, :3] = 1.0
+        values = evaluation.nees(errors, covariances)
+        self.assertTrue(np.isinf(values[0]))
+        self.assertAlmostEqual(float(values[1]), 3.0)
+
+    def test_fraction_inside_counts_infinities_as_outside(self) -> None:
+        low, high = evaluation.chi2_interval(6)
+        values = np.array([0.5 * (low + high), np.inf, np.nan])
+        self.assertAlmostEqual(evaluation.fraction_inside(values, 6), 0.5)
 
 
 # ---------------------------------------------------------------------------
