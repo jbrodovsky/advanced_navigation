@@ -176,7 +176,7 @@ const chapters = [
     source: "book/chapters/06-practical/practical-implementation-guide.qmd",
   },
   {
-    part: "Advanced Topics", number: "28", title: "Advanced Navigation Topics",
+    part: "Advanced Topics", number: "28", title: "Factor Graphs, Manifolds, and Modern Back-ends",
     prompt: "What lies beyond the core course?",
     bullets: ["Factor graphs, visual-inertial methods, and resilient navigation", "Hybrid and learning-based methods extend the same foundations", "Read research by checking assumptions and evidence"],
     source: "book/chapters/07-adv/advanced-slam.qmd",
@@ -191,7 +191,7 @@ const chapters = [
     part: "Advanced Topics", number: "30", title: "Navigation System Integration Case Study",
     prompt: "What must a deployed estimator promise?",
     bullets: ["Separate transport, calibration, estimation, health, and logging", "Update at measurement time, not arrival time", "Publish state with uncertainty, validity time, and mode"],
-    source: "book/chapters/07-adv/system-integration.qmd",
+    source: "book/chapters/06-practical/practical-implementation-guide.qmd",
   },
   {
     part: "Technical Reference", number: "31", title: "Mathematical Reference and Derivations",

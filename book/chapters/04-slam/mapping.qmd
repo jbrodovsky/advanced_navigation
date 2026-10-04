@@ -2,6 +2,10 @@
 
 Mapping is the part of navigation where sensor measurements become a representation of the world. In localization, the map is assumed known and the question is "where am I?" In mapping, the trajectory is assumed known well enough and the question is "what is around me?" In SLAM, both questions are asked at the same time, which is exactly why life gets interesting.
 
+::: {.callout-note title="Where this sits in the stack"}
+Maps sit on both sides of navigation's contract with the rest of the stack (@sec-gnc-autonomy-stack). As an output, a map is what guidance and planning consume: an occupancy grid to plan around obstacles, a landmark map to decide where to go and what to look for. As an input, a map is what localization measures against, the modern version of a pilot's chart. SLAM couples the two, so errors in the trajectory become errors in the map, and errors in the map become errors in the next pose. That coupling is why the SLAM chapters care so much about consistency, data association, and loop closure.
+:::
+
 This chapter keeps two map representations in view. **Occupancy grids** carve the world into cells and are what a planner wants for obstacle avoidance. **Landmark maps** keep a short list of distinctive features and are what the Victoria Park FastSLAM project uses (@sec-project2). The second half of the chapter is about that dataset: how its laser is decoded, where its sensors sit on the vehicle, and how a scan becomes a list of tree trunks. None of that is glamorous, and all of it decides whether the SLAM back end in @sec-slam has a chance.
 
 ```{python}

@@ -98,7 +98,6 @@ book:
       chapters:
         - chapters/07-adv/advanced-slam.qmd
         - chapters/07-adv/adv-gnss.qmd
-        - chapters/07-adv/system-integration.qmd
     - part: "Technical Reference (Optional)"
       chapters:
         - chapters/01-foundations/mathematical-reference.qmd

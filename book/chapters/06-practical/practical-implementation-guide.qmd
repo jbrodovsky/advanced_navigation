@@ -1,8 +1,22 @@
-# Practical Implementation Guide {#sec-practical}
+# From Prototype to Vehicle: Navigation System Integration {#sec-practical}
 
-The projects in this course are mostly written in Python and usually run against recorded data. That is the right place to learn the math. It is also not the same thing as putting an inertial navigation system on a real vehicle.
+The projects in this course are mostly written in Python and usually run against
+recorded data. That is the right place to learn the math. It is also not the same
+thing as putting an inertial navigation system on a real vehicle, where the sensors
+disagree about what time it is, the controller has strong opinions about
+smoothness, and the field has opinions about everything else.
 
-This chapter is a field guide for that gap. The topics here are not meant to add a new assignment requirement. They are meant to help you recognize the engineering problems that appear when a navigation algorithm leaves the notebook, talks to real sensors, runs under timing constraints, and feeds an autonomous vehicle.
+This chapter is a field guide for that gap, and the place where the pieces of the
+book meet the rest of the autonomy stack. @sec-gnc-autonomy-stack stated
+navigation's contract with that stack in outline. Upstream, navigation consumes
+timestamped sensor data, perception outputs turned into measurements with noise
+models, maps and priors, and calibration. Downstream, it owes guidance, planning,
+and control a state in named frames, an honest covariance, a time of validity and
+a latency, a known output rate, and a health report. Here we fill in the
+engineering behind each of those words. None of this adds a new assignment
+requirement. It is meant to help you recognize the problems that appear when a
+navigation algorithm leaves the notebook, talks to real sensors, runs under timing
+constraints, and feeds a vehicle that will act on what it says.
 
 The short version is this:
 
@@ -12,7 +26,14 @@ The short version is this:
 4. Then make it survive bad timing, bad measurements, and boring software mistakes.
 5. Only then should it be trusted by a controller.
 
-Skipping steps is a traditional way to create a very expensive random number generator.
+Skipping steps is a traditional way to create a very expensive random number
+generator.
+
+The chapter covers the package architecture and the calibration it depends on,
+the ROS 2 interfaces many robots will see it through, time and synchronization,
+the contract with control and planning, real-time and embedded concerns, testing,
+and the ways inertial systems and their integrations typically fail. A case study
+of a survey AUV then puts all of it on one vehicle.
 
 ## From Laptop Replay to Vehicle Software {#sec-practical-from-laptop-replay}
 
@@ -27,54 +48,611 @@ A useful navigation package usually moves through several stages.
 | Vehicle integration | Does the autonomy stack receive the right state at the right time? | Closed-loop tests and safety monitors |
 | Field validation | Does it fail honestly in realistic conditions? | Test reports across representative trajectories |
 
-The offline prototype answers a narrow question: "Can this estimator produce a reasonable answer when fed cleanly recorded data?" That is important, but deployed software has more contracts:
+: Stages of a navigation package. {#tbl-practical-stages}
 
-- every sensor sample must have a clear time of validity;
-- every state estimate must declare its coordinate frame and timestamp;
-- all calibration and tuning parameters must be recoverable from a log;
-- the estimator must handle missing, late, duplicated, and rejected measurements;
-- the vehicle must know whether the navigation state is healthy enough to use.
+The offline prototype answers a narrow question: can this estimator produce a
+reasonable answer when fed cleanly recorded data? That is important, but deployed
+software signs more contracts. Every sensor sample must have a clear time of
+validity. Every state estimate must declare its coordinate frame and timestamp.
+All calibration and tuning parameters must be recoverable from a log. The
+estimator must handle missing, late, duplicated, and rejected measurements. And
+the vehicle must be told whether the navigation state is healthy enough to use.
 
-The most important engineering habit is to keep replay alive. If a field test produces a bad result and you cannot replay the exact sensor stream, calibration, configuration, and estimator version, then you do not really have a debugging workflow. You have a story about what probably happened.
+The most important engineering habit is to keep replay alive. If a field test
+produces a bad result and you cannot replay the exact sensor stream, calibration,
+configuration, and estimator version, then you do not really have a debugging
+workflow. You have a story about what probably happened.
 
 ## Reference Architecture for a Navigation Package {#sec-practical-reference-architecture-navigation}
 
-A vehicle navigation package is more than an EKF loop. A practical layout looks something like this:
+A navigation package owns state estimation, measurement acceptance, health
+reporting, and reproducible logs. It does not need to own every sensor driver,
+planner, controller, or visualization client. Drawing that boundary carefully is
+what makes the estimator testable on recorded data, and it prevents a hardware
+interface from quietly becoming a mathematical assumption.
 
-```text
-sensor drivers
-    -> timestamp normalization
-    -> calibration and frame transforms
-    -> measurement queues
-    -> estimator core
-    -> health monitor
-    -> state publisher
-    -> logger and replay interface
+```{mermaid}
+%%| label: fig-practical-architecture
+%%| fig-cap: "A navigation package separates sensor transport, time and calibration adapters, the estimator core, health monitoring, and the published interface. Calibration enters from one versioned source, and the logger records enough to replay the whole chain."
+
+flowchart LR
+    S["Sensor drivers<br/>(acquisition clocks)"] --> T["Timestamp<br/>normalization"]
+    T --> A["Calibration and<br/>frame adapters"]
+    C["Calibration and<br/>configuration (one source)"] --> A
+    A --> Q["Event-time<br/>measurement queues"]
+    Q --> E["Estimator core:<br/>propagate, gate, update"]
+    C --> E
+    E --> H["Health monitor"]
+    E --> P["State publisher"]
+    H --> P
+    P --> G["Control, guidance,<br/>planning, operators"]
+    S --> L["Logger"]
+    E --> L
+    H --> L
+    L -. "deterministic replay" .-> T
 ```
 
-Each block should have a narrow responsibility.
+Each block in @fig-practical-architecture has a narrow responsibility. **Sensor
+drivers** read bytes from hardware or middleware and turn them into typed
+messages; they should not quietly apply estimator-specific assumptions such as a
+mounting rotation someone typed into the driver two years ago. **Timestamp
+normalization** converts hardware clocks, receiver clocks, and host clocks into
+one estimator time base (@sec-practical-time-sync). **Calibration and frame
+adapters** apply lever arms, mounting rotations, IMU axis conventions, camera
+intrinsics, and antenna offsets loaded from a calibration record, never from
+constants buried in source files (@sec-practical-calibration-configuration-frame).
+**Measurement queues** buffer asynchronous sensors so that the estimator can
+process each measurement at the time it describes instead of hoping that
+callbacks arrive in a convenient order.
 
-**Sensor drivers** read bytes from hardware or middleware and turn them into typed messages. They should not quietly apply estimator-specific assumptions.
+**The estimator core** is the part most closely related to the course
+mathematics, and it should be as platform-independent as practical. It takes
+calibrated, timestamped measurements with noise models and produces timestamped
+state, covariance, and diagnostics. It should not know whether a measurement came
+from a serial port, a ROS topic, a flight-controller bus, a recorded log, or a
+simulator. That separation is not aesthetic. It is what lets you test the math
+without the vehicle and test the vehicle plumbing without rewriting the math.
+**The health monitor** decides whether the solution is usable: it watches stale
+sensors, innovation statistics, covariance growth, rejection rates, numerical
+faults, and mode changes. **The state publisher** converts the estimator output
+into the interface its consumers expect, and it is where the latency, frame, and
+health contract becomes explicit (@sec-practical-controller-contract). **The
+logger** records raw sensor messages, calibrated measurements, states,
+covariances or selected covariance diagnostics, innovations, accept/reject
+decisions, configuration, calibration, software version, and estimator mode, so
+that any run can be replayed.
 
-**Timestamp normalization** converts hardware clocks, receiver clocks, and host clocks into one estimator time base. A GNSS receiver, camera, IMU, and onboard computer may not agree about time unless you force the issue.
+Every message crossing the estimator boundary needs more than a numeric payload.
 
-**Calibration and frame transforms** apply known lever arms, sensor mounting rotations, IMU axis conventions, camera intrinsics, and antenna offsets. These values belong in configuration files or calibration records, not buried in random source lines.
+| Contract | Required information | Typical failure if omitted |
+|---|---|---|
+| IMU sample | measurement time, sample interval, frame, units, saturation and validity flags | Incorrect propagation or silently missed samples |
+| Aiding measurement | measurement time, frame, covariance or quality, calibration version | Large innovations blamed on tuning |
+| State output | time of validity, frames, covariance, health and mode | Controller acts on a stale or overconfident state |
+| Configuration | extrinsics, time offsets, noise and gating settings, software version | Replay cannot explain field behavior |
 
-**Measurement queues** buffer asynchronous sensors. The estimator should be able to request the measurements needed for a specific time interval instead of hoping that callbacks arrive in a convenient order.
+: Data contracts at the estimator boundary. {#tbl-practical-data-contracts}
 
-**The estimator core** should be as platform-independent as practical. It should take calibrated, timestamped measurements as input and produce timestamped state, covariance, and health outputs. This is the part most closely related to the course mathematics.
+The sequencing inside the estimator is short enough to write as pseudocode. It
+names the ordering and ownership rules without pretending that a dozen lines
+replace an ESKF, an image front end, a GNSS receiver, or a SLAM backend.
 
-**The health monitor** decides whether the navigation solution is usable. It checks stale sensors, large innovations, covariance growth, rejected-measurement rates, NaNs, and mode changes.
+```text
+on IMU sample valid at event time t:
+    validate units, timestamp monotonicity, and saturation flags
+    propagate nominal state and error covariance from the previous IMU time to t
+    append state, covariance, and IMU increment to the rewind buffer
+    publish the current state (rate-decimated) with stamp t
 
-**The state publisher** converts the estimator output into the interface expected by guidance, planning, control, logging, or operator displays. This is where you make the latency and frame contract explicit.
+on aiding measurement valid at event time tm (arriving later):
+    reject if tm is outside the retained history or its frame/calibration is unknown
+    rewind to the buffered state at tm
+    predict the measurement; compute innovation and innovation covariance
+    gate with a chi-square test of the right dimension, plus sensor quality flags
+    if accepted:
+        update the error state, inject the correction, reset the error state
+        re-propagate the buffered IMU increments from tm to the present
+    log the decision, the innovation, its NIS, and the processing time
+```
 
-**The logger and replay interface** records enough information to reproduce the run. At minimum, log raw sensor messages, calibrated measurements, state estimates, covariances or selected covariance diagnostics, innovations, rejected measurements, configuration, calibration, software version, and estimator mode.
+For camera, lidar, or radar aiding, the expensive work (feature extraction,
+matching, scan registration) happens outside the estimator's critical section.
+The estimator receives a timestamped, calibrated observation with an uncertainty
+model; it does not hold the IMU propagation path hostage while a front end
+performs image matching.
 
-The estimator core should not need to know whether a measurement came from a serial port, ROS topic, flight controller bus, recorded log, or simulator. That separation is not aesthetic. It is what lets you test the math without the vehicle and test the vehicle plumbing without rewriting the math.
+## Calibration, Configuration, and Frame Ownership {#sec-practical-calibration-configuration-frame}
 
-## Time, Latency, and Delayed Measurements {#sec-practical-time-latency-delayed}
+Calibration is not a side quest. It is part of the estimator. A GNSS lever arm
+with the wrong sign hides in the position estimate, where the innovations cannot
+see it, until the vehicle turns, and then it quietly corrupts the attitude and
+bias estimates (Exercise 4 of @sec-ins-gnss-exercises). A camera-IMU rotation
+that is off by a degree turns every visual update into a slow, confident lie.
 
-Timing mistakes are one of the easiest ways to make a good estimator look bad. There are three different times that matter:
+### One source of truth
+
+The rule that saves the most grief is that every extrinsic, lever arm, mounting
+rotation, time offset, and noise parameter has exactly one authoritative home: a
+versioned calibration file that the estimator loads at startup and copies into
+every log. Anything else that needs those values, such as the ROS transform tree
+or a visualization tool, is generated from that file rather than maintained by
+hand beside it. Two copies of a lever arm will disagree eventually, and they will
+pick the day of the important field test to do it.
+
+```yaml
+# calibration/auv07.yaml: loaded by the estimator, logged with every run.
+calibration_id: auv07-2026-09-14-r3
+conventions: {nav: NED, body: FRD, quaternion: hamilton_wxyz, units: SI}
+imu:
+  C_imu_to_body: [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+  gyro_arw_rad_per_rt_s: 1.5e-6          # from an Allan deviation, not the brochure
+  accel_vrw_mps_per_rt_s: 3.0e-5
+dvl:
+  rpy_dvl_to_body_deg: [0.02, -0.11, 45.07]     # in-water calibration, run 2026-09-12
+  lever_arm_body_m: [0.82, 0.00, 0.31]          # FRD: ahead of and below the IMU
+  scale_factor: 1.0018
+  time_offset_s: 0.084        # t_valid = t_stamp - time_offset_s (stamped on arrival)
+gnss_antenna:
+  lever_arm_body_m: [-0.35, 0.00, -1.21]        # behind and above the IMU
+depth_sensor:
+  lever_arm_body_m: [1.10, 0.05, 0.12]
+  time_offset_s: 0.020
+```
+
+Notice the comment on `time_offset_s`. A time offset without a sign convention
+is a coin flip, and so is a rotation without a direction (is it sensor-to-body or
+body-to-sensor?). Write the convention next to the number, in the file, every
+time.
+
+### Frame conventions at every adapter
+
+Pick conventions and write them down: what the body frame is, whether the local
+navigation frame is NED or ENU, whether a stored rotation maps body to navigation
+or the reverse, whether quaternions are `[w, x, y, z]` or `[x, y, z, w]`, and
+whether latitude and longitude are radians internally. This book's answers are in
+@sec-frames-conventions. The convention itself matters less than consistency.
+Mixed conventions cause many navigation failures that look mysterious until
+someone draws the axes. A state that is NED at the estimator boundary and ENU at
+the controller boundary is perfectly acceptable, provided a named, tested
+conversion sits between them (@sec-practical-ros2-interfaces does exactly this
+for ROS).
+
+### Sensor calibrations
+
+**IMU.** Static calibration estimates turn-on biases, scale factors, and axis
+misalignments (the zero-rate and six-position tests of
+@sec-ins-errors-calibration-workflow). Stochastic characterization comes from an
+Allan deviation of hours of stationary data at constant temperature
+(@sec-ins-errors-allan-deviation), which gives the angle and velocity random walk
+and bias-instability numbers that become the filter's process noise. Use your
+own unit's Allan curve rather than the data sheet when you can; data sheets are
+measured on a quiet bench by people who would like you to buy the part. Residual
+biases are then estimated online as filter states. Static calibration finds the
+starting point; the filter tracks what is left.
+
+**Camera-IMU.** The rotation and translation between camera and IMU, and the time
+offset between their clocks, are usually estimated together by moving the rig
+in front of a calibration target with enough rotation about every axis to make
+all of them observable. Kalibr is the widely used open-source tool; it fits a
+continuous-time spline to the IMU data and target observations and estimates the
+extrinsics and the time offset jointly [@furgale2013kalibr]. Check the result by
+its reprojection error and its IMU residuals, not only by whether it converged.
+VIO systems such as OpenVINS and VINS-Mono can refine both the extrinsics and the
+time offset online [@geneva2020openvins; @qin2018vins], which helps but does not
+replace a good starting calibration.
+
+**Lidar.** Lidar-to-IMU or lidar-to-camera extrinsics come from target-based
+calibration or from hand-eye calibration, which compares the motion each sensor
+observes during a sequence of rotations. A spinning lidar also needs
+**deskewing**: a 10 Hz scan takes 100 ms to collect, so a vehicle at 2 m/s moves
+20 cm during one sweep, and at 30°/s of yaw a point 20 m away is smeared by about
+a meter. Each point carries its own firing time, and deskewing transforms every
+point into the frame of one reference time using the IMU-propagated pose at that
+point's time. It is a timing problem disguised as a geometry problem, so it is
+only as good as the lidar-IMU clock synchronization.
+
+**Magnetometer.** A magnetometer on a vehicle measures the Earth's field plus the
+vehicle's own: a constant **hard-iron** offset from magnetized parts and a
+**soft-iron** distortion from ferrous material that bends the field
+(@sec-measurement-models-navigation-sensors). Rotating the vehicle through many
+orientations traces the measurements out on an ellipsoid instead of a sphere;
+fitting that ellipsoid gives the offset (its center) and the distortion matrix
+(its shape). The calibration has to be done with the vehicle assembled and its
+motors and payload powered, and redone whenever they change. Mariners have done
+the same thing for centuries by swinging the ship to build a deviation card.
+
+## ROS 2 Interfaces for a Navigation Node {#sec-practical-ros2-interfaces}
+
+Many robots will see your estimator through ROS 2, the de facto middleware for
+research robots and a good share of commercial ones [@macenski2022ros2]. Aircraft
+and ships more often use avionics buses, CAN, NMEA 2000, or MAVLink, but the
+interface questions are the same everywhere: which frames, which time, which
+covariance, and which health signal. ROS answers some of them by convention, and
+those conventions differ from this book's.
+
+### REP-103 and REP-105
+
+**REP-103** fixes units and axes [@rep103]. Units are SI: meters, seconds,
+radians. Frames are right-handed. Body frames are x forward, y left, z up (FLU),
+and world frames for geographic locations are east-north-up (ENU). Rotations are
+preferably quaternions, and a ROS quaternion message stores its components as
+`x, y, z, w`, scalar **last**. REP-103 does allow an NED frame where it is
+genuinely wanted, as a separate frame with an `_ned` suffix, and camera frames
+use the optical convention with an `_optical` suffix. The book's state is NED and
+FRD with a scalar-first Hamilton quaternion, so every ROS boundary needs an
+explicit conversion. Note that nose-up pitch is *negative* in FLU, because a
+positive rotation about a left-pointing y axis lowers the nose. That fact has
+launched a thousand sign bugs.
+
+**REP-105** names the frames of a mobile platform and, more importantly, states
+what each one guarantees [@rep105]. `base_link` is rigidly attached to the
+vehicle. `odom` is a world-fixed frame in which the vehicle's pose is
+**continuous**, with no jumps, but drifts without bound: it is an accurate
+short-term local reference. `map` is a world-fixed frame in which the pose is
+**globally consistent** and does not drift, but may **jump** discretely when an
+absolute measurement (a GNSS fix, a loop closure, a map match) arrives. `earth`
+is ECEF, used when several maps or robots must share one origin. The transform
+tree is a chain, `earth` to `map` to `odom` to `base_link`. The odometry source
+publishes `odom` to `base_link`; the global localizer computes and publishes
+`map` to `odom`, which is whatever correction makes the chain agree with its
+estimate of the pose in `map`. That split is the standard answer to the
+controller's need for smoothness versus the planner's need for consistency, and
+@sec-practical-controller-contract uses it.
+
+### The messages a navigation node speaks
+
+**`nav_msgs/Odometry`** carries the estimator's main output. Its
+`header.stamp` is the time at which the state is valid (not the time the message
+was built), `header.frame_id` names the frame of the pose (usually `odom` or
+`map`), and `child_frame_id` names the body frame (usually `base_link`). The pose
+is a position and quaternion in `frame_id` with a 6×6 covariance, and the twist
+is a linear and angular velocity **in `child_frame_id`**, the body frame, with its
+own 6×6 covariance. Both covariances are flattened into 36-element arrays in
+row-major order, with variables ordered x, y, z, rotation about x, rotation about
+y, rotation about z. The message comment specifies the rotations as fixed-axis
+rotations about the parent frame's axes, which matches this book's attitude error
+resolved in the navigation frame. Many consumers treat those three entries as
+roll, pitch, and yaw variances; for small errors on a near-level vehicle the two
+readings agree. Pose-twist cross-covariances have nowhere to go and are lost.
+
+**`sensor_msgs/Imu`** carries an orientation, an angular velocity, and a linear
+acceleration, each with a 3×3 covariance, in the IMU's FLU frame. The
+acceleration is specific force, gravity included, so a level IMU at rest reports
+about +9.81 m/s² on z (the ROS IMU-driver conventions in REP-145 spell this
+out); the book's FRD accelerometer reports −9.81 m/s² on its down axis, which is
+the same physics. Setting the first element of a covariance to −1 means "this
+field is not provided," and an all-zero covariance means "unknown," not "perfect."
+A consumer that reads zeros as perfect certainty will trust that field
+completely, which is the opposite of what the publisher meant.
+
+**`sensor_msgs/NavSatFix`** carries latitude and longitude in **degrees**,
+altitude in meters above the WGS-84 **ellipsoid**, a 3×3 position covariance in
+an ENU tangent plane, a covariance-type flag (unknown, approximated, diagonal
+known, known), and a status (no fix, fix, SBAS, GBAS). Each of those is a
+conversion: radians internally, ellipsoidal versus orthometric height
+(@sec-frames-earth-frames; some drivers pass through the receiver's sea-level
+altitude anyway), and ENU to NED for the covariance.
+
+### Converting the book's state to ROS
+
+The two constant frame swaps from @sec-frames-earth-frames do all the work:
+
+$$
+\begin{aligned}
+\mathbf{C}_{\text{NED}}^{\text{ENU}} &=
+\begin{bmatrix} 0 & 1 & 0 \\ 1 & 0 & 0 \\ 0 & 0 & -1 \end{bmatrix}, \\
+\mathbf{C}_{\text{FRD}}^{\text{FLU}} &= \operatorname{diag}(1, -1, -1).
+\end{aligned}
+$$
+
+Both are proper rotations and their own inverses. Position, orientation, and the
+body-frame twist convert as
+
+$$
+\begin{aligned}
+\mathbf{p}^{\text{ENU}} &= \mathbf{C}_{\text{NED}}^{\text{ENU}}\,\mathbf{p}^{\text{NED}}, \\
+\mathbf{C}_{\text{FLU}}^{\text{ENU}} &= \mathbf{C}_{\text{NED}}^{\text{ENU}}\,\mathbf{C}_b^n\,\mathbf{C}_{\text{FLU}}^{\text{FRD}}, \\
+\mathbf{v}^{\text{FLU}} &= \mathbf{C}_{\text{FRD}}^{\text{FLU}}\,\mathbf{C}_n^b\,\mathbf{v}^n, \\
+\boldsymbol{\omega}^{\text{FLU}} &= \mathbf{C}_{\text{FRD}}^{\text{FLU}}\,\boldsymbol{\omega}_{nb}^b,
+\end{aligned}
+$$ {#eq-practical-ros-conversion}
+
+and the ROS quaternion is the one for $\mathbf{C}_{\text{FLU}}^{\text{ENU}}$,
+written in `x, y, z, w` order. Covariances follow the same rotations, applied to
+the error vectors. The position error rotates with
+$\mathbf{C}_{\text{NED}}^{\text{ENU}}$. The attitude error is resolved in the
+navigation frame, $\mathbf{C}_b^n \approx (\mathbf{I} +
+[\delta\boldsymbol{\theta}]_\times)\hat{\mathbf{C}}_b^n$, so it also rotates with
+$\mathbf{C}_{\text{NED}}^{\text{ENU}}$; the body swap never touches it. The twist
+is subtler, because the body-frame velocity depends on attitude. Linearizing
+$\mathbf{v}^b = \mathbf{C}_n^b\mathbf{v}^n$ around the estimate gives
+
+$$
+\delta\mathbf{v}^{\text{FLU}} \approx
+\mathbf{C}_{\text{FRD}}^{\text{FLU}}\,\hat{\mathbf{C}}_n^b
+\left(\delta\mathbf{v}^n + [\hat{\mathbf{v}}^n]_\times\,\delta\boldsymbol{\theta}\right),
+$$ {#eq-practical-twist-error}
+
+so a heading uncertainty leaks into the sideways body velocity in proportion to
+speed. Rotating only the velocity block misses that term. Stacking these maps
+into a matrix $\mathbf{J}$ from the 15-state ESKF error of
+@sec-ins-gnss-error-state-formulation gives each ROS covariance as
+$\mathbf{J}\mathbf{P}\mathbf{J}^T$. The cell below does the conversion and then
+checks it twice: against known geometry, and against a Monte Carlo that perturbs
+the truth, converts every sample, and measures the spread directly.
+
+```{python}
+#| label: practical-ros-conversion
+
+import numpy as np
+from scipy.spatial.transform import Rotation
+
+# Constant frame swaps. Both are proper rotations (det = +1) and their own inverses.
+C_NED_TO_ENU = np.array([[0.0, 1.0, 0.0],
+                         [1.0, 0.0, 0.0],
+                         [0.0, 0.0, -1.0]])
+C_FRD_TO_FLU = np.diag([1.0, -1.0, -1.0])
+
+
+def skew(a):
+    """[a]_x, so that skew(a) @ b == np.cross(a, b)."""
+    return np.array([[0.0, -a[2], a[1]],
+                     [a[2], 0.0, -a[0]],
+                     [-a[1], a[0], 0.0]])
+
+
+def wxyz_to_matrix(q_wxyz):
+    """Hamilton scalar-first quaternion (the book's convention) -> rotation matrix."""
+    w, x, y, z = q_wxyz
+    return Rotation.from_quat([x, y, z, w]).as_matrix()   # SciPy is scalar-last
+
+
+def to_ros_odometry(p_ned, v_ned, q_bn_wxyz, omega_nb_frd, P15):
+    """Convert the book's NED/FRD ESKF output to nav_msgs/Odometry conventions.
+
+    P15 is the ESKF error covariance ordered [dp, dv, dtheta, dba, dbg], with dp and
+    dv in NED meters and m/s and dtheta resolved in NED (errors are true minus
+    estimate). Returns the ENU position, the scalar-LAST quaternion of FLU relative
+    to ENU, the FLU twist, and both 6x6 covariances flattened row-major.
+    """
+    T, B = C_NED_TO_ENU, C_FRD_TO_FLU
+    C_bn = wxyz_to_matrix(q_bn_wxyz)
+    C_nb = C_bn.T
+    C_flu_enu = T @ C_bn @ B                     # B is its own inverse
+
+    # Linear maps from the 15 error states to the ROS error vectors.
+    J_pose = np.zeros((6, 15))
+    J_pose[0:3, 0:3] = T                         # position error, ENU
+    J_pose[3:6, 6:9] = T                         # attitude error, ENU-resolved
+    J_twist = np.zeros((6, 15))
+    J_twist[0:3, 3:6] = B @ C_nb                 # velocity error, rotated into the body
+    J_twist[0:3, 6:9] = B @ C_nb @ skew(v_ned)   # attitude error leaks into body velocity
+    J_twist[3:6, 12:15] = -B                     # rate error is minus the gyro-bias error
+
+    return {
+        "position": T @ p_ned,
+        "orientation_xyzw": Rotation.from_matrix(C_flu_enu).as_quat(),
+        "linear": B @ C_nb @ v_ned,              # twist is in child_frame_id (the body)
+        "angular": B @ omega_nb_frd,
+        "pose_covariance": (J_pose @ P15 @ J_pose.T).reshape(36).tolist(),    # row-major
+        "twist_covariance": (J_twist @ P15 @ J_twist.T).reshape(36).tolist(),
+    }
+
+
+# A vehicle 120 m north, 40 m east, 15 m down; heading 030, 5 deg nose up, 2 deg roll,
+# making 2 m/s straight ahead and turning right at 3 deg/s.
+yaw, pitch, roll = np.deg2rad([30.0, 5.0, 2.0])
+x, y, z, w = Rotation.from_euler("ZYX", [yaw, pitch, roll]).as_quat()
+q_bn = np.array([w, x, y, z])                    # book convention: scalar first
+C_bn = wxyz_to_matrix(q_bn)
+p_ned = np.array([120.0, 40.0, 15.0])
+v_ned = C_bn @ np.array([2.0, 0.0, 0.0])
+omega_nb = np.deg2rad([0.0, 0.0, 3.0])
+
+# A correlated 15-state covariance: ~1 m position, 3 cm/s velocity, 0.1 deg tilt,
+# 1 deg heading, plus bias uncertainties.
+rng = np.random.default_rng(103)
+sigmas = np.r_[1.0, 1.2, 0.3, 0.03, 0.03, 0.02, np.deg2rad([0.1, 0.1, 1.0]),
+               1e-3 * np.ones(3), np.deg2rad(0.05) * np.ones(3)]
+G = np.eye(15) + 0.25 * rng.standard_normal((15, 15))
+corr = G @ G.T
+corr /= np.sqrt(np.outer(np.diag(corr), np.diag(corr)))
+P15 = sigmas[:, None] * corr * sigmas[None, :]
+
+ros = to_ros_odometry(p_ned, v_ned, q_bn, omega_nb, P15)
+
+# Check 1, geometry: ROS yaw is counterclockwise from east, nose-up pitch is negative.
+ypr = Rotation.from_quat(ros["orientation_xyzw"]).as_euler("ZYX", degrees=True)
+np.testing.assert_allclose(ypr, [90.0 - 30.0, -5.0, 2.0], atol=1e-9)
+np.testing.assert_allclose(ros["position"], [40.0, 120.0, -15.0])
+np.testing.assert_allclose(ros["linear"], [2.0, 0.0, 0.0], atol=1e-12)
+# A level accelerometer at rest: FRD reads -g on z, FLU (sensor_msgs/Imu) reads +g.
+np.testing.assert_allclose(C_FRD_TO_FLU @ [0.0, 0.0, -9.81], [0.0, 0.0, 9.81])
+
+# Check 2, Monte Carlo: perturb the truth with samples of P15, convert, measure spread.
+n_mc = 20_000
+dx = rng.standard_normal((n_mc, 15)) @ np.linalg.cholesky(P15).T
+C_true = Rotation.from_rotvec(dx[:, 6:9]) * Rotation.from_matrix(C_bn)   # Exp(dtheta) C_hat
+to_enu, flu_frd = Rotation.from_matrix(C_NED_TO_ENU), Rotation.from_matrix(C_FRD_TO_FLU)
+C_true_ros = to_enu * C_true * flu_frd
+C_est_ros = Rotation.from_quat(ros["orientation_xyzw"])
+err_pose = np.hstack([dx[:, 0:3] @ C_NED_TO_ENU.T,
+                      (C_true_ros * C_est_ros.inv()).as_rotvec()])
+v_true_flu = C_true.inv().apply(v_ned + dx[:, 3:6]) @ C_FRD_TO_FLU.T
+err_twist = np.hstack([v_true_flu - ros["linear"], -dx[:, 12:15] @ C_FRD_TO_FLU.T])
+
+for name, err in [("pose", err_pose), ("twist", err_twist)]:
+    cov = np.array(ros[f"{name}_covariance"]).reshape(6, 6)
+    s = np.sqrt(np.diag(cov))
+    mismatch = np.max(np.abs(np.cov(err.T) - cov) / np.outer(s, s))
+    print(f"{name:5s} covariance: worst normalized Monte Carlo mismatch {mismatch:.3f}")
+    assert mismatch < 0.04
+
+B_C = C_FRD_TO_FLU @ C_bn.T
+naive = B_C @ P15[3:6, 3:6] @ B_C.T
+full = np.array(ros["twist_covariance"]).reshape(6, 6)
+print(f"sideways body-velocity sigma, velocity block rotated only: {np.sqrt(naive[1, 1]):.3f} m/s")
+print(f"sideways body-velocity sigma, with the attitude term:      {np.sqrt(full[1, 1]):.3f} m/s")
+print("ROS orientation (x, y, z, w):", np.round(ros["orientation_xyzw"], 4))
+```
+
+The geometry checks are the ones worth memorizing: heading 030 in NED is yaw 60°
+in ENU, 5° nose up is −5° of ROS pitch, and the 2 m/s forward velocity stays
+forward. The Monte Carlo agrees with the linearized covariances to within its
+own sampling noise. The last two lines show why the attitude term in
+@eq-practical-twist-error matters: with a 1° heading uncertainty at 2 m/s, the
+honest sideways velocity uncertainty is about twice what rotating the velocity
+block alone would claim. A DVL-aided vehicle that publishes the smaller number is
+overconfident in exactly the direction a cross-track controller cares about.
+
+### Transforms, synchronization, logging, and simulated time
+
+**tf2** maintains the transform tree as a time-indexed buffer. A consumer asks
+for the transform between two frames *at a particular time*, normally the stamp
+of the measurement it is processing, and tf2 interpolates between the stamped
+transforms it has (linearly for translation, spherically for rotation). Asking
+for a time newer than the latest transform raises an extrapolation error, which
+is tf2's way of telling you that you are about to commit a latency bug. Fixed
+extrinsics go on `/tf_static`, published once, and they should be generated from
+the calibration file rather than typed into a launch file. Each transform must
+have exactly one publisher; two nodes both publishing `odom` to `base_link`
+produce a pose that flickers between them.
+
+**`message_filters`** provides the `ApproximateTimeSynchronizer`, which collects
+messages from several topics whose stamps fall within a tolerance (the `slop`)
+and hands them to one callback. That is the right tool when several measurements
+genuinely form one observation, such as a stereo pair or a camera image with its
+depth map. It is the wrong tool for an estimator's IMU and GNSS streams, which
+should each be processed at their own stamps through the event-time machinery of
+@sec-practical-time-sync, not forced into artificial pairs.
+
+**rosbag2** records topics for replay, and since the Iron release its default
+storage format has been MCAP, a self-describing container that tools outside ROS
+can read. `ros2 bag play --clock` replays a recording and publishes a `/clock`
+topic; every node whose `use_sim_time` parameter is true then takes its notion
+of "now" from that topic instead of the system clock. Forget the parameter on one
+node and it stamps its messages with today's date while everyone else is
+replaying last March, and tf2 will complain, at length, about extrapolation into
+the past. Bag playback through the middleware is also not perfectly
+deterministic: under load, message interleaving and drops vary from run to run.
+For bit-for-bit regression tests, read the bag directly (with `rosbag2_py` or the
+`mcap` Python library) and feed the estimator core in stamp order, with no
+middleware in between. This is the payoff of keeping the core free of ROS.
+
+### robot_localization as a reference implementation
+
+The `robot_localization` package [@moore2016robotlocalization] is the standard
+general-purpose state estimator in ROS and is worth reading as a reference for
+interface design. Its EKF and UKF nodes estimate a 15-dimensional kinematic state
+(position, orientation, linear and angular velocity, and linear acceleration),
+and each sensor input is configured with a mask saying which of its fields to
+fuse. Its documented two-instance pattern implements REP-105 directly: one filter
+fuses only continuous sources (wheel odometry, IMU) and publishes `odom` to
+`base_link`, and a second also fuses absolute sources (GNSS, through its
+`navsat_transform_node`) and publishes `map` to `odom`. Two differences from this
+book's ESKF are instructive. `robot_localization` treats IMU data as measurements
+of a generic motion model, not as the input to a strapdown mechanization, and it
+does not estimate IMU biases as states. That makes it easy to configure for a
+ground robot and a poor substitute for an INS on an aircraft or an AUV.
+
+### A navigation node skeleton
+
+The node below is a thin ROS 2 shell around a ROS-free estimator core. It needs
+`rclpy`, so it is shown as a sketch rather than executed. Every conversion
+(@eq-practical-ros-conversion) happens at the boundary, the output stamp is the
+state's time of validity, and the state is published from the IMU path to keep
+latency low.
+
+```python
+"""nav_node.py: a ROS 2 shell around a ROS-free ESKF core (sketch; needs rclpy)."""
+import numpy as np
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time
+from geometry_msgs.msg import TransformStamped
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Imu, NavSatFix
+from tf2_ros import TransformBroadcaster
+
+from nav_core import EskfCore, to_ros_odometry, C_FRD_TO_FLU, C_NED_TO_ENU  # your package
+
+
+def stamp_s(msg) -> float:
+    return Time.from_msg(msg.header.stamp).nanoseconds * 1e-9
+
+
+def xyz(v):
+    return np.array([v.x, v.y, v.z])
+
+
+class NavNode(Node):
+    def __init__(self):
+        super().__init__("nav_eskf")
+        calibration = self.declare_parameter("calibration_file", "").value
+        self.publish_every = self.declare_parameter("publish_every_n_imu", 4).value
+        self.core = EskfCore.from_calibration(calibration)   # same file replay uses
+        self.create_subscription(Imu, "imu/data_raw", self.on_imu, qos_profile_sensor_data)
+        self.create_subscription(NavSatFix, "gnss/fix", self.on_fix, qos_profile_sensor_data)
+        self.odom_pub = self.create_publisher(Odometry, "nav/odometry", 10)
+        self.tf_broadcaster = TransformBroadcaster(self)
+        self.n_imu = 0
+
+    def on_imu(self, msg: Imu):
+        # sensor_msgs/Imu is FLU; the core is FRD. Convert here and nowhere else.
+        gyro_frd = C_FRD_TO_FLU @ xyz(msg.angular_velocity)
+        accel_frd = C_FRD_TO_FLU @ xyz(msg.linear_acceleration)
+        self.core.propagate(stamp_s(msg), gyro_frd, accel_frd)
+        self.n_imu += 1
+        if self.n_imu % self.publish_every == 0:
+            self.publish(self.core.odom_output())   # continuous odom-frame state
+
+    def on_fix(self, msg: NavSatFix):
+        if msg.status.status < 0:                   # STATUS_NO_FIX
+            return
+        lat, lon = np.deg2rad([msg.latitude, msg.longitude])     # degrees on the wire
+        cov_enu = np.array(msg.position_covariance).reshape(3, 3)
+        cov_ned = C_NED_TO_ENU @ cov_enu @ C_NED_TO_ENU.T         # same matrix both ways
+        # Queued and applied at its own stamp via the rewind buffer, not "now".
+        self.core.enqueue_gnss(stamp_s(msg), lat, lon, msg.altitude, cov_ned)
+
+    def publish(self, out):
+        ros = to_ros_odometry(out.p_ned, out.v_ned, out.q_bn, out.omega_nb, out.P)
+        msg = Odometry()
+        msg.header.stamp = Time(nanoseconds=round(out.time_s * 1e9)).to_msg()  # validity
+        msg.header.frame_id, msg.child_frame_id = "odom", "base_link"
+        pose, twist = msg.pose.pose, msg.twist.twist
+        pose.position.x, pose.position.y, pose.position.z = map(float, ros["position"])
+        o = pose.orientation
+        o.x, o.y, o.z, o.w = map(float, ros["orientation_xyzw"])          # scalar last
+        twist.linear.x, twist.linear.y, twist.linear.z = map(float, ros["linear"])
+        twist.angular.x, twist.angular.y, twist.angular.z = map(float, ros["angular"])
+        msg.pose.covariance = ros["pose_covariance"]
+        msg.twist.covariance = ros["twist_covariance"]
+        self.odom_pub.publish(msg)
+
+        tf = TransformStamped()
+        tf.header = msg.header
+        tf.child_frame_id = "base_link"
+        tf.transform.translation.x, tf.transform.translation.y, tf.transform.translation.z = (
+            pose.position.x, pose.position.y, pose.position.z)
+        tf.transform.rotation = pose.orientation
+        self.tf_broadcaster.sendTransform(tf)
+        # map -> odom and the health message are published separately (see the
+        # controller-contract section); ROS has no standard navigation-health type.
+
+
+def main():
+    rclpy.init()
+    rclpy.spin(NavNode())
+```
+
+## Time Systems and Synchronization {#sec-practical-time-sync}
+
+Timing mistakes are one of the easiest ways to make a good estimator look bad.
+@sec-sensing-timing-measurement introduced the measurement-time contract; here
+we deal with how to honor it on a real vehicle. Three different times attach to
+every measurement.
 
 | Time | Meaning | Example |
 |---|---|---|
@@ -82,96 +660,958 @@ Timing mistakes are one of the easiest ways to make a good estimator look bad. T
 | Arrival time | When the packet reached the computer | GNSS message received over serial |
 | Processing time | When the estimator handled the packet | EKF update callback time |
 
-The estimator should update against the state at the **measurement time**, not the arrival time or processing time.
+: The three times of a measurement. Only the first belongs in the estimator. {#tbl-practical-three-times}
 
-This matters immediately for INS/GNSS. If a vehicle is moving at 30 m/s, a 100 ms timestamp error creates a 3 m position innovation before GNSS noise or IMU drift even enter the problem. If you then "fix" the filter by inflating measurement noise, you are hiding a timing bug with tuning.
+The estimator updates against the state at the **measurement time**. An
+uncompensated timing error $\delta t$ on a vehicle moving at speed $v$ and
+turning at rate $\omega$ shows up as a position error of about $v\,\delta t$ and
+an attitude error of about $\omega\,\delta t$:
 
-### State Buffers
+```{python}
+#| label: practical-timing-error
 
-A common solution is to keep a time-indexed buffer of recent INS states. When a delayed measurement arrives, retrieve or interpolate the state at the measurement time, form the innovation there, and then propagate the corrected state forward.
+speed_mps, timing_error_s, yaw_rate_dps = 30.0, 0.050, 30.0
+print(f"{timing_error_s * 1e3:.0f} ms at {speed_mps:.0f} m/s:   "
+      f"{speed_mps * timing_error_s:.2f} m of along-track measurement error")
+print(f"{timing_error_s * 1e3:.0f} ms at {yaw_rate_dps:.0f} deg/s: "
+      f"{yaw_rate_dps * timing_error_s:.2f} deg of heading error")
+```
 
-In simplified Python, the idea is:
+A 1.5 m error is as large as the noise of a standalone GNSS fix and fifty times
+that of an RTK fix. If you then "fix" the filter by inflating the measurement
+noise, you are hiding a timing bug with tuning, and the bug will come back the
+day the vehicle drives faster.
 
-```python
+### Time scales: GPS time, UTC, and TAI
+
+Before synchronizing clocks you have to agree on which time they should show.
+**GPS time** is a continuous count of seconds since 00:00 UTC on 6 January 1980,
+broadcast as a week number and seconds of the week [@isGps200]. It has no leap
+seconds. **UTC**, civil time, is kept within 0.9 s of the Earth's actual rotation
+by occasionally inserting a leap second. **TAI**, International Atomic Time, is
+the continuous atomic scale both are built from. GPS time was equal to UTC at its
+1980 epoch, when UTC was already 19 s behind TAI, so TAI − GPS = 19 s forever.
+Eighteen leap seconds have been inserted since then, the last at the end of 2016,
+so GPS − UTC = 18 s (and TAI − UTC = 37 s). Galileo system time is aligned with
+GPS time to the integer second, BeiDou time runs 14 s behind GPS time, and
+GLONASS time follows UTC, leap seconds and all [@kaplanHegarty2017].
+
+The practical consequences are sharp. Receivers usually compute in GPS time but
+report NMEA sentences in UTC, so a system that mixes raw receiver time with NMEA
+time is off by 18 s, which at 30 m/s is over half a kilometer. Unix time and the
+ROS clock count UTC seconds and simply pretend leap seconds do not exist, so
+during a leap second the system clock repeats a second or is smeared across many
+hours, depending on how the time server is configured. Leap-second handling has a
+colorful history of breaking things: the June 2012 leap second triggered a Linux
+kernel bug that took down or slowed several large websites and an airline's
+reservation system. GPS has its own trap: the legacy navigation message carries
+the week number in 10 bits, which rolled over in August 1999 and April 2019 and
+left some old receivers reporting dates two decades in the past. In 2022 the
+General Conference on Weights and Measures decided to stop inserting leap seconds
+by 2035, so 18 s may well be the final value, but read the current offset from
+the receiver (GPS broadcasts it, along with any scheduled change) rather than
+hard-coding it. The robust design runs the estimator on one continuous scale
+(GPS time, TAI, or a monotonic hardware clock) and converts to UTC only at the
+edges, for human-readable logs and for interfaces that demand it.
+
+### Getting time onto the vehicle
+
+A GNSS receiver is the usual source of absolute time, and it delivers it in two
+parts. The **pulse per second (PPS)** is an electrical edge aligned with the top
+of each second to within tens of nanoseconds. The pulse says *when* a second
+starts but not *which* second it is, so a serial message, typically an NMEA ZDA
+or RMC sentence or a binary time message, labels it. Which pulse a message labels
+(the one before it or the one after) varies between receivers; check it with a
+logic analyzer rather than trusting the data sheet's prose. Many lidars accept
+PPS plus NMEA directly. On a Linux computer, `chrony` can use the PPS edge,
+captured through a GPIO or a serial-port control line, as a reference clock and
+discipline the system clock to the microsecond level.
+
+The **Precision Time Protocol** (PTP, IEEE 1588) distributes time over Ethernet
+[@ieee1588]. A grandmaster clock, often itself disciplined by GNSS, exchanges
+timestamped messages with each device to estimate the clock offset and the path
+delay, assuming the delay is symmetric. With **hardware timestamping**, where the
+network interface stamps packets as they cross the wire, PTP synchronizes a
+switched LAN to well under a microsecond; with software timestamping, jitter in
+the operating system limits it to tens of microseconds. On Linux, `ptp4l` and
+`phc2sys` from linuxptp do the work. Many lidars, machine-vision cameras, and
+automotive networks (gPTP, IEEE 802.1AS) speak PTP. **NTP**, including `chrony`
+without a local reference, achieves a millisecond or so over the internet and
+tens to hundreds of microseconds on a quiet LAN: fine for logs and slow sensors,
+marginal for camera-IMU fusion on a fast vehicle. **Hardware triggering** is the
+strongest option for cameras: a microcontroller fires the exposure and records
+the trigger time in the IMU's clock, so there is nothing left to estimate except
+the exposure duration.
+
+Whatever the distribution scheme, protect the estimator from clock *steps*. If an
+NTP daemon decides mid-mission that the system clock is 300 ms wrong and jumps
+it, every interval computed from that clock is wrong once, and an IMU propagation
+step of −0.3 s is a memorable event. Compute intervals from a monotonic clock or
+from hardware sample counters, configure time daemons to slew rather than step
+after startup, and treat a backward stamp as a fault to be logged, not a sample
+to be integrated.
+
+### Clock domains on one vehicle
+
+A typical robot has more clocks than people expect: the IMU's sample counter,
+the GNSS receiver's GPS time, the camera's internal counter (or no clock at all,
+in which case the driver stamps arrival time), the lidar's clock, a
+microcontroller or flight controller, the host's system clock, and the ROS clock,
+which is either the system clock or `/clock` during replay. Any two are related
+by an offset and a drift, $t_a \approx t_b + \delta_0 + \epsilon\,t_b$. Drift is
+not negligible: an ordinary 20 ppm crystal drifts 72 ms per hour, so a free-running
+sensor clock aligned once at startup is wrong by more than the 50 ms example
+above within the first hour. Either discipline every clock to a common reference
+(PPS or PTP) or estimate each offset and drift continuously. A useful trick for
+the second option: transport delay is always positive, so the *smallest* observed
+value of (arrival time − sensor time) over a sliding window tracks the clock
+offset plus the minimum latency, and fitting a line to those lower-envelope
+points gives offset and drift.
+
+### Estimating a constant sensor time offset
+
+Even with synchronized clocks, a sensor's stamp can be wrong by a fixed amount:
+internal filtering delay, an exposure time, a driver that stamps the end of a
+serial message instead of the start. That constant offset $t_d$ can be estimated.
+
+**Online, as a filter state.** If a sensor stamps a measurement $t_k$ but the
+physics happened at $t_k - t_d$, then to first order
+
+$$
+\begin{aligned}
+\mathbf{z}_k
+&= \mathbf{h}\big(\mathbf{x}(t_k - t_d)\big) + \mathbf{v}_k \\
+&\approx \mathbf{h}\big(\mathbf{x}(t_k)\big) - \dot{\mathbf{h}}(t_k)\,t_d + \mathbf{v}_k ,
+\end{aligned}
+$$ {#eq-practical-time-offset}
+
+so augmenting the state with $t_d$ (with a small random-walk process noise) adds
+the column $-\dot{\mathbf{h}}$ to $\mathbf{H}$. For a GNSS position fix,
+$\dot{\mathbf{h}}$ is the antenna velocity. The offset is observable only when
+$\dot{\mathbf{h}}$ changes: at constant velocity, $-\mathbf{v}\,t_d$ is a constant
+along-track offset, which the filter cannot tell apart from an error in the
+position itself (or in an along-track lever arm). Accelerations and turns
+separate them. Li and Mourikis showed that the camera-IMU
+offset is observable under general motion and estimated it online in an MSCKF
+[@li2014temporal], and current VIO systems do the same.
+
+**Offline, by cross-correlation.** Two sensors that see the same motion produce
+correlated signals, and the lag that maximizes their correlation is the relative
+offset. Rates and accelerations work far better than positions, because their
+high-frequency content gives a sharp correlation peak. A gyro's yaw rate against
+the yaw rate implied by a camera's visual odometry, or INS velocity against DVL
+velocity, are standard pairs. The cell below generates a band-limited yaw-rate
+history, samples it with a 200 Hz gyro and with a 30 Hz camera whose stamps are
+37 ms late, and recovers the offset.
+
+```{python}
+#| label: practical-time-offset-xcorr
+
+rng = np.random.default_rng(1588)
+
+
+def yaw_rate_truth(t):
+    """A band-limited yaw-rate history (rad/s): a sum of random sinusoids, 0.05-2 Hz."""
+    freqs = np.linspace(0.05, 2.0, 25)
+    amps = 0.15 / np.sqrt(1.0 + (freqs / 0.5) ** 2)
+    phases = np.random.default_rng(7).uniform(0.0, 2.0 * np.pi, freqs.size)
+    return np.sum(amps * np.sin(2.0 * np.pi * np.outer(t, freqs) + phases), axis=1)
+
+
+duration_s, true_offset_s = 60.0, 0.037
+t_gyro = np.arange(0.0, duration_s, 1.0 / 200.0)          # IMU clock is the reference
+gyro = yaw_rate_truth(t_gyro) + np.deg2rad(0.3) * rng.standard_normal(t_gyro.size)
+
+# Camera yaw rate at 30 Hz, stamped late: the stamp says t, the physics happened at t - offset.
+t_cam = np.arange(0.5, duration_s - 0.5, 1.0 / 30.0)
+cam = yaw_rate_truth(t_cam - true_offset_s) + np.deg2rad(1.0) * rng.standard_normal(t_cam.size)
+
+
+def estimate_offset(t_ref, x_ref, t_sig, x_sig, max_lag_s=0.2, step_s=0.001):
+    """Lag tau that best aligns x_sig(t) with x_ref(t - tau); tau > 0 means x_sig is late.
+
+    Evaluates the correlation coefficient on a grid of lags (interpolating the
+    high-rate reference at the shifted times), then fits a parabola through the
+    peak and its neighbors to resolve the lag below the grid step.
+    """
+    lags = np.arange(-max_lag_s, max_lag_s + step_s / 2, step_s)
+    rho = np.array([np.corrcoef(x_sig, np.interp(t_sig - lag, t_ref, x_ref))[0, 1]
+                    for lag in lags])
+    k = int(np.argmax(rho))
+    y0, y1, y2 = rho[k - 1], rho[k], rho[k + 1]
+    tau_hat = lags[k] + 0.5 * step_s * (y0 - y2) / (y0 - 2.0 * y1 + y2)
+    return tau_hat, lags, rho
+
+
+tau_hat, lags, rho = estimate_offset(t_gyro, gyro, t_cam, cam)
+print(f"true offset {true_offset_s * 1e3:.1f} ms, estimated {tau_hat * 1e3:.1f} ms")
+assert abs(tau_hat - true_offset_s) < 0.003
+```
+
+```{python}
+#| label: fig-practical-time-offset
+#| fig-cap: "Estimating a camera time offset by cross-correlation with the gyro. Left: correlation between camera and gyro yaw rates as a function of the assumed lag; the peak sits at the true 37 ms offset. Right: 0.6 s of the two signals before and after shifting the camera stamps by the estimated offset."
+#| code-fold: true
+
+import matplotlib.pyplot as plt
+
+fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(10, 3.6))
+ax0.plot(lags * 1e3, rho, color="C0")
+ax0.axvline(true_offset_s * 1e3, color="k", linestyle="--", linewidth=1, label="true offset")
+ax0.axvline(tau_hat * 1e3, color="C3", linestyle=":", linewidth=2, label="estimate")
+ax0.set_xlabel("assumed camera lag (ms)")
+ax0.set_ylabel("correlation coefficient")
+ax0.legend(loc="lower center")
+ax0.grid(True, alpha=0.3)
+
+window = (t_gyro > 21.0) & (t_gyro < 21.6)
+cam_window = (t_cam > 21.0) & (t_cam < 21.6)
+ax1.plot(t_gyro[window], np.rad2deg(gyro[window]), color="0.6", linewidth=1, label="gyro")
+ax1.plot(t_cam[cam_window], np.rad2deg(cam[cam_window]), "C3o", markersize=4,
+         label="camera, raw stamps")
+ax1.plot(t_cam[cam_window] - tau_hat, np.rad2deg(cam[cam_window]), "C0s", markersize=4,
+         label="camera, corrected")
+ax1.set_xlabel("time (s)")
+ax1.set_ylabel("yaw rate (deg/s)")
+ax1.legend(loc="upper right", fontsize=8)
+ax1.grid(True, alpha=0.3)
+fig.tight_layout()
+plt.show()
+```
+
+The width of the correlation peak in @fig-practical-time-offset is set by the
+bandwidth of the motion: the faster the motion changes, the sharper the peak and
+the better the estimate. That is why calibration sequences involve vigorously
+waving the sensor rig around, and why a log of a vehicle driving in a straight
+line at constant speed tells you nothing about its time offsets.
+
+### Event-time buffers and out-of-sequence measurements
+
+Aiding measurements arrive late, and so out of order with respect to the IMU
+stream: a GNSS fix 100 ms after its validity, a visual update 50 ms after its
+exposure, an acoustic position fix several seconds after the ping. There are four
+standard ways to cope, in rough order of sophistication. The simplest is to
+**discard** measurements older than the current state, which is acceptable only
+when latency is rare and the information is redundant. The workhorse is to
+**buffer and reprocess**: keep the recent history of states, covariances, and IMU
+increments, rewind to the measurement time, apply the update there, and
+re-propagate to the present. That is exact up to linearization, and its cost is
+re-running the IMU propagation over the retained interval. An elegant variant is
+the **delayed fusion horizon**, used by PX4's EKF2: run the filter deliberately
+behind real time by the largest expected latency, so every measurement arrives
+before the filter needs it, and bring the output forward to the present with a
+lightweight IMU-driven predictor. Finally, **out-of-sequence measurement (OOSM)
+algorithms** retrodict the current state back to the measurement time and apply
+the late update directly to the current estimate, without reprocessing
+[@barShalom2002oosm]. Fixed-lag smoothers
+built on factor graphs (@sec-advanced-slam-factor-graphs-smoothing) handle late
+measurements naturally, since inserting a factor at its own time is what they
+do anyway.
+
+Most of them need a time-indexed buffer that can answer "what was the state at
+time $t$?" The version below interpolates position and velocity. It is strict
+about its interval: a query exactly at the oldest or newest retained sample is
+valid, and anything outside raises, because silently extrapolating a delayed
+measurement is just a latency bug with extra steps. It uses `bisect_right` so
+that equality at a stored sample is handled cleanly, and a `deque`, so dropping
+old states is O(1) rather than the O(n) of `list.pop(0)`.
+
+```{python}
+#| label: practical-state-buffer
+
+from bisect import bisect_right
+from collections import deque
 from dataclasses import dataclass
-import bisect
-import numpy as np
 
 
-@dataclass
-class NavState:
+@dataclass(frozen=True)
+class PositionVelocityState:
     time_s: float
     position_m: np.ndarray
     velocity_mps: np.ndarray
 
 
 class StateBuffer:
+    """Time-ordered state history with interpolation inside the retained interval.
+
+    Queries are valid on the closed interval [oldest, newest]. Anything outside
+    raises: extrapolating a delayed measurement is a latency bug, not a feature.
+    """
+
     def __init__(self, max_age_s: float):
         self.max_age_s = max_age_s
-        self._times = []
-        self._states = []
+        self._times: deque[float] = deque()
+        self._states: deque[PositionVelocityState] = deque()
 
-    def push(self, state: NavState) -> None:
+    def push(self, state: PositionVelocityState) -> None:
+        if self._times and state.time_s <= self._times[-1]:
+            raise ValueError("states must arrive in strictly increasing event time")
         self._times.append(state.time_s)
         self._states.append(state)
+        while state.time_s - self._times[0] > self.max_age_s:    # O(1) per drop
+            self._times.popleft()
+            self._states.popleft()
 
-        newest = state.time_s
-        while self._times and newest - self._times[0] > self.max_age_s:
-            self._times.pop(0)
-            self._states.pop(0)
+    @property
+    def interval(self) -> tuple[float, float]:
+        return self._times[0], self._times[-1]
 
-    def interpolate_position_velocity(self, time_s: float) -> NavState:
-        i = bisect.bisect_left(self._times, time_s)
-        if i == 0 or i == len(self._times):
-            raise ValueError("requested time is outside the state buffer")
-
-        a = self._states[i - 1]
-        b = self._states[i]
-        alpha = (time_s - a.time_s) / (b.time_s - a.time_s)
-
-        return NavState(
+    def interpolate(self, time_s: float) -> PositionVelocityState:
+        if not self._times or not (self._times[0] <= time_s <= self._times[-1]):
+            raise ValueError(f"t = {time_s} s is outside the state buffer")
+        i = bisect_right(self._times, time_s)    # first index with a time > time_s
+        if i == len(self._times):                # exactly the newest sample
+            return self._states[-1]
+        before, after = self._states[i - 1], self._states[i]
+        alpha = (time_s - before.time_s) / (after.time_s - before.time_s)
+        return PositionVelocityState(
             time_s=time_s,
-            position_m=(1.0 - alpha) * a.position_m + alpha * b.position_m,
-            velocity_mps=(1.0 - alpha) * a.velocity_mps + alpha * b.velocity_mps,
+            position_m=(1.0 - alpha) * before.position_m + alpha * after.position_m,
+            velocity_mps=(1.0 - alpha) * before.velocity_mps + alpha * after.velocity_mps,
         )
+
+
+# 3 s of 100 Hz states for a car doing 30 m/s north; the buffer keeps the last 2 s.
+buffer = StateBuffer(max_age_s=2.0)
+v_car = np.array([30.0, 0.0, 0.0])
+for k in range(301):
+    t_k = 10.0 + 0.01 * k
+    buffer.push(PositionVelocityState(t_k, v_car * (t_k - 10.0), v_car))
+
+oldest, newest = buffer.interval
+for t_query in (oldest, 12.345, newest):         # both edges are legal queries
+    np.testing.assert_allclose(buffer.interpolate(t_query).position_m,
+                               v_car * (t_query - 10.0), atol=1e-9)
+for t_query in (oldest - 1e-6, newest + 1e-6):   # just outside is not
+    try:
+        buffer.interpolate(t_query)
+        raise AssertionError("a query outside the buffer must raise")
+    except ValueError:
+        pass
+
+# A GNSS fix valid at 12.95 s is processed at 13.00 s: the right and wrong predictions.
+gap = buffer.interpolate(13.0).position_m - buffer.interpolate(12.95).position_m
+print(f"retained interval: [{oldest:.2f}, {newest:.2f}] s")
+print(f"predicting at arrival time instead of fix time adds {np.linalg.norm(gap):.2f} m "
+      "to the innovation")
 ```
 
-Real INS implementations also need attitude interpolation, covariance handling, and careful reintegration after a delayed correction. The point here is the contract: measurements are compared against state at the time they describe.
+An off-by-one at the edge of a buffer is a classic bug precisely because it only
+bites at the edge: a version built on `bisect_left` that rejects index 0 refuses
+a query at exactly the oldest retained sample, which is where a measurement with
+the maximum allowed latency lands. A real INS buffer also stores attitude (and
+interpolates it by slerp), the covariance, and the IMU increments needed to
+re-propagate. Covariance is not interpolated; the filter rewinds to the stored
+covariance at the nearest earlier sample and propagates forward to the
+measurement time.
 
-### Sensor-Specific Delays
+### Sensor-specific delays
 
-Different sensors make timing painful in different ways.
+Different sensors make timing painful in different ways. **IMU** samples are high
+rate and usually low latency, but they drive propagation, so dropped samples or
+irregular intervals affect the entire solution; internal digital low-pass filters
+also add a group delay of a few milliseconds. **GNSS** fixes are low rate and
+often delayed by 50 to 200 ms; receivers report the fix time, which is the one to
+use. For a **camera**, the useful timestamp is usually the exposure midpoint, not
+the moment the image finished moving through the driver, and a rolling shutter
+exposes rows at different times over tens of milliseconds. **Barometers and
+magnetometers** are often low rate and filtered internally, so treat them as
+delayed unless the documentation says otherwise. **Middleware** queues add delay
+and jitter, so a message timestamp should come from the sensor or the acquisition
+layer, never from a late subscriber callback.
 
-**IMU:** high rate, usually low latency, but sensitive to clock stability. IMU samples drive propagation, so dropped samples or irregular `dt` values affect the entire solution.
+## Navigation's Contract with Control and Planning {#sec-practical-controller-contract}
 
-**GNSS:** low rate and often delayed. Receiver messages may report the GNSS fix time, not the serial arrival time. Use the fix time.
+For linear systems with Gaussian noise and quadratic costs, the **separation
+principle** says that the optimal controller is the optimal full-state feedback
+law applied to the Kalman filter's estimate, so estimation and control can be
+designed independently. That is the textbook reason navigation can be its own
+chapter, its own software package, and often its own team. In practice the split
+leaks in three places. **Latency** means the controller acts on a state that is
+already old. **Nonlinearity** voids the theorem: on a real vehicle, how well the
+state is known changes what the best action is, the estimator's linearization
+depends on where the controller drives, and discrete measurement updates yank the
+estimate in steps that no continuous-time design assumed. **Overconfident
+covariance** means planners keep margins that the estimate cannot support. The
+contract below is how a navigation engineer plugs those leaks. Its consumers want
+different things: control needs a smooth, high-rate, low-latency state; guidance
+and planning need global consistency and an uncertainty they can use to size
+margins; mission logic and operators need health and degraded-mode signals they
+can act on.
 
-**Camera:** the useful timestamp is usually the exposure midpoint, not the moment the image finished moving through the driver. Rolling-shutter cameras add another layer of trouble because different rows correspond to different times.
+### Output rate and latency budget
 
-**Barometer and magnetometer:** often low rate and filtered internally. Treat their outputs as delayed measurements unless the hardware documentation says otherwise.
+A navigation output should be published at least as fast as its fastest consumer
+loop and should carry the time at which it is valid. Its **latency** is the time
+from that instant to the moment the consumer can use the message. For an
+IMU-driven estimator, the budget looks like this:
 
-**Middleware:** queues can add delay and jitter. A message timestamp should come from the sensor or acquisition layer, not from a late subscriber callback.
+| Stage | Typical contribution | Notes |
+|---|---|---|
+| IMU sampling and internal filtering | 1–5 ms | Group delay of the sensor's digital low-pass filter |
+| Transport to the navigation computer | 0.1–2 ms | SPI, serial, USB, or Ethernet |
+| Propagation step | < 1 ms | One strapdown step and covariance update |
+| Serialization, middleware, scheduling | 0.1–5 ms | Grows sharply on an overloaded computer |
+| Consumer waiting for its next cycle | up to one control period | Unless publication and control are synchronized |
 
-The autonomy stack also needs a latency contract. A controller can tolerate some delay if it knows what time the state represents. It cannot safely use a state whose timestamp convention changes from one software path to another.
+: A latency budget for the navigation output of an IMU-driven estimator. {#tbl-practical-latency-budget}
+
+Aiding latency is conspicuously absent from @tbl-practical-latency-budget. A GNSS
+fix that arrives 150 ms late is applied at its own time through the rewind
+buffer, and the IMU path carries the corrected state forward, so the output
+latency is set by the IMU path alone. That is one of the strongest reasons to
+build the estimator around an IMU.
+
+Latency matters to control because a pure delay $\tau$ adds a phase lag of
+$2\pi f_c \tau$ at a loop's crossover frequency $f_c$. A velocity loop crossing
+over at 2 Hz loses about 11° of phase margin to 15 ms of latency, which is
+tolerable. A rate loop crossing over at 10 Hz would lose about 54°, which is
+not. This is why inner rate loops on drones and aircraft consume the
+bias-corrected gyro directly at the IMU rate with minimal filtering, and only the
+slower attitude, velocity, and position loops consume the full navigation
+output. A consumer can also remove most of the latency itself, cheaply, by
+extrapolating the state from its stamp to the current time with the published
+velocity and angular rate. That only works if the stamp is honest, which is the
+whole argument for stamping the time of validity rather than the time of
+publication.
+
+### Smoothing the jumps: continuous odom, consistent map
+
+When an absolute fix arrives, the filter's best estimate of where the vehicle is
+can move by a meter in one update. That is correct estimation and terrible
+control input: a position controller sees a step in its error and responds with
+a step in thrust or steering. REP-105's answer is to publish two things. The
+**odom-frame** state is continuous: it integrates the estimator's own velocity
+and attitude, including their corrections, but never takes a position jump. The
+**map-to-odom** transform absorbs the jumps, so that composing the two gives the
+globally consistent estimate. A trajectory-tracking controller works in `odom`;
+a planner that needs to know where the dock is works in `map`. The cell below
+runs a one-dimensional vehicle with a biased accelerometer and an absolute fix
+every 10 s, and publishes both.
+
+```{python}
+#| label: practical-odom-map
+
+rng = np.random.default_rng(105)
+dt, duration_s, fix_period_s = 0.01, 300.0, 10.0
+n = round(duration_s / dt)
+t = np.arange(n + 1) * dt
+w_m = 2.0 * np.pi / 40.0                                   # speed oscillates, 40 s period
+v_true = 1.5 + 0.3 * np.sin(w_m * t)
+a_true = 0.3 * w_m * np.cos(w_m * t)
+p_true = 1.5 * t - (0.3 / w_m) * (np.cos(w_m * t) - 1.0)
+
+accel_bias, accel_sigma, fix_sigma = 0.03, 0.02, 1.0
+accel = a_true + accel_bias + accel_sigma * rng.standard_normal(n + 1)
+
+# Filter state [position, velocity, accelerometer bias], driven by the accelerometer.
+F = np.array([[1.0, dt, -0.5 * dt**2], [0.0, 1.0, -dt], [0.0, 0.0, 1.0]])
+G_u = np.array([0.5 * dt**2, dt, 0.0])
+Q = accel_sigma**2 * np.outer(G_u, G_u)
+Q[2, 2] = (1e-4) ** 2 * dt
+x_hat = np.array([0.0, 1.5, 0.0])
+P = np.diag([1.0, 0.1, 0.05]) ** 2
+
+p_map = np.zeros(n + 1)      # what a map-frame publisher sends: jumps at every fix
+p_odom = np.zeros(n + 1)     # continuous: uses corrected velocity, never a position reset
+steps_per_fix = round(fix_period_s / dt)
+for k in range(n):
+    u = accel[k]
+    p_odom[k + 1] = p_odom[k] + x_hat[1] * dt + 0.5 * (u - x_hat[2]) * dt**2
+    x_hat = F @ x_hat + G_u * u
+    P = F @ P @ F.T + Q
+    if (k + 1) % steps_per_fix == 0:
+        z = p_true[k + 1] + fix_sigma * rng.standard_normal()
+        S = P[0, 0] + fix_sigma**2
+        K = P[:, 0] / S
+        x_hat = x_hat + K * (z - x_hat[0])
+        I_KH = np.eye(3) - np.outer(K, [1.0, 0.0, 0.0])
+        P = I_KH @ P @ I_KH.T + fix_sigma**2 * np.outer(K, K)    # Joseph form
+    p_map[k + 1] = x_hat[0]
+
+map_to_odom = p_map - p_odom                    # the correction a localizer would publish
+step_map = np.abs(np.diff(p_map) - v_true[:-1] * dt)
+step_odom = np.abs(np.diff(p_odom) - v_true[:-1] * dt)
+settled = t[1:] > 30.0
+print(f"largest one-step discontinuity after 30 s: map {step_map[settled].max():.2f} m, "
+      f"odom {step_odom.max() * 100:.2f} cm")
+print(f"RMS error against truth:  map {np.sqrt(np.mean((p_map - p_true)**2)):.2f} m, "
+      f"odom {np.sqrt(np.mean((p_odom - p_true)**2)):.2f} m "
+      f"(odom ends {p_odom[-1] - p_true[-1]:+.2f} m off)")
+```
+
+```{python}
+#| label: fig-practical-odom-map
+#| fig-cap: "Publishing a continuous odom-frame state alongside the map-to-odom correction. Top: position error of the map-frame estimate (bounded, but jumping at every fix) and of the odom-frame estimate (smooth, but drifting). Bottom: the map-to-odom correction, which carries all of the jumps."
+#| code-fold: true
+
+fig, (ax0, ax1) = plt.subplots(2, 1, figsize=(8, 5.5), sharex=True)
+ax0.plot(t, p_map - p_true, color="C3", linewidth=1, label="map-frame estimate")
+ax0.plot(t, p_odom - p_true, color="C0", linewidth=1.5, label="odom-frame estimate")
+ax0.axhline(0.0, color="k", linewidth=0.5)
+ax0.set_ylabel("position error (m)")
+ax0.legend(loc="upper left")
+ax0.grid(True, alpha=0.3)
+ax1.step(t, map_to_odom, where="post", color="C2", linewidth=1.2)
+ax1.set_xlabel("time (s)")
+ax1.set_ylabel("map-to-odom offset (m)")
+ax1.grid(True, alpha=0.3)
+fig.tight_layout()
+plt.show()
+```
+
+In @fig-practical-odom-map the odom position never steps by more than a few
+millimeters per sample, while the map position jumps by as much as a meter and a
+half at a fix, and the odom estimate pays for its smoothness with several meters
+of drift. Neither is "the" answer;
+each is right for its consumer. Two other patterns are common. Some systems
+**blend** each correction into the published state over a second or two, trading
+a little consistency for smoothness without a second frame. Others publish
+**reset counters**: PX4's local-position message carries a counter and the size
+of the most recent position, altitude, and heading resets, so that a controller
+can shift its setpoints by the same amount instead of chasing the jump. Whichever
+you choose, document it as part of the interface; a consumer that does not know
+the state can jump will eventually find out the hard way.
+
+### Covariance honesty
+
+A published covariance is a promise, and planners spend it. A planner that sizes
+its clearance from obstacles by a 3σ ellipse is safe only if the ellipse is
+honest, and an estimator that is overconfident hands the planner margins that do
+not exist. Overconfidence also feeds on itself inside the filter: an
+overconfident covariance makes gates reject good measurements, which keeps the
+covariance from growing back, which makes the gates even tighter. An
+underconfident covariance is safer but makes everything downstream needlessly
+timid. Never publish a constant made-up covariance, and never publish zeros.
+
+Consistency is measurable (@sec-kf-consistency). On the vehicle, without truth,
+the normalized innovation squared $\epsilon_\nu = \boldsymbol{\nu}^T
+\mathbf{S}^{-1}\boldsymbol{\nu}$ of each aiding sensor is chi-square with $m$
+degrees of freedom when the filter is consistent, and a time average over a
+sliding window of $K$ updates has the chi-square bounds of @sec-kf-nees-nis. The
+monitor below implements that check as a runtime integrity flag. The threshold
+deserves thought: a per-update false-alarm probability that sounds small, such as
+0.5%, is one false alarm every three minutes at 1 Hz, and an alarm that cries wolf
+that often gets ignored or disabled. Choose the acceptable false-alarm rate per
+hour first and derive the threshold from it.
+
+```{python}
+#| label: practical-nis-monitor
+
+from scipy.stats import chi2
+
+
+class WindowedNis:
+    """Sliding-window average NIS with a chi-square alarm threshold.
+
+    dof is the measurement dimension m. The alarm threshold is the (1 - p_alarm)
+    quantile of the window average under consistency, so p_alarm is the
+    false-alarm probability per update.
+    """
+
+    def __init__(self, dof: int, window: int, p_alarm: float):
+        self.window = window
+        self.threshold = chi2.ppf(1.0 - p_alarm, dof * window) / window
+        self.lower = chi2.ppf(p_alarm, dof * window) / window
+        self._values: deque[float] = deque(maxlen=window)
+
+    def add(self, innovation: np.ndarray, S: np.ndarray) -> str:
+        self._values.append(float(innovation @ np.linalg.solve(S, innovation)))
+        if len(self._values) < self.window:
+            return "warming_up"
+        mean = sum(self._values) / self.window
+        if mean > self.threshold:
+            return "overconfident"     # errors bigger than claimed, or a faulty aid
+        if mean < self.lower:
+            return "underconfident"    # wasting information; not an emergency
+        return "consistent"
+
+
+# One hour of honest 1 Hz GNSS innovations (1 m per horizontal axis), then a 1.5 m
+# bias appears in north: the 50 ms timing error at 30 m/s from earlier in the chapter.
+S_gnss = np.eye(2)
+n_ok, n_bad = 3600, 120
+nu = rng.standard_normal((n_ok + n_bad, 2))
+nu[n_ok:, 0] += 1.5
+for p_alarm in (5e-3, 1e-4):
+    monitor = WindowedNis(dof=2, window=20, p_alarm=p_alarm)
+    flags = [monitor.add(nu_k, S_gnss) for nu_k in nu]
+    false_alarms = sum(f == "overconfident" for f in flags[:n_ok])
+    detect = next((k - n_ok for k in range(n_ok, n_ok + n_bad) if flags[k] == "overconfident"),
+                  None)
+    print(f"p_alarm {p_alarm:.0e}: threshold {monitor.threshold:.2f}, "
+          f"{false_alarms:3d} false alarms in the hour, fault flagged after {detect} s")
+```
+
+The stricter threshold buys a quiet hour for a few extra seconds of detection
+delay, which is usually the right trade for an alarm that will reach an operator.
+The NIS monitor sees the 1.5 m bias even though each individual innovation
+looks unremarkable. Offline, with truth, NEES does the same job for the state
+covariance and is more sensitive, which is why it belongs in the test suite
+(@sec-practical-testing-validation).
+
+### Health and degraded modes as explicit signals
+
+The health of the solution should be a first-class output, published on its own
+topic at a modest rate and logged with everything else, not a mood the operator
+infers from a plot. A useful health message carries the **mode** (an enumerated
+value, so consumers can switch on it), the set of **active aids**, the **time
+since the last absolute fix** and the age of each aid, the current **horizontal
+and vertical uncertainty**, the **consistency flags** from monitors like the one
+above, and the **output latency**. These are the health clauses of the output
+structure sketched in @sec-gnc-autonomy-stack; the difference here is that the
+mode becomes an enumeration that code can switch on, rather than a string a
+person reads. ROS has no standard message for this beyond the generic
+`diagnostic_msgs`, so most teams define their own.
+
+```{python}
+#| label: practical-health
+
+from enum import IntEnum
+
+
+class NavMode(IntEnum):
+    """What kind of solution is being published. Consumers switch on this value."""
+    INITIALIZING = 0     # no usable output yet
+    AIDED = 1            # an absolute aid (GNSS, USBL, map match) is within its timeout
+    DEAD_RECKONING = 2   # relative aids only (DVL, wheel odometry, VIO): bounded drift rate
+    INERTIAL_ONLY = 3    # coasting on the IMU alone: drift grows quickly
+    FAULT = 4            # do not use the state
+
+
+@dataclass(frozen=True)
+class NavHealth:
+    stamp_s: float
+    mode: NavMode
+    active_aids: tuple[str, ...]
+    time_since_absolute_fix_s: float
+    horizontal_sigma_m: float
+    nis_alarms: tuple[str, ...]           # aids whose windowed NIS is out of bounds
+    output_latency_s: float
+
+
+def select_mode(aid_ages_s: dict, imu_ok: bool, absolute=("gnss", "usbl"),
+                timeouts_s=None) -> tuple[NavMode, tuple[str, ...]]:
+    """Mode from the IMU status and the age of the last accepted update of each aid."""
+    timeouts_s = timeouts_s or {"gnss": 3.0, "usbl": 30.0, "dvl": 2.0}
+    if not imu_ok:
+        return NavMode.FAULT, ()
+    active = tuple(a for a, age in aid_ages_s.items() if age <= timeouts_s[a])
+    if any(a in absolute for a in active):
+        return NavMode.AIDED, active
+    if active:
+        return NavMode.DEAD_RECKONING, active
+    return NavMode.INERTIAL_ONLY, active
+
+
+scenarios = {
+    "surfaced, GNSS fresh":         ({"gnss": 0.4, "usbl": 400.0, "dvl": 0.2}, True),
+    "submerged, DVL bottom lock":   ({"gnss": 900.0, "usbl": 45.0, "dvl": 0.2}, True),
+    "submerged, USBL fix 6 s ago":  ({"gnss": 900.0, "usbl": 6.0, "dvl": 0.2}, True),
+    "DVL lost bottom lock":         ({"gnss": 900.0, "usbl": 45.0, "dvl": 12.0}, True),
+    "IMU saturated":                ({"gnss": 0.4, "usbl": 400.0, "dvl": 0.2}, False),
+}
+for name, (ages, imu_ok) in scenarios.items():
+    mode, active = select_mode(ages, imu_ok)
+    print(f"{name:30s} -> {mode.name:15s} active aids: {', '.join(active) or 'none'}")
+
+# One health message, as it would be published alongside the state.
+mode, active = select_mode(scenarios["submerged, USBL fix 6 s ago"][0], imu_ok=True)
+print(NavHealth(stamp_s=1_443_000_123.25, mode=mode, active_aids=active,
+                time_since_absolute_fix_s=6.0, horizontal_sigma_m=2.1, nis_alarms=(),
+                output_latency_s=0.004))
+```
+
+The fields only matter if consumers act on them, so the contract should say what
+each consumer does with each signal. @tbl-practical-consumer-actions is a
+starting point; the right policy is vehicle-specific and belongs in the vehicle's
+safety case, not in the estimator.
+
+| Signal | Controller | Guidance and planning | Mission logic and operators |
+|---|---|---|---|
+| `AIDED` | Normal operation | Normal margins | Proceed |
+| `DEAD_RECKONING` | Normal; the state is still smooth | Grow margins with the published σ | Plan to reacquire an absolute aid before σ exceeds the task tolerance |
+| `INERTIAL_ONLY` | Lower speed and gain limits; avoid aggressive position holds | Suspend precision tasks; widen margins | Start an abort timer; alert the operator |
+| `FAULT` | Switch to a fallback (attitude-only stabilization, hold, or handover) | Stop planning on the navigation state | Safe the vehicle; alert |
+| NIS alarm on an aid | Nothing directly; the estimator handles it | Treat σ as suspect and inflate it | Alert; check the aid (multipath, timing, calibration) |
+| Stale output (age over limit) | Failsafe, detected by the controller's own watchdog | Stop | Alert |
+
+: What each consumer should do with each health signal. A starting point, not a policy. {#tbl-practical-consumer-actions}
+
+The last row deserves emphasis. A navigation process that has crashed publishes
+no health message announcing the fact, so every consumer needs its own
+**watchdog** on the age of the newest state it has received. Inside the estimator,
+watchdogs check the time since the last IMU sample and since each aid, the
+fraction of measurements rejected by gating, covariance growth beyond configured
+bounds, missed deadlines, and NaN or invalid-state events. The fallback does not
+have to be glamorous: hold position, slow down, return control to a human, use
+attitude-only stabilization, or coast briefly on the IMU. The unacceptable
+behavior is silently publishing a confident state after the estimator has
+evidence that it is unhealthy.
+
+## Real-Time Execution and Numerical Health {#sec-practical-real-time-execution}
+
+A real-time navigation package has timing budgets. Approximate values:
+
+| Component | Typical rate | Practical concern |
+|---|---:|---|
+| IMU propagation | 100–1000 Hz | Must be deterministic and low latency |
+| GNSS update | 1–20 Hz | Must use fix time, not arrival time |
+| Camera or lidar update | 5–60 Hz | Processing delay can dominate |
+| Health monitor | 1–50 Hz | Must detect stale or inconsistent state |
+| State output to control | 20–200 Hz | Must publish a fresh, timestamped state |
+| Logging | Sensor rate | Must not block estimator deadlines |
+
+: Representative rates in a navigation package. {#tbl-practical-rates}
+
+The estimator should measure its own timing and log the result:
+
+```python
+import time
+
+
+class StepTimer:
+    def __init__(self):
+        self.records_ms = []
+
+    def time_step(self, name, fn, *args, **kwargs):
+        start = time.perf_counter()
+        result = fn(*args, **kwargs)
+        elapsed_ms = 1000.0 * (time.perf_counter() - start)
+        self.records_ms.append((name, elapsed_ms))
+        return result
+```
+
+Profiling is not only for optimization. Timing spikes often reveal logging,
+memory allocation, blocking I/O, or lock contention in places where the estimator
+should be predictable. Look at the tail of the distribution, not the mean: a
+step that takes 0.3 ms on average and 40 ms once a minute will drop IMU samples
+once a minute.
+
+Most vehicle systems receive sensors asynchronously. A common pattern is to let
+sensor drivers, perception front ends, logging, and health monitoring run in
+separate tasks while the estimator state is protected by a small, explicit
+critical section. Do expensive work outside the estimator lock: feature tracking,
+packet parsing, file I/O, and visualization should never block IMU propagation.
+If a shared lock is held long enough to miss sensor deadlines, the software
+architecture is part of the navigation error budget now.
+
+Long-running Kalman filters also need numerical checks. Force the covariance to
+stay symmetric after each update, check for NaNs and infinities, confirm that
+diagonal entries stay positive, and watch for Cholesky failures or a growing
+condition number. Use the Joseph-form update or a factored (square-root or UD)
+filter when the filter runs for hours (@sec-kf-joseph-form). None of this rescues
+a filter with wrong units, wrong signs, or invented measurement covariances; it
+only keeps a correct filter from being destroyed by rounding. If innovations are
+persistently large in one direction, do not start by tuning harder. Start by
+checking frames, lever arms, timestamps, and units.
+
+## From Python Prototype to Embedded Code {#sec-practical-translating-python-prototypes}
+
+Python is excellent for learning, plotting, and building reference
+implementations. It is usually not what runs inside a flight controller or a
+tightly constrained navigation computer, and moving to C, C++, or Rust changes the
+engineering problem.
+
+| Python prototype | Embedded implementation |
+|---|---|
+| Dynamic arrays | Fixed-size arrays where possible |
+| NumPy hides loops | Loops and memory layout are explicit |
+| Exceptions are common | Error states are often explicit return values |
+| Heap allocation is easy | Heap allocation may be banned in real-time paths |
+| Units live in variable names | Units may need strong types or strict conventions |
+| Plots are immediate | Diagnostics must be logged and decoded later |
+
+: What changes between a Python prototype and embedded code. {#tbl-practical-python-embedded}
+
+**Keep the Python version as a reference model.** Do not throw it away after
+porting. Generate small test vectors from it and compare the embedded outputs
+within tolerances, function by function: coordinate transforms, quaternion
+propagation, gravity and Earth rate, process-noise discretization, measurement
+prediction, the innovation and gain, and covariance symmetry and positive
+definiteness after updates.
+
+**Prefer fixed dimensions.** Many navigation filters have known state and
+measurement dimensions: a 15-state error model, a 3D position fix, a 6D
+position-velocity fix. Fixed sizes make timing, allocation, and stack usage easy
+to reason about. Where the Python prototype lets `np.linalg.solve` discover
+shapes at runtime, the embedded version should name its dimensions, and like the
+prototype it should solve linear systems rather than form explicit inverses.
+
+**Control memory allocation.** Real-time loops should not allocate memory
+unpredictably. In C++ that usually means fixed-size Eigen matrices or preallocated
+buffers; in Rust, stack arrays, fixed-capacity containers, or caller-owned
+workspaces; in C, being honest about every buffer size and checking every index.
+If a loop must run at 400 Hz, do not let it discover at runtime that memory
+allocation is slow today.
+
+**Use types to protect conventions.** Many bugs are convention mistakes: seconds
+versus milliseconds, radians versus degrees, NED versus ENU, body-to-navigation
+versus navigation-to-body, quaternion component order. C++ and Rust can encode
+some of these in types (a `Duration` is not a `float`, a `QuatWxyz` is not a
+`QuatXyzw`); use them where the added complexity buys real safety. At minimum,
+name variables with units and frames:
+
+```python
+gyro_radps_b = imu.gyro_radps
+accel_mps2_b = imu.accel_mps2
+position_ned_m = state.position_ned_m
+```
+
+This looks fussy until the day it prevents a degree/radian bug from steering a
+vehicle into the wrong patch of reality. Eigen deserves a specific warning: its
+quaternion constructor takes `(w, x, y, z)`, but its `coeffs()` storage order is
+`(x, y, z, w)`, so the same library uses both conventions depending on how you
+touch it.
+
+## Testing and Validation {#sec-practical-testing-validation}
+
+Do not jump from a plot on recorded data to a full autonomous field test. Build a
+validation ladder.
+
+| Level | Purpose | Example |
+|---|---|---|
+| Unit tests | Check small math blocks | Quaternion update against a known rotation |
+| Recorded datasets | Check estimator behavior | Replay a log with GNSS and IMU |
+| Synthetic faults | Check failure handling | Drop GNSS for 30 s; inject a 50 ms timing error |
+| Monte Carlo | Check consistency and sensitivity | ANEES over randomized noise and initial errors |
+| Hardware-in-the-loop | Check I/O and timing | Feed logged IMU and GNSS to the target computer in real time |
+| Low-risk vehicle tests | Check integration | Slow straight lines, stop-and-go, gentle turns |
+| Representative field tests | Check real operation | Terrain, vibration, multipath, outages |
+
+: The validation ladder. {#tbl-practical-validation-ladder}
+
+The early tests should be boring. Stationary tests, straight-line motion, slow
+turns, known lever arms, and short outages catch many errors before the system
+gets near a difficult autonomy scenario. If you cannot explain a failure from the
+logs, add better logs before the next test. Repeating a field test without better
+instrumentation is usually just collecting more confusion.
+
+### Consistency is a pass/fail test
+
+"The estimate looks plausible" is not a test result. Consistency gives numbers
+with pass/fail bounds (@sec-kf-consistency). In simulation, where truth is known,
+run $M$ Monte Carlo trials and require the average NEES over the $n$ error states
+to stay inside its chi-square bounds; with real data, require the time-averaged
+NIS of each aiding sensor to stay inside its bounds, and the innovations to be
+white. The bounds are cheap to compute and belong in automated tests:
+
+```{python}
+#| label: practical-consistency-bounds
+
+def average_chi2_bounds(dof, n_samples, confidence=0.95):
+    """Two-sided bounds on the average of n_samples independent chi-square(dof) values."""
+    alpha = 1.0 - confidence
+    lo, hi = chi2.ppf([alpha / 2.0, 1.0 - alpha / 2.0], dof * n_samples)
+    return lo / n_samples, hi / n_samples
+
+
+print("single NEES sample, n = 15:          [%.1f, %.1f]" % average_chi2_bounds(15, 1))
+print("ANEES, n = 15, M = 50 runs:          [%.2f, %.2f]" % average_chi2_bounds(15, 50))
+print("time-averaged NIS, m = 3, K = 600:   [%.2f, %.2f]" % average_chi2_bounds(3, 600))
+```
+
+A single NEES sample of a 15-state filter can land anywhere from about 6 to 27
+without anything being wrong, which is why one run proves little. Fifty runs pin
+the average to within about ±10% of 15, so a covariance that is consistently
+too small or too large by more than that fails the test. Successive NEES values
+within one run are correlated, so average across runs at each time step, as
+@sec-kf-nees-nis does, rather than treating every step of every run as an
+independent sample. Replay tests on recorded data can assert NIS bounds in the
+same way, and a regression that pushes NIS out of bounds should fail the build
+just as surely as a crash.
+
+### Unit tests for navigation components
+
+Navigation code is unusually well suited to unit testing, because so much of it
+has exact answers. Frame conversions must round-trip. A perfect, stationary IMU
+must leave a full mechanization at rest. A buffer must accept its own edges. With
+`pytest` (in the course's development dependencies; run with `uv run pytest`),
+such tests are a few lines each:
+
+```python
+# tests/test_nav_core.py
+import numpy as np
+import pytest
+from scipy.spatial.transform import Rotation
+
+from nav_core.frames import to_ros_odometry, from_ros_odometry
+from nav_core.strapdown import StrapdownNED, stationary_imu_reading
+
+
+@pytest.mark.parametrize("yaw_deg", [0.0, 30.0, 179.0, -90.0])
+@pytest.mark.parametrize("pitch_deg", [-60.0, 0.0, 5.0])
+def test_ros_conversion_round_trips(yaw_deg, pitch_deg):
+    x, y, z, w = Rotation.from_euler("ZYX", [yaw_deg, pitch_deg, 3.0], degrees=True).as_quat()
+    q_bn = np.array([w, x, y, z])
+    p_ned, v_ned = np.array([10.0, -4.0, 2.0]), np.array([1.0, 2.0, -0.5])
+    ros = to_ros_odometry(p_ned, v_ned, q_bn, np.zeros(3), np.eye(15))
+    p_back, v_back, q_back = from_ros_odometry(ros)
+    np.testing.assert_allclose(p_back, p_ned, atol=1e-12)
+    np.testing.assert_allclose(v_back, v_ned, atol=1e-12)
+    assert abs(abs(q_back @ q_bn) - 1.0) < 1e-12     # q and -q are the same rotation
+
+
+def test_stationary_imu_stays_put():
+    """A perfect IMU at rest at WPI: one minute of full mechanization must not move."""
+    lat, lon, h = np.deg2rad(42.27), np.deg2rad(-71.81), 150.0
+    ins = StrapdownNED(lat, lon, h, v_ned=np.zeros(3), q_bn=np.array([1.0, 0, 0, 0]))
+    f_b, omega_b = stationary_imu_reading(lat, h, ins.q_bn)   # gravity and Earth rate
+    for _ in range(60 * 200):
+        ins.step(f_b, omega_b, dt=1.0 / 200.0)
+    assert np.linalg.norm(ins.v_ned) < 1e-6
+    assert abs(ins.lat - lat) < 1e-12
+```
+
+The stationary test catches an astonishing range of bugs (a wrong gravity sign,
+a missing Earth-rate term, transposed rotations) and it runs in well under a
+second. The flat-Earth drift in @sec-ins-gnss-stationary-demo is exactly what it
+would catch if someone simplified the mechanization.
+
+### Evaluation evidence
+
+Do not reuse a performance table across vehicles, sensors, datasets, or compute
+platforms. Report a result only together with its truth source, time alignment,
+environment, configuration, and any excluded segments. The evidence below is a
+defensible minimum.
+
+| Evidence | Question answered |
+|---|---|
+| Absolute and relative position and attitude error | How close was the estimate where truth is available? |
+| NEES (with truth) and NIS (without), against chi-square bounds | Did the uncertainty match the observed errors and residuals? |
+| Accepted and rejected measurements, with quality flags | Which sensor evidence was trusted, and why? |
+| State-output age and timing distribution | Was the estimate timely enough for its consumers? |
+| Outage and fault-injection results | Did uncertainty and health mode respond honestly? |
+| Deterministic replay | Can the result be reproduced from the same data and configuration? |
+
+: Minimum evidence for a navigation performance claim. {#tbl-practical-evidence}
+
+The plots that earn their keep are position, velocity, and attitude errors with
+their ±3σ bounds, estimated biases, innovations with ±3√S bounds and their NIS,
+accepted versus rejected measurements, latency histograms, and the age of the
+state at the controller.
 
 ## INS Error Behavior in the Real World {#sec-practical-ins-error-behavior}
 
-An INS does not fail randomly. It tends to fail in recognizable ways.
+An INS does not fail randomly. It tends to fail in recognizable ways, and knowing
+them makes field logs much easier to read.
 
 ### Bias Drift
 
-Accelerometer bias integrates into velocity error and then position error. Gyro bias integrates into attitude error. Attitude error is especially dangerous because it rotates gravity incorrectly. A small tilt error can project part of the gravity vector into horizontal acceleration, creating horizontal velocity and position drift.
-
-That is why a stationary IMU test is useful but incomplete. It can reveal bias, noise, and warm-up behavior, but it does not excite every error mode that matters on a moving vehicle.
+Accelerometer bias integrates into velocity error and then position error. Gyro
+bias integrates into attitude error, and attitude error is especially dangerous
+because it rotates gravity incorrectly: a small tilt projects part of the gravity
+vector into horizontal acceleration, creating horizontal velocity and position
+drift (@sec-ins-errors-why-bias-dominates). That is why a stationary IMU test is
+useful but incomplete. It reveals bias, noise, and warm-up behavior, but it does
+not excite every error mode that matters on a moving vehicle.
 
 ### GNSS Outages
 
 During a GNSS outage, the inertial solution should coast and its covariance should
 grow. If position covariance stays tiny through a long outage, the filter is
 probably overconfident. That may look clean in a plot until GNSS returns and the
-innovation is enormous.
-
-For testing, deliberately create short GNSS outages in replay:
+innovation is enormous. For testing, deliberately create outages in replay:
 
 ```python
 def hide_gnss_between(samples, start_s, stop_s):
@@ -185,8 +1625,9 @@ def hide_gnss_between(samples, start_s, stop_s):
 ```
 
 Then check whether the estimator uncertainty grows, whether the return-to-GNSS
-innovation is plausible, and whether the filter recovers without a discontinuity
-that would surprise the controller.
+innovation is plausible (its NIS should be consistent with the grown covariance),
+and whether the filter recovers without a discontinuity that would surprise the
+controller.
 
 ### Schuler Cycles
 
@@ -209,302 +1650,41 @@ background reality. If you work in that domain, read a dedicated strapdown INS
 text and treat the simplified course implementation as the beginning, not the
 finish line.
 
-## Translating Python Prototypes to Embedded Code {#sec-practical-translating-python-prototypes}
-
-Python is excellent for learning, plotting, and building reference
-implementations. It is usually not what runs inside a flight controller or tightly
-constrained navigation computer.
-
-Moving from Python to C, C++, or Rust changes the engineering problem.
-
-| Python prototype | Embedded implementation |
-|---|---|
-| Dynamic arrays | Fixed-size arrays where possible |
-| NumPy hides loops | Loops and memory layout are explicit |
-| Exceptions are common | Error states are often explicit return values |
-| Heap allocation is easy | Heap allocation may be banned in real-time paths |
-| Units live in variable names | Units may need strong types or strict conventions |
-| Plots are immediate | Diagnostics must be logged and decoded later |
-
-### Keep a Reference Model
-
-Do not throw away the Python version after porting. Keep it as a reference model.
-For each low-level function in the embedded implementation, build small test
-vectors from Python and compare outputs within tolerances.
-
-Good candidates for cross-language tests include:
-
-- coordinate transforms;
-- quaternion propagation;
-- gravity and Earth-rate calculations;
-- process-noise discretization;
-- measurement prediction;
-- innovation and Kalman gain calculations;
-- covariance update symmetry and positive definiteness.
-
-### Prefer Fixed Dimensions
-
-Many navigation filters have known state and measurement dimensions. In Python,
-it is natural to let arrays carry shape at runtime. In embedded code, fixed
-dimensions make timing, allocation, and stack usage easier to reason about.
-
-For example, the Python prototype might say:
-
-```python
-innovation = z - H @ x
-S = H @ P @ H.T + R
-K = np.linalg.solve(S, H @ P).T
-```
-
-The embedded version should make the dimensions explicit: a 15-state error model,
-a 3D position measurement, a 6D position/velocity GNSS measurement, and so on. It
-should also avoid explicit matrix inverses. Use linear solves or factorizations.
-
-### Control Memory Allocation
-
-Real-time loops should not allocate memory unpredictably. In C++ that usually
-means fixed-size Eigen matrices or preallocated buffers. In Rust it usually means
-stack-allocated arrays, fixed-capacity containers, or caller-owned workspaces. In C
-it means being honest about every buffer size and checking every index.
-
-The rule is simple: if a loop must run at 400 Hz, do not let it discover at runtime
-that memory allocation is slow today.
-
-### Use Types to Protect Conventions
-
-Some bugs are just convention mistakes:
-
-- seconds vs. milliseconds;
-- radians vs. degrees;
-- NED vs. ENU;
-- body-to-navigation vs. navigation-to-body rotation;
-- latitude/longitude in degrees vs. radians;
-- quaternion component order.
-
-Python can still be disciplined, but C++ and Rust give you more tools to encode
-these constraints in types. Use those tools when the added complexity buys real
-safety. At minimum, name variables with units and frames:
-
-```python
-gyro_radps_b = imu.gyro_radps
-accel_mps2_b = imu.accel_mps2
-position_ned_m = state.position_ned_m
-```
-
-This looks fussy until the day it prevents a degree/radian bug from steering a
-vehicle into the wrong patch of reality.
-
-## Calibration, Configuration, and Frame Management {#sec-practical-calibration-configuration-frame}
-
-Calibration is not a side quest. It is part of the estimator.
-
-A practical system needs records for:
-
-- IMU bias estimates at startup;
-- accelerometer and gyro scale factors if modeled;
-- IMU axis conventions and mounting rotation;
-- GNSS antenna lever arm relative to the IMU/body frame;
-- camera extrinsics and intrinsics if vision is used;
-- time offsets between sensors;
-- covariance and process-noise tuning values;
-- firmware, estimator, and configuration versions.
-
-These values should be loaded from explicit configuration or calibration files and
-included in logs. A field result without the matching calibration is only partly
-useful.
-
-Frame management deserves the same care. Pick conventions and write them down:
-
-- What is the body frame?
-- Is the local navigation frame NED or ENU?
-- Are rotations stored as body-to-navigation or navigation-to-body?
-- Are quaternions ordered `[w, x, y, z]` or `[x, y, z, w]`?
-- Are latitude and longitude stored in radians internally?
-
-The convention itself is less important than consistency. Mixed conventions are
-the source of many navigation failures that look mysterious until someone draws
-the axes.
-
-## Real-Time Execution and Health Monitoring {#sec-practical-real-time-execution}
-
-A real-time navigation package has timing budgets. Approximate values might look
-like this:
-
-| Component | Typical rate | Practical concern |
-|---|---:|---|
-| IMU propagation | 100-1000 Hz | Must be deterministic and low latency |
-| GNSS update | 1-20 Hz | Must use fix time, not arrival time |
-| Camera or lidar update | 5-60 Hz | Processing delay can dominate |
-| Health monitor | 1-50 Hz | Must detect stale or inconsistent state |
-| State output to control | 20-200 Hz | Must publish a fresh, timestamped state |
-| Logging | Sensor rate | Must not block estimator deadlines |
-
-The estimator should measure its own timing:
-
-```python
-import time
-
-
-class StepTimer:
-    def __init__(self):
-        self.records_ms = []
-
-    def time_step(self, name, fn, *args, **kwargs):
-        start = time.perf_counter()
-        result = fn(*args, **kwargs)
-        elapsed_ms = 1000.0 * (time.perf_counter() - start)
-        self.records_ms.append((name, elapsed_ms))
-        return result
-```
-
-Profiling is not only for optimization. Timing spikes often reveal logging,
-allocation, blocking I/O, or lock contention in places where the estimator should
-be predictable.
-
-### Concurrency
-
-Most vehicle systems receive sensors asynchronously. A common pattern is to let
-sensor drivers, perception front ends, logging, and health monitoring run in
-separate tasks while keeping the estimator state protected by a small, explicit
-critical section.
-
-The practical rule is to do expensive work outside the estimator lock. Feature
-tracking, packet parsing, file I/O, and visualization should not block IMU
-propagation. If a shared state lock is held long enough to miss sensor deadlines,
-the software architecture is part of the navigation error budget now.
-
-### Numerical Health
-
-Long-running Kalman filters need numerical checks. At minimum:
-
-- force covariance symmetry after updates;
-- check for NaNs and infinities;
-- check that covariance diagonal entries are nonnegative;
-- monitor condition number or Cholesky failures;
-- gate large innovations before applying updates;
-- use Joseph form or square-root methods when long-duration stability matters.
-
-The Joseph covariance update is a useful default:
-
-```python
-import numpy as np
-
-
-def joseph_update(P, K, H, R):
-    """Return a numerically robust covariance update."""
-    I = np.eye(P.shape[0])
-    I_KH = I - K @ H
-    P_new = I_KH @ P @ I_KH.T + K @ R @ K.T
-    return 0.5 * (P_new + P_new.T)
-```
-
-Do not use this as an excuse to ignore bad modeling. Joseph form protects against
-some numerical damage. It does not rescue a filter with wrong units, wrong signs,
-or fake measurement covariances.
-
-### Innovation Health
-
-The normalized innovation squared is one of the most useful estimator diagnostics:
-
-$$
-d^2 = \mathbf{y}^T \mathbf{S}^{-1}\mathbf{y}.
-$$
-
-Here $\mathbf{y}$ is the innovation and $\mathbf{S}$ is the innovation covariance.
-For a consistent filter, this statistic should be plausible for the measurement
-dimension. It will not be perfect on real data, but it should not be absurd for
-long stretches.
-
-```python
-def normalized_innovation_squared(y, S):
-    """Compute y.T @ inv(S) @ y without forming inv(S)."""
-    return float(y.T @ np.linalg.solve(S, y))
-```
-
-Use innovation statistics to detect bad timing, bad noise assumptions, multipath,
-miscalibration, or sign errors. If the innovations are always large in one
-direction, do not start by tuning harder. Start by checking frames, lever arms,
-timestamps, and units.
-
-### Watchdogs and Degraded Modes
-
-The vehicle needs to know when navigation is unhealthy. A watchdog can check:
-
-- time since last IMU sample;
-- time since last external aiding measurement;
-- time since last successful state output;
-- fraction of measurements rejected by gating;
-- covariance growth beyond a configured bound;
-- estimator mode changes;
-- NaN or invalid-state events.
-
-The fallback does not have to be glamorous. It might be "hold position," "slow
-down," "return control to a human," "use attitude-only stabilization," or "coast
-briefly on IMU-only navigation." The unacceptable behavior is silently publishing
-a confident state estimate after the estimator knows it is unhealthy.
-
-## Validation Ladder {#sec-practical-validation-ladder}
-
-Do not jump from a plot on recorded data to a full autonomous field test. Build a
-validation ladder.
-
-| Level | Purpose | Example |
-|---|---|---|
-| Unit tests | Check small math blocks | Quaternion update against known rotation |
-| Static datasets | Check estimator behavior | Replay a bag/log with GNSS and IMU |
-| Synthetic faults | Check failure handling | Drop GNSS for 30 seconds |
-| Monte Carlo | Check sensitivity | Randomize sensor noise and initial errors |
-| Hardware-in-the-loop | Check I/O and timing | Feed logged IMU/GNSS to target computer |
-| Low-risk vehicle tests | Check integration | Slow straight-line and stop/go tests |
-| Representative field tests | Check real operation | Terrain, vibration, multipath, outages |
-
-The early tests should be boring. Stationary tests, straight-line motion, slow
-turns, known lever arms, and short outages catch many errors before the system
-gets near a difficult autonomy scenario.
-
-Useful plots and tables include:
-
-- position, velocity, and attitude over time;
-- estimated IMU biases;
-- covariance diagonals;
-- GNSS innovations and normalized innovation squared;
-- accepted vs. rejected measurements;
-- timing latency histograms;
-- state-output age at the controller;
-- comparison to ground truth when available.
-
-If you cannot explain a failure from the logs, add better logs before the next
-test. Repeating a field test without better instrumentation is usually just
-collecting more confusion.
-
 ## Common Failure Modes {#sec-practical-common-failure-modes}
 
 Most deployed navigation failures are not exotic. They are ordinary mistakes with
 large consequences.
 
 **Timestamp bugs:** measurements are processed at arrival time instead of
-measurement time.
+measurement time, or two clocks are assumed to agree when they do not.
 
-**Frame convention bugs:** ENU and NED are mixed, or a rotation is applied in the
-wrong direction.
+**Time-scale bugs:** GPS time and UTC are mixed (18 s), or a replayed log is
+stamped with the wall clock instead of simulated time.
 
-**Unit bugs:** milliseconds are used as seconds, degrees are used as radians, or
-latitude/longitude differences are treated as meters.
+**Frame convention bugs:** ENU and NED are mixed, a rotation is applied in the
+wrong direction, or a quaternion is read in the wrong component order.
+
+**Unit bugs:** milliseconds are used as seconds, degrees as radians, or
+latitude/longitude differences as meters.
 
 **Lever-arm bugs:** GNSS antenna measurements are compared directly to the IMU
-position even though the antenna is somewhere else on the vehicle.
+position even though the antenna is somewhere else on the vehicle, or the lever
+arm has the wrong sign.
 
-**Overconfident covariance:** the filter claims high certainty during outages or
-after rejected aiding measurements.
+**Overconfident covariance:** the filter claims high certainty during outages,
+after rejected aiding measurements, or because a driver published zeros meaning
+"unknown."
 
 **Bad initialization:** the system starts before gyro bias, attitude, or sensor
 time offsets are reasonable.
 
 **Silent sensor degradation:** GNSS multipath, IMU saturation, vibration, thermal
-shift, or camera blur enters the estimator as if nothing changed.
+shift, a DVL losing bottom lock, or camera blur enters the estimator as if
+nothing changed.
 
 **Logging gaps:** the system logs state estimates but not raw measurements,
-configuration, calibration, or rejected updates, making failures hard to replay.
+configuration, calibration, or rejected updates, making failures impossible to
+replay.
 
 **Controller mismatch:** the controller assumes the state is current, in a
 different frame, or smoother than the estimator actually provides.
@@ -512,34 +1692,304 @@ different frame, or smoother than the estimator actually provides.
 These are not glamorous problems. They are also the problems that consume real
 engineering time.
 
+## Case Study: Navigating a Survey AUV {#sec-practical-case-study}
+
+To see the whole contract on one vehicle, consider an autonomous underwater
+vehicle surveying the seafloor: a torpedo-shaped AUV a few meters long, rated to
+3000 m, flying 40 m above the bottom at 2 m/s with a multibeam echosounder and a
+side-scan sonar, for missions of a day or more. The client wants seafloor
+features positioned to better than 5 m (95%) in 1500 m of water, along a grid of
+survey lines tens of kilometers long. GNSS does not penetrate water, so for most
+of the mission the vehicle is navigating on inertial sensors, a Doppler velocity
+log, a pressure sensor, and acoustic fixes relayed from its support ship. It is a
+compact version of every problem in this chapter, and the configuration is
+typical of operational survey AUVs [@paull2014auv].
+
+### The sensor suite
+
+| Sensor | Measures | Rate | Latency | Frame | Accuracy (typical) |
+|---|---|---|---|---|---|
+| Navigation-grade INS (fiber-optic gyros) | Δθ, Δv | 200 Hz | < 2 ms | IMU, mounted to body | Gyro bias ~0.01°/h; accel bias ~50 µg |
+| GNSS, single mast antenna | Position, velocity | 5 Hz, surfaced only | 50–100 ms | Antenna, ~1.2 m above IMU | 1–2 m (SBAS) |
+| DVL, 600 kHz, four beams | Velocity over the seafloor (bottom track) or through the water (water track); altitude | 4–8 Hz | 50–150 ms | DVL head, rotated ~45° in yaw | 0.2% ± 1 mm/s; bottom lock to ~90 m altitude |
+| Pressure sensor | Depth | 10 Hz | ~20 ms | Sensor port, ~1 m ahead of IMU | 0.01% of full scale (0.3 m) plus conversion error |
+| USBL, ship-based, via acoustic modem | AUV position | every 5–10 s | 3–10 s | Ship transducer → ship body → geodetic | A few tenths of a percent of slant range |
+| Ship INS and dual-antenna GNSS | Ship position, heading, attitude for the USBL | 10–20 Hz | ms | Ship body | Heading a few hundredths of a degree |
+
+: Sensor suite for the survey AUV and its support ship. {#tbl-practical-auv-sensors}
+
+The last row is on the ship, not the AUV, but it is part of the AUV's navigation
+system whether or not anyone drew it on the AUV's block diagram. The **USBL**
+(ultra-short baseline) transceiver under the ship measures the range and bearing
+to a transponder on the AUV; turning that into an AUV position needs the ship's
+position, heading, and attitude at the instant of the ping. A 0.1° error in ship
+heading at 1200 m horizontal offset is 2 m of AUV position error, so the ship's
+dual-antenna GNSS heading and its motion sensor are AUV sensors too. The fix is
+then sent down to the AUV through the acoustic modem, seconds after the moment it
+describes (@fig-practical-auv-architecture).
+
+```{mermaid}
+%%| label: fig-practical-auv-architecture
+%%| fig-cap: "Navigation architecture of the survey AUV. The USBL fix is computed on the ship from the ship's own navigation and relayed acoustically, so it reaches the AUV's estimator seconds late and enters through the event-time buffer."
+
+flowchart LR
+    subgraph SHIP["Support ship"]
+        SN["Ship INS +<br/>dual-antenna GNSS"] --> UP["USBL processor"]
+        UT["USBL transceiver"] --> UP
+    end
+    subgraph AUV["AUV"]
+        IMU["INS (200 Hz)"] --> EK["ESKF"]
+        DVL["DVL (bottom/water track)"] --> EK
+        PR["Pressure depth"] --> EK
+        GN["GNSS mast antenna<br/>(surface only)"] --> EK
+        MD["Acoustic modem"] --> BF["Event-time<br/>buffer"]
+        BF --> EK
+        EK --> OUT["odom state 50 Hz,<br/>map-to-odom, health"]
+        OUT --> AP["Autopilot and<br/>mission manager"]
+        EK --> LG["Logs for<br/>post-processing"]
+    end
+    UP -. "fix, 3-10 s late" .-> MD
+```
+
+### Estimator architecture
+
+The estimator is the ESKF of @sec-ins-gnss, extended for the sensors. Its 15
+error states (position, velocity, attitude, accelerometer and gyro biases) are
+augmented with a DVL scale factor, three small DVL misalignment angles, a depth
+sensor bias, and two horizontal water-current components for water-track
+operation, for 22 in total. A navigation-grade gyro senses Earth rate, so the
+INS can find north by itself (@sec-ins-gnss-alignment); on a rolling ship's
+deck it aligns with GNSS aiding instead, and it refines that alignment on the
+surface before diving.
+
+Each sensor enters through its own measurement model. **GNSS** position is a
+loose update with the antenna lever arm, accepted only when the vehicle is
+surfaced (depth below 0.3 m, and the receiver reporting a fix not interrupted by
+waves washing over the mast). **DVL bottom-track** velocity is the body-frame
+model of @sec-measurement-models-navigation-sensors, with the scale factor,
+misalignment, and the lever-arm term $\boldsymbol{\omega}_{nb}^b \times
+\boldsymbol{\ell}_d^b$; because it is resolved in the body frame, it also makes
+heading drift observable as the vehicle turns at the end of each survey line.
+**DVL water-track** velocity is the same model minus the current states, used
+when the bottom is out of range. **Depth** from pressure constrains the vertical
+channel tightly, which is the best-behaved channel on the vehicle. **USBL** fixes
+constrain horizontal position; each arrives late and is applied at its time of
+validity through the buffer, after an NIS gate rejects outliers caused by
+acoustic multipath off the surface or the ship's hull.
+
+Two details trip people up. Depth is measured from the sea surface, not from the
+WGS-84 ellipsoid, and the two differ by the geoid height (tens of meters) plus
+the tide, so the filter carries depth in its vertical channel and converts to
+ellipsoidal height only at the output. And converting pressure to depth depends
+on water density and gravity: treating a decibar as a meter is wrong by the
+better part of a percent, more than ten meters at 2000 m, so use the standard
+seawater formula with latitude.
+
+Between USBL fixes, a well-calibrated DVL-aided INS drifts horizontally by a tenth
+to a few tenths of a percent of distance traveled; across a 10 km survey line that
+is roughly 10–30 m, which the USBL fixes then pull back. The real-time filter
+serves the autopilot. The survey product is renavigated afterward with a smoother
+(@sec-kf-smoothing) that uses every USBL fix, past and future, which is how the
+final positions meet a specification that the real-time filter alone would not.
+That is the contract in miniature: two consumers with different needs, and an
+estimator design that serves both.
+
+### Time-synchronization plan
+
+Timing here is forgiving in one way and unforgiving in another. At 2 m/s, a 1 ms
+timing error is 2 mm of position, and at a 3°/s turn rate it is 0.003° of heading,
+so millisecond-level synchronization is ample on the AUV. The hard problems are
+the multi-second latency of the USBL fix and the 100 ms-class latency of the DVL.
+The plan is as follows. Every computer runs on GPS time internally, with UTC used
+only in human-readable logs. On deck and at the surface, the navigation computer
+disciplines its clock to the GNSS receiver's PPS and time messages through
+`chrony`; the INS stamps its IMU samples with its own PPS-disciplined counter.
+Submerged, the computer clock free-runs on an oven-controlled oscillator whose
+drift over a day-long dive is around a millisecond, which the budget above absorbs
+(an ordinary 20 ppm crystal would drift by more than a second). Where a DVL's
+output carries its mid-ping time, that is the stamp to use; this vehicle's DVL
+driver stamps arrival time, so the 84 ms latency in the calibration file of
+@sec-practical-calibration-configuration-frame was measured by cross-correlating
+DVL and INS velocities during the calibration run. The USBL fix is stamped on the
+ship in GPS time at the moment the AUV's transponder replied, which is the time of
+validity (not the reception time at the ship, and certainly not the time the modem
+message reached the AUV). The buffer retains 15 s of states and IMU increments,
+comfortably more than the worst expected fix latency.
+
+On the ship side the requirement is much tighter. The USBL solution needs the
+ship's attitude at the instant of the ping, and in a seaway the ship rolls at
+several degrees per second. A 10 ms misalignment between the USBL and motion
+sensor clocks at 4°/s of roll is a 0.04° angle error, which at 1800 m of slant
+range is more than a meter. That is why USBL installations tie the transceiver
+and motion sensor to a common PPS.
+
+### Calibration list
+
+Before the vehicle is trusted on a survey, the calibration file needs: the IMU
+mounting rotation and an acceptance-test Allan deviation for each axis; lever arms
+from the IMU to the DVL, the GNSS antenna, the pressure port, and the USBL
+transponder, measured with a total station in the workshop; the DVL mounting
+rotation and scale factor from an in-water calibration run (reciprocal straight
+lines and a box pattern on the surface with GNSS, which pins the yaw
+misalignment to a few hundredths of a degree and the scale to about 0.1%); the
+DVL latency; a pressure-sensor zero taken at the surface before each dive; the
+sound-speed profile from a CTD cast, used for USBL ray bending; and, on the ship,
+the USBL transceiver alignment from a dedicated calibration pattern and the
+ship's own lever arms and timing. The DVL scale and misalignment remain filter
+states with small process noise, so the calibration run provides good initial
+values and the filter tracks small changes.
+
+### Output contract to the autopilot
+
+The autopilot's depth, pitch, and heading loops have bandwidths well under 1 Hz,
+so a 50 Hz output with under 20 ms of latency is ample. The navigation node
+publishes the odom-frame pose (continuous), body-frame velocity, attitude,
+angular rate, depth, and DVL altitude above the seabed, with covariances, plus the
+map-to-odom correction and a health message carrying the mode, the active aids,
+the time since the last USBL fix and since bottom lock was last held, and per-aid
+NIS flags.
+
+Line following shows why the odom/map split matters here. Survey lines are
+defined in geographic coordinates, so cross-track error is ultimately a
+map-frame quantity. But a USBL fix can move the map-frame estimate by several
+meters at once, and a cross-track controller that sees a 4 m step will turn
+sharply to correct it, putting a kink in the multibeam swath that the
+post-processing team will remember. The guidance layer therefore applies
+map-to-odom corrections gradually, rate-limited to a few centimeters per second,
+and the survey positions are fixed later by the smoother anyway. Terrain safety
+uses the DVL's altitude measurement and a forward-looking sonar directly, never
+the navigation position, because the seafloor does not care where the filter
+thinks it is.
+
+### Degraded modes
+
+The vehicle's modes map directly onto @tbl-practical-consumer-actions. **Surfaced
+with GNSS** is `AIDED`. **Submerged with bottom lock** is `DEAD_RECKONING`,
+promoted to `AIDED` while USBL fixes are fresh. **Water track** is a weaker
+`DEAD_RECKONING`: unknown currents make drift grow faster, and the published σ
+must grow with it. **No DVL at all** is `INERTIAL_ONLY`, which a navigation-grade
+INS survives for minutes with modest error but not for hours. The policies
+follow from the survey requirement. If the horizontal σ exceeds the survey
+tolerance, the sonar data are flagged as out of specification but the line
+continues. If σ exceeds 25 m, or the vehicle has been inertial-only for more than
+ten minutes, it abandons the line, holds a safe altitude, and waits for USBL
+fixes or, if the mission allows, surfaces for GNSS. If bottom lock is lost near
+the seafloor, the vehicle climbs, because the DVL was also its altimeter. If the
+USBL NIS monitor alarms, USBL updates are suspended and the operator on the ship
+is alerted. The descent is a planned degraded mode: for most of the 1500 m
+descent the bottom is beyond DVL range, so the vehicle navigates on the INS,
+water track, and USBL, and the plan budgets the horizontal error at the moment
+bottom lock is acquired.
+
+### Validation plan
+
+The validation ladder for this vehicle runs as follows. Unit tests and
+deterministic replay of earlier missions guard against regressions. A
+hardware-in-the-loop bench replays recorded INS, DVL, pressure, and USBL data
+into the navigation computer in real time and checks timing. Dock tests check
+gyrocompass convergence time and heading against the surveyed heading of the
+quay. Surface runs with RTK GNSS as truth provide NEES, and replaying them with
+GNSS masked emulates a dive with a perfect reference. Shallow dives with GNSS
+fixes before and after give the surfacing error as a percentage of distance
+traveled, and across many dives the NEES of the surfacing error, which has two
+horizontal degrees of freedom, should average 2 within its chi-square bounds.
+Deep trials monitor NIS on every DVL and USBL update and compare the real-time
+track with the smoothed one. Fault injection in replay covers DVL dropouts, USBL
+outliers, fixes later than the buffer, and a clock step. Only after all of that
+does the vehicle go to work, and the logs from its first real survey become the
+next regression test.
+
 ## Practical Checklist {#sec-practical-checklist}
 
-Before trusting a navigation system on a vehicle, check the following:
+Before trusting a navigation system on a vehicle, check the following.
 
-- The estimator can replay recorded logs deterministically.
-- Raw sensor data, calibrated measurements, state, innovations, health flags,
-  configuration, and calibration are logged together.
-- Every measurement has a documented time of validity.
-- Delayed measurements are handled with state buffering or an explicit latency
-  model.
-- IMU, GNSS, camera, and vehicle frames are documented with direction conventions.
-- Lever arms and mounting rotations are configured outside estimator source code.
-- Position, velocity, attitude, bias, and covariance outputs use explicit units.
-- GNSS outages cause covariance growth.
-- Large innovations are gated and counted.
-- Joseph form, square-root filtering, or another numerically robust covariance
-  strategy is used for long-running filters.
-- The estimator detects stale sensors, invalid states, and missed deadlines.
-- The autonomy stack receives timestamped state and health information, not just
-  position and attitude.
-- The embedded implementation is tested against the Python reference on small
-  numerical cases.
-- Field tests begin with stationary, straight-line, and low-speed maneuvers before
-  aggressive autonomy.
+- [ ] The estimator replays recorded logs deterministically, from the same data and configuration.
+- [ ] Raw sensor data, calibrated measurements, state, innovations, accept/reject decisions, health, configuration, and calibration are logged together.
+- [ ] Every measurement has a documented frame, unit, and time of validity.
+- [ ] The estimator runs on one continuous time scale; GPS time and UTC are never mixed; intervals come from a monotonic clock.
+- [ ] Clocks are synchronized (PPS, PTP, or triggering) or their offsets and drifts are estimated, and constant sensor time offsets are calibrated.
+- [ ] Delayed measurements are applied at their own time through a state buffer, a delayed fusion horizon, or an OOSM update.
+- [ ] Extrinsics, lever arms, time offsets, and noise settings live in one versioned calibration file, with sign conventions written next to the numbers; everything else is generated from it.
+- [ ] Every conversion between conventions (NED/ENU, FRD/FLU, quaternion order, degrees/radians) is named and unit-tested.
+- [ ] Covariance grows during outages; published covariances are never constants or zeros; NIS monitors run on every aid.
+- [ ] Large innovations are gated, counted, and logged.
+- [ ] Joseph form or a factored filter is used for long-running filters, with symmetry and NaN checks.
+- [ ] The output carries a time of validity, frames, covariance, and a health message with mode, active aids, and time since the last absolute fix.
+- [ ] Controllers receive a continuous state (or are told about resets); planners receive a globally consistent one.
+- [ ] Every consumer has its own watchdog on the age of the navigation state.
+- [ ] Consistency (ANEES in simulation, NIS on data) is part of the automated tests.
+- [ ] The embedded implementation is tested against the Python reference on small numerical cases.
+- [ ] Field tests begin with stationary, straight-line, and low-speed maneuvers before aggressive autonomy.
 
-The goal is not to make students afraid of implementation. The goal is to make the
-boundary visible. A navigation algorithm is the mathematical center of the system,
-but a navigation package is a real-time software product wrapped around sensors,
-calibration, timing, logging, health monitoring, and vehicle contracts.
+The goal is not to make anyone afraid of implementation. The goal is to make the
+boundary visible. A navigation algorithm is the mathematical center of the
+system, but a navigation package is a real-time software product wrapped around
+sensors, calibration, timing, logging, health monitoring, and contracts with the
+vehicle. Integration is harder than a block diagram because it forces every
+hidden assumption to become an interface, a timestamp, a calibration record, or
+a test, and that wrapper is where many real systems succeed or fail.
 
-That wrapper is where many real systems succeed or fail.
+## Exercises {#sec-practical-exercises}
+
+1. **A time-sync and output contract for a delivery drone.** A quadrotor delivers
+   parcels at up to 15 m/s. Its flight controller has a 1 kHz IMU (filtered and
+   decimated to 400 Hz) and runs the rate and attitude loops; a companion computer
+   running ROS 2 hosts the navigation filter. Sensors: a GNSS receiver with PPS
+   (5 Hz, about 80 ms latency), a downward global-shutter camera for precision
+   landing on a marker (30 Hz, 8 ms exposure, 60 ms processing), and a lidar
+   altimeter (50 Hz, free-running clock). Write a one-page specification covering
+   (a) the clock master and how each device is synchronized or stamped, with the
+   expected residual error justified by $v\,\delta t$ and $\omega\,\delta t$
+   against each sensor's accuracy; (b) which offsets are calibrated offline,
+   which are estimated online, and how; (c) the rewind-buffer length; (d) the
+   outputs to the attitude/velocity controller, the landing-marker tracker, and
+   the mission planner, each with frames, rate, latency budget, and whether it
+   may jump; and (e) the health fields and the degraded modes, with the action
+   each consumer takes. Where would you put the navigation filter if the
+   companion computer's latency were unpredictable, and why?
+
+2. **Coming back from ROS.** (a) Derive @eq-practical-twist-error from
+   $\mathbf{v}^b = \mathbf{C}_n^b\mathbf{v}^n$ and the book's attitude-error
+   definition. (b) Write `from_ros_odometry`, the inverse of `to_ros_odometry`
+   for the position, quaternion, and velocities, and test the round trip for
+   random attitudes, including pitch near ±90°. (c) Explain why the 15-state
+   covariance cannot be recovered from the two published 6×6 covariances, and
+   which information is lost. (d) Write the conversion for an incoming
+   `sensor_msgs/Imu` (FLU) to the book's FRD gyro and accelerometer vectors, and
+   check it on a level IMU at rest and on one rolled 90° to the right.
+
+3. **Estimating a GNSS time offset online.** Simulate a car in the horizontal
+   plane at 100 Hz with an accelerometer (in navigation axes, for simplicity) and
+   1 Hz GNSS position fixes with 0.5 m noise, stamped 80 ms late. Build a
+   Kalman filter with state $[\mathbf{p}, \mathbf{v}, t_d]$ driven by the
+   accelerometer, using @eq-practical-time-offset with $\dot{\mathbf{h}} =
+   \hat{\mathbf{v}}$. Run it (a) on a straight line at constant speed and (b) on a
+   figure-eight at the same average speed, starting from $\hat{t}_d = 0$ with a
+   100 ms standard deviation. Plot $\hat{t}_d$ and its 3σ bound for both. Explain
+   the difference with an observability argument, and say what kind of maneuver
+   you would ask a test driver for.
+
+4. **The late USBL fix.** The AUV of @sec-practical-case-study travels east at
+   2 m/s at 1500 m depth, 1000 m horizontally from the ship. A USBL fix with a
+   0.2%-of-slant-range standard deviation per horizontal axis reaches the
+   estimator 6 s after its time of validity. (a) If the filter applies it at
+   arrival time, what innovation does it see, what NIS does that produce, and
+   what happens with a 99% chi-square gate? What happens to the estimate if the
+   gate is disabled? (b) Size a rewind buffer for a worst-case latency of 12 s
+   if each entry stores the time, the 23-element nominal state (the 22 error
+   states with a four-element quaternion for attitude), the 22×22 covariance,
+   and the six IMU increments, all in double precision. How could you cut that by more
+   than an order of magnitude? (c) The ship heading is wrong by 0.08° and the
+   USBL and motion-sensor clocks are 15 ms apart while the ship rolls at 5°/s.
+   Estimate each resulting AUV position error and compare with the USBL's own
+   noise.
+
+5. **Testing the buffer, and adding attitude.** (a) Write `pytest` tests for
+   `StateBuffer` covering both edges, the interior, out-of-range queries,
+   non-monotonic pushes, and eviction, including one test that fails for a
+   version using `bisect_left` with an `i == 0` rejection. (b) Extend the buffer
+   to store the scalar-first quaternion $\mathbf{q}_b^n$ and interpolate it by
+   slerp, written in NumPy, taking care with the $\mathbf{q}$ versus
+   $-\mathbf{q}$ double cover. Test it against a constant-rate rotation, for
+   which slerp is exact. (c) Why should the covariance not be interpolated in
+   the same way?
