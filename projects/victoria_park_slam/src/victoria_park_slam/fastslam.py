@@ -209,6 +209,7 @@ class FastSLAM:
     rng: np.random.Generator = field(default_factory=lambda: np.random.default_rng(0))
     next_landmark_id: int = 0
     history: list[dict[str, float]] = field(default_factory=list)
+    best_snapshot: FastSLAMParticle | None = field(default=None, repr=False)
 
     # ------------------------------------------------------------------
     # Provided: construction and bookkeeping
@@ -292,8 +293,34 @@ class FastSLAM:
         return np.array([xy[0], xy[1], phi], dtype=np.float64)
 
     def best_particle(self) -> FastSLAMParticle:
-        """The particle with the largest weight."""
+        """The particle with the largest weight.
+
+        Right after a resample every weight is equal, so the maximum would be
+        an arbitrary particle; in that case this returns the copy of the best
+        particle that :meth:`resample_if_needed` saved before resampling.
+        """
+        if self.best_snapshot is not None:
+            return self.best_snapshot
         return self.particles[int(np.argmax(self.log_weights()))]
+
+    def resample_if_needed(self) -> tuple[float, bool]:
+        """Normalize the weights and resample when ``N_eff < resample_threshold * N``.
+
+        Saves a copy of the highest-weight particle first, so
+        :meth:`best_particle` (and the reported map and trajectory) still refer
+        to the best particle of this update after the weights become uniform.
+        Calls your :meth:`resample`. Returns ``(n_eff, resampled)``, with
+        ``n_eff`` computed before resampling.
+        """
+        weights = self.normalize_log_weights()
+        n_eff = effective_sample_size(weights)
+        resampled = n_eff < self.resample_threshold * len(self.particles)
+        if resampled:
+            self.best_snapshot = self.particles[int(np.argmax(weights))].copy()
+            self.resample()
+        else:
+            self.best_snapshot = None
+        return n_eff, resampled
 
     def landmark_counts(self, particle: FastSLAMParticle | None = None) -> tuple[int, int]:
         """``(total, confirmed)`` landmarks in ``particle`` (default: the best one)."""
@@ -363,8 +390,9 @@ class FastSLAM:
         spawn from it), add the log-weight factors of the shared spec, promote
         landmarks to ``CONFIRMED`` after ``confirm_associations`` associations,
         delete tentative landmarks not seen for ``tentative_timeout_s``, and
-        append the pose to ``particle.trajectory``. Then normalize the log
-        weights and call :meth:`resample` if ``N_eff`` is below
+        append the pose to ``particle.trajectory``. Then call the provided
+        :meth:`resample_if_needed`, which normalizes the log weights, remembers
+        the best particle, and calls :meth:`resample` when ``N_eff`` is below
         ``resample_threshold * N``. An empty observation list still needs the
         bookkeeping (timeouts, trajectory).
         """
