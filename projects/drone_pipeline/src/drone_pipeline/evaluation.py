@@ -90,12 +90,21 @@ def nees(errors: np.ndarray, covariances: np.ndarray, indices: Sequence[int] = r
     try:
         return np.einsum("ni,ni->n", e, np.linalg.solve(P, e[..., None])[..., 0])
     except np.linalg.LinAlgError:
-        # A collapsed particle cloud can have a singular covariance; use the
-        # pseudo-inverse sample by sample (the huge NEES that results is the
-        # honest answer: the filter claims certainty it does not have).
-        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-            values = np.array([ek @ np.linalg.pinv(Pk, hermitian=True) @ ek for ek, Pk in zip(e, P)])
-        return np.where(np.isfinite(values), values, np.inf)
+        # A collapsed particle cloud can have a singular covariance. Handle it
+        # sample by sample: any error in a direction the filter claims to know
+        # exactly (the covariance null space) is infinitely overconfident.
+        return np.array([_nees_one(ek, Pk) for ek, Pk in zip(e, P)])
+
+
+def _nees_one(error: np.ndarray, covariance: np.ndarray) -> float:
+    """``e^T P^-1 e`` for one sample, returning ``inf`` for error in P's null space."""
+    eigenvalues, eigenvectors = np.linalg.eigh(0.5 * (covariance + covariance.T))
+    scale = max(float(eigenvalues.max(initial=0.0)), 1e-300)
+    null = eigenvalues <= scale * 1e-12
+    components = eigenvectors.T @ error
+    if np.any(np.abs(components[null]) > 1e-12 * max(1.0, float(np.linalg.norm(error)))):
+        return float("inf")
+    return float(np.sum(components[~null] ** 2 / eigenvalues[~null]))
 
 
 def chi2_interval(dof: int, probability: float = 0.95, num_averaged: int = 1) -> tuple[float, float]:
@@ -114,7 +123,7 @@ def chi2_interval(dof: int, probability: float = 0.95, num_averaged: int = 1) ->
 def fraction_inside(values: np.ndarray, dof: int, probability: float = 0.95) -> float:
     """Fraction of NEES/NIS samples inside the single-sample chi-square interval."""
     values = np.asarray(values, dtype=np.float64)
-    values = values[np.isfinite(values)]
+    values = values[~np.isnan(values)]  # keep +inf: a diverged sample is outside the bounds
     if values.size == 0:
         return float("nan")
     low, high = chi2_interval(dof, probability)

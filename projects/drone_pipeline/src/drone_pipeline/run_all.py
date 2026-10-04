@@ -258,12 +258,20 @@ def make_navigators(x0: np.ndarray, R: np.ndarray, tuning: dict[str, Any]) -> di
     return {
         "EKF": lambda: filters.EKFNavigator(x0, P0, Q, R, nis_gate=gate),
         "UKF": lambda: filters.UKFNavigator(x0, P0, Q, R, nis_gate=gate, **tuning["ukf"]),
-        "PF": lambda: make_particle_filter(x0, P0, Q, R, tuning["pf"]),
+        "PF": lambda: make_particle_filter(x0, P0, Q, R, tuning["pf"], nis_gate=gate),
     }
 
 
-def make_particle_filter(x0: np.ndarray, P0: np.ndarray, Q: np.ndarray, R: np.ndarray, pf_tuning: dict[str, Any]):
-    """Draw ``num_particles`` around ``x0`` with covariance ``P0``."""
+def make_particle_filter(
+    x0: np.ndarray,
+    P0: np.ndarray,
+    Q: np.ndarray,
+    R: np.ndarray,
+    pf_tuning: dict[str, Any],
+    *,
+    nis_gate: float | None = None,
+):
+    """Draw ``num_particles`` around ``x0`` with covariance ``P0``; gate like the Kalman filters."""
     rng = np.random.default_rng(pf_tuning.get("seed", 0))
     particles = rng.multivariate_normal(x0, P0, size=int(pf_tuning["num_particles"]))
     return filters.ParticleFilterNavigator(
@@ -272,6 +280,7 @@ def make_particle_filter(x0: np.ndarray, P0: np.ndarray, Q: np.ndarray, R: np.nd
         R,
         resample_threshold=pf_tuning.get("resample_threshold", 0.5),
         seed=pf_tuning.get("seed", 0),
+        nis_gate=nis_gate,
     )
 
 
@@ -492,7 +501,11 @@ def particle_count_study(
     Q = np.diag(tuning["Q_density"])
     for count in counts:
         try:
-            nav = make_particle_filter(x0, P0, Q, np.asarray(R) * tuning["R_inflation"], {**tuning["pf"], "num_particles": count})
+            gate_probability = tuning["gate_probability"]
+            gate = None if gate_probability is None else float(chi2.ppf(gate_probability, 6))
+            nav = make_particle_filter(
+                x0, P0, Q, np.asarray(R) * tuning["R_inflation"], {**tuning["pf"], "num_particles": count}, nis_gate=gate
+            )
             result = run_navigator(nav, dataset, poses, start, float(tuning["max_step_s"]), estimators=PF_ESTIMATORS)
         except NotImplementedError as error:
             log.add(index, "Part C PF study", "not implemented", _first_line(error))
