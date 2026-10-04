@@ -1,4 +1,4 @@
-# Nonparametric Filters and Particle Filters
+# Nonparametric Filters and Particle Filters {#sec-pf}
 
 Kalman-style filters represent belief with a mean and covariance. That is
 efficient, but it commits us to a Gaussian-shaped story about uncertainty. Some
@@ -14,7 +14,7 @@ Nonparametric filters represent belief with a finite collection of values
 instead of a fixed analytic distribution. This chapter covers two important
 examples: histogram filters and particle filters.
 
-## What Nonparametric Means Here
+## What Nonparametric Means Here {#sec-pf-what-nonparametric-means}
 
 "Nonparametric" does not mean "no parameters." It means the belief is not forced
 into a fixed family such as a Gaussian. The representation can become more
@@ -28,7 +28,7 @@ The trade is direct:
 
 There is no free lunch. There is only a better invoice.
 
-## Histogram Filters
+## Histogram Filters {#sec-pf-histogram-filters}
 
 A histogram filter decomposes the state space into regions and stores a
 probability mass for each region. In a 2D map, the regions might be square grid
@@ -65,7 +65,7 @@ $$
 This is the discrete Bayes filter again, but with cells instead of exact state
 values.
 
-## Grid Decomposition Choices
+## Grid Decomposition Choices {#sec-pf-grid-decomposition-choices}
 
 A uniform grid is simple: every cell has the same size. It is easy to implement
 and reason about, but it wastes computation in unimportant regions and loses
@@ -103,7 +103,7 @@ The histogram filter is conceptually clean. Its main problem is dimensionality.
 If each state dimension uses 100 cells, then a 6D state requires
 $100^6 = 10^{12}$ cells. That is not a filter. That is a funding proposal.
 
-## Particle Filters
+## Particle Filters {#sec-pf-particle-filters}
 
 A particle filter represents the belief with weighted samples:
 
@@ -128,7 +128,7 @@ The particle filter loop has three basic operations:
 
 This is also called sequential Monte Carlo estimation.
 
-## Prediction
+## Prediction {#sec-pf-prediction}
 
 The prediction step samples
 
@@ -164,7 +164,7 @@ def predict_particles(particles, control, dt, rng, linear_std, angular_std):
 Unlike an EKF, the process model does not need to be linearized. It only needs
 to be sampled.
 
-## Weighting
+## Weighting {#sec-pf-weighting}
 
 After receiving measurement $\mathbf{z}_k$, each particle weight is updated by
 the likelihood:
@@ -212,7 +212,7 @@ def update_range_weights(particles, weights, measured_range, landmark, sigma):
     return weights
 ```
 
-## Effective Number of Particles
+## Effective Number of Particles {#sec-pf-effective-number-particles}
 
 After several updates, many particles may have tiny weights. A useful diagnostic
 is the effective number of particles:
@@ -238,7 +238,7 @@ def effective_particle_count(weights):
     return 1.0 / np.sum(weights * weights)
 ```
 
-## Resampling
+## Resampling {#sec-pf-resampling}
 
 Resampling draws a new particle set from the current set with replacement. High
 weight particles are likely to be copied. Low weight particles are likely to
@@ -317,7 +317,7 @@ plt.tight_layout()
 plt.show()
 ```
 
-## Sample Impoverishment
+## Sample Impoverishment {#sec-pf-sample-impoverishment}
 
 Sample impoverishment happens when repeated resampling removes too much
 particle diversity. After enough resampling, the filter may contain many copies
@@ -335,7 +335,7 @@ Common mitigations include:
 Particle filters are powerful, but they are not "turn off math and add samples."
 The proposal distribution and resampling strategy matter.
 
-## Recovery from Failure
+## Recovery from Failure {#sec-pf-recovery-from-failure}
 
 A particle filter can recover from global ambiguity better than a Gaussian
 filter if it maintains enough diversity. For kidnapped-robot-style failures,
@@ -364,7 +364,7 @@ This is deliberately blunt. It says: "Some of our hypotheses may be terrible;
 keep a few alternatives alive." The right fraction depends on the environment,
 sensor reliability, and how catastrophic localization failure would be.
 
-## Practical Implementation Considerations
+## Practical Implementation Considerations {#sec-pf-practical-implementation-considerations}
 
 Particle filters are easy to write and easy to quietly ruin. The most common
 issues are weight underflow, resampling too often, resampling too randomly, and
@@ -442,7 +442,7 @@ the particle set, cluster hypotheses, or keep multiple candidate estimates when
 the downstream system can handle them. A particle filter that correctly knows
 "maybe here or maybe there" should not be forced to lie with one average.
 
-## A Planar Particle Filter
+## A Planar Particle Filter {#sec-pf-planar-particle-filter}
 
 For the common 2D robot state
 
@@ -496,7 +496,7 @@ sensor model: range-bearing landmarks, lidar likelihood fields, camera feature
 likelihoods, or any other model that can return $p(\mathbf{z}\mid
 \mathbf{x}^{[i]})$.
 
-## Particle Filter Algorithm
+## Particle Filter Algorithm {#sec-pf-particle-filter-algorithm}
 
 ```text
 initialize particles and weights
@@ -520,7 +520,7 @@ The state estimate can be the weighted mean, but be careful with circular
 variables and multimodal beliefs. If half the particles are in one hallway and
 half are in another, the mean may be a confidently bad summary.
 
-## When Particle Filters Are a Good Choice
+## When Particle Filters Are a Good Choice {#sec-pf-when-particle-filters}
 
 Particle filters are useful when:
 

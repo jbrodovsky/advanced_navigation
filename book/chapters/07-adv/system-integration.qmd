@@ -1,4 +1,4 @@
-# Navigation System Integration Case Study {#system-integration}
+# Navigation System Integration Case Study {#sec-system-integration}
 
 ::: {.callout-note title="Enrichment case study: not assessed"}
 This chapter is an engineering design case study, not a complete vehicle software
@@ -12,7 +12,7 @@ rates, calibrations live outside source code, estimates carry uncertainty and
 health, and a controller needs to know *when* the state was valid. This chapter
 turns the preceding pieces into one honest reference architecture.
 
-## System Boundary and Architecture
+## System Boundary and Architecture {#sec-system-integration-boundary-architecture}
 
 A navigation package owns state estimation, measurement acceptance, health
 reporting, and reproducible logs. It does not need to own every sensor driver,
@@ -50,7 +50,7 @@ attitude, and IMU biases. The required output is not merely position and attitud
 it includes a timestamp, uncertainty or selected uncertainty diagnostics, accepted
 and rejected measurement counts, and a health/mode indicator.
 
-## Event Time Is the Estimator's Time
+## Event Time Is the Estimator's Time {#sec-system-integration-event-time-estimators}
 
 Three timestamps are easy to confuse:
 
@@ -122,7 +122,7 @@ state_at_exposure = buffer.interpolate(10.25)
 np.testing.assert_allclose(state_at_exposure.position_m, [0.25, 0.0, 0.0])
 ```
 
-## Estimator Loop Pseudocode
+## Estimator Loop Pseudocode {#sec-system-integration-estimator-loop-pseudocode}
 
 The following is deliberately pseudocode. It names the sequencing and ownership
 rules without claiming that a few lines replace an ESKF, an image front end, a
@@ -151,7 +151,7 @@ the estimator's short critical section. The estimator receives a timestamped,
 calibrated observation with an uncertainty model; it does not hold the IMU
 propagation path hostage while a front end performs image matching.
 
-## Calibration and Frame Ownership
+## Calibration and Frame Ownership {#sec-system-integration-calibration-frame-ownership}
 
 An estimator should load, validate, and log the following values rather than bury
 them in source code:
@@ -168,7 +168,7 @@ applies at every adapter. A state that is NED at the estimator boundary and ENU 
 the controller boundary is acceptable only when a named, tested conversion sits
 between them.
 
-## Health, Degraded Modes, and Controller Interface
+## Health, Degraded Modes, and Controller Interface {#sec-system-integration-health-degraded-modes}
 
 Health monitoring is part of navigation, not a dashboard feature. A practical
 health state can combine:
@@ -186,7 +186,7 @@ stabilization, a hold action, or a handoff to another layer; the correct policy 
 vehicle-specific. The unacceptable response is silently publishing a confident
 estimate after the estimator has evidence that it is unhealthy.
 
-## Evaluation Evidence
+## Evaluation Evidence {#sec-system-integration-evaluation-evidence}
 
 Do not reuse a performance table across vehicles, sensors, datasets, or compute
 platforms. Report a result only with its truth source, time alignment, environment,
@@ -202,7 +202,7 @@ minimum set.
 | Outage and fault-injection results | Did uncertainty and health mode respond honestly? |
 | Deterministic replay | Can the result be reproduced with the same data and configuration? |
 
-## Integration Checklist
+## Integration Checklist {#sec-system-integration-checklist}
 
 Before a navigation system is trusted beyond a notebook:
 

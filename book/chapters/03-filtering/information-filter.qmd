@@ -1,4 +1,4 @@
-# The Information Filter
+# The Information Filter {#sec-information-filter}
 
 The Kalman filter represents a Gaussian belief with a mean and covariance. The
 Information Filter represents the same Gaussian belief with an information
@@ -11,7 +11,7 @@ This chapter keeps the focus narrow: what the information form is, why the
 measurement update is attractive, how it compares with Kalman filtering, and
 what nonlinear variants look like.
 
-## Covariance Form and Information Form
+## Covariance Form and Information Form {#sec-information-filter-covariance-form-information}
 
 In covariance form, a Gaussian belief is written as
 
@@ -85,7 +85,7 @@ ax.grid(True, alpha=0.25)
 plt.show()
 ```
 
-## Why Use Information Form?
+## Why Use Information Form? {#sec-information-filter-why-use-information}
 
 The Kalman filter's covariance form is usually easier to interpret. The
 covariance matrix directly describes uncertainty, and prediction has a clean
@@ -107,7 +107,7 @@ The trade is that prediction is less natural in information form. Updates are
 where the information filter looks elegant. Prediction is where it sighs and
 reaches for matrix identities.
 
-## Linear Measurement Update
+## Linear Measurement Update {#sec-information-filter-linear-measurement-update}
 
 Start from a prior belief in information form:
 
@@ -155,7 +155,7 @@ That is the main appeal: measurement updates are additive. Each independent
 measurement contributes one information matrix term and one information vector
 term.
 
-## Scalar Example: Same Posterior as Kalman
+## Scalar Example: Same Posterior as Kalman {#sec-information-filter-scalar-example-same}
 
 For a scalar state with prior $x \sim \mathcal{N}(\mu^-, P^-)$ and measurement
 $z = x + v$, the Kalman update is
@@ -243,7 +243,7 @@ plt.show()
 The numbers match because both forms are doing the same Bayesian update. One
 stores covariance. The other stores precision.
 
-## Multiple Independent Measurements
+## Multiple Independent Measurements {#sec-information-filter-multiple-independent-measurements}
 
 Suppose several independent sensors observe the same scalar state:
 
@@ -327,7 +327,7 @@ measurements becomes a sum of terms. In a large sparse problem, most
 measurements touch only a few state variables, so the information matrix can
 remain sparse.
 
-## Linear Prediction
+## Linear Prediction {#sec-information-filter-linear-prediction}
 
 For the linear process model
 
@@ -399,7 +399,7 @@ There are matrix identities that avoid some explicit inversions in special
 cases, but the conceptual issue remains: information form makes measurement
 fusion clean and prediction less clean.
 
-## Linear Information Filter Algorithm
+## Linear Information Filter Algorithm {#sec-information-filter-linear-information-filter}
 
 For each time step:
 
@@ -427,7 +427,7 @@ for each independent measurement:
 That incremental structure is one reason the information view shows up in
 multi-sensor fusion and graph-based estimation.
 
-## Extended Information Filter
+## Extended Information Filter {#sec-information-filter-extended-information-filter}
 
 The Extended Information Filter (EIF) is the information-form analogue of the
 Extended Kalman Filter. For a nonlinear measurement
@@ -495,7 +495,7 @@ strong curvature, angle wrapping, and bad Jacobians can still cause trouble.
 Information form did not make the nonlinear problem disappear. It just changed
 the accounting.
 
-## Nonlinear Range Example
+## Nonlinear Range Example {#sec-information-filter-nonlinear-range-example}
 
 Consider a 2D position state
 
@@ -600,7 +600,7 @@ This example is intentionally small. The useful idea is the same in larger
 systems: linearize the measurement, add its information contribution, and then
 recover the mean if you need a state estimate.
 
-## Unscented and Square-Root Variants
+## Unscented and Square-Root Variants {#sec-information-filter-unscented-square-root}
 
 An Unscented Information Filter uses sigma points to propagate or update a
 Gaussian approximation, then stores the resulting Gaussian in information form.
@@ -623,7 +623,7 @@ conditioning and can be more stable for large systems. It is not a new
 probabilistic estimator. It is a numerically careful way to carry the same
 information-form belief.
 
-## Comparison with Kalman-Style Filters
+## Comparison with Kalman-Style Filters {#sec-information-filter-comparison-kalman-style}
 
 | Filter | Stored belief | Update style | Prediction style | Good fit |
 |---|---|---|---|---|
@@ -637,7 +637,7 @@ Use information form when the additive measurement structure matters. Use
 covariance form when prediction and uncertainty interpretation matter more. If
 both matter, do not be surprised when a real system uses both internally.
 
-## Practical Implementation Considerations
+## Practical Implementation Considerations {#sec-information-filter-practical-implementation-considerations}
 
 Information matrices can be sparse when measurements connect only a few state
 variables. This is one bridge from filtering to factor graphs and smoothing.

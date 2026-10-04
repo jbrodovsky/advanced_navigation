@@ -1,6 +1,6 @@
-# Visual-Inertial Navigation Part B: AprilTag PnP Observation Model
+# Visual-Inertial Navigation Part B: AprilTag PnP Observation Model {#sec-project1b}
 
-## Overview
+## Overview {#sec-project1b-overview}
 
 Part B builds the visual observation model used by the filters in Part C. You will convert AprilTag corner detections into body pose estimates using the known tag-map geometry, supplied camera intrinsics, and OpenCV's `solvePnP`.
 
@@ -34,7 +34,7 @@ from drone_pipeline.observation import (
 )
 ```
 
-## Visual Positioning
+## Visual Positioning {#sec-project1b-visual-positioning}
 
 The primary object of this project checkpoint is to develop the visual observation model that the resulting navigation filtering algorithm will use to bound and correct the error growth in the dead reckoning state propagation method.
 
@@ -174,7 +174,7 @@ Report:
 - estimated `R`
 - any rounding, clipping, or inflation applied before filtering
 
-## Deliverables
+## Deliverables {#sec-project1b-deliverables}
 
 Submit:
 
@@ -185,6 +185,6 @@ Submit:
 - a PnP RMSE table across all eight datasets
 - the estimated measurement covariance `R`
 
-## Notes
+## Notes {#sec-project1b-notes}
 
 Most PnP failures in this project are not caused by `solvePnP`. They are caused by incorrect corner ordering, incorrect world geometry, or a silent frame-convention mistake that survives just long enough to look persuasive.

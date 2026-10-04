@@ -1,14 +1,14 @@
-# Visual-Inertial Navigation Part A: IMU Dead Reckoning
+# Visual-Inertial Navigation Part A: IMU Dead Reckoning {#sec-project1a}
 
 ![IMU mounting reference](../images/imu.png)
 
-## Overview
+## Overview {#sec-project1a-overview}
 
 Part A focuses on inertial forward propagation. You will use the `drpy` and `acc` signals in the drone packets to build a 15-state flat-earth mechanization model and study how fast dead reckoning drifts away from truth.
 
 This part is intentionally incomplete as a navigation system. That is the point. Before you can fuse measurements, you need to understand what the IMU-only solution does well, where it fails, and how its errors grow.
 
-## Learning Outcomes
+## Learning Outcomes {#sec-project1a-learning-outcomes}
 
 By the end of Part A, you should be able to:
 
@@ -17,7 +17,7 @@ By the end of Part A, you should be able to:
 - analyze drift from bias, gravity, integration error, and frame mistakes
 - produce dead-reckoning diagnostics that will be reused in Part C
 
-## Required State Convention
+## Required State Convention {#sec-project1a-required-state-convention}
 
 Use this state vector throughout the project:
 
@@ -40,7 +40,7 @@ gravity_world = np.array([0.0, 0.0, -9.81])
 
 Angles must be wrapped into `[-pi, pi)` after propagation.
 
-## Starter Interfaces
+## Starter Interfaces {#sec-project1a-starter-interfaces}
 
 Work from the starter package:
 
@@ -57,7 +57,7 @@ Your final implementation may add helpers, but the public propagation entrypoint
 propagate_state(x, acc, drpy, dt, params)
 ```
 
-## Goal
+## Goal {#sec-project1a-goal}
 
 Implement deterministic inertial propagation using the packet IMU inputs.
 
@@ -73,7 +73,7 @@ accel_bias_dot = 0
 
 The deterministic propagation function may hold biases constant between samples. In Part C, the stochastic filters should model bias drift through process noise.
 
-## Requirements
+## Requirements {#sec-project1a-requirements}
 
 Implement:
 
@@ -93,7 +93,7 @@ It must:
 
 Forward Euler integration is acceptable for the base submission. If you choose a better integrator, keep the interface stable and explain the tradeoff.
 
-## Initialization
+## Initialization {#sec-project1a-initialization}
 
 For your reported dead-reckoning runs, initialize from the first valid visual pose estimate produced in Part B. Before Part B is finished, you may use a temporary oracle initialization for debugging, but you must label it clearly and you may not treat it as your primary reported result.
 
@@ -104,7 +104,7 @@ You may initialize velocity as:
 
 Be explicit about which choice you made.
 
-## Evaluation
+## Evaluation {#sec-project1a-evaluation}
 
 Use Vicon only for evaluation. Interpolate truth onto the packet timestamps.
 
@@ -125,7 +125,7 @@ At minimum, discuss:
 - integration error
 - initialization sensitivity
 
-## Deliverables
+## Deliverables {#sec-project1a-deliverables}
 
 This is the first checkpoint of three that should go into the complete project. Ultimately you will turn in all deliverables across all three parts in one cohesive project.
 
@@ -137,6 +137,6 @@ For the checkpoint, you should have completed:
 - position RMSE over time
 - a short technical discussion of dominant error sources
 
-## Notes
+## Notes {#sec-project1a-notes}
 
 This part is supposed to drift. If your IMU-only trajectory looks suspiciously perfect, the first thing to check is whether truth leaked into the propagation path.

@@ -1,4 +1,4 @@
-# Modern Python Refresher
+# Modern Python Refresher {#sec-python}
 
 This chapter is a practical refresh on Python tools and patterns used throughout the course. It assumes prior Python experience and focuses on habits that make numerical and estimation code reliable. Much of this is borrowed or adopted from the scientific Python community and best practices for numerical computing. The goal is to establish a common baseline for code style, project structure, and testing that will be used in all code examples and assignments in this class. This chapter is not meant to be an exhaustive (or even quick and light) introduction to Python programming, but rather a focused refresher on the specific tools and best practices that are most relevant for implementing autonomous navigation algorithms. If you are new to Python or want a more comprehensive introduction, there are many excellent resources available online, including the official Python tutorial and various books and courses on Python programming. 
 
@@ -8,9 +8,9 @@ The guide covers topics such as project structure, testing, documentation, and p
 
 While not required or even neccessarily standard, I highly recommend using a package manager such as `uv` for Python projects. If you delve more into the machine learning or data science side of things, I recommend using `pixi` as a package manager, which is built on top of `uv` and provides additional features for managing compiled project dependencies. Both `uv` and `pixi` are great tools for managing dependencies and project metadata in Python, and they can help you keep your projects organized and reproducible. However, for the purposes of this class, you can get by with just using `pip` and virtual environments to manage your dependencies, as long as you are careful to pin your versions for reproducibility. While I use `uv` personally, all example code will only be using `pip` and virtual environments, so you can follow along with the examples without needing to learn a new tool if you don't want to. The most important thing is to have a consistent and reproducible workflow for managing your dependencies and project structure, regardless of the specific tools you choose to use.
 
-## Python Version and Environment
+## Python Version and Environment {#sec-python-version-environment}
 
-Use a modern Python 3 release and isolate dependencies per project. At time of writing (Summer 2026), Python 3.14 is the latest stable release and will be preferred, but any Python 3.10+ should work fine for the examples in this class. *Avoid using the system Python or installing packages globally!* This can cause conflicts between projects and your operating system's dependencies. Only install packages to the system Python is you expressly know what you are doing and why you are doing it! For project development purposes _**always**_ use virtual environments to create isolated Python environments as this allows you to manage dependencies and avoid version conflicts.
+Use a modern Python 3 release and isolate dependencies per project. At time of writing (Summer 2026), Python 3.14 is the latest stable release and will be preferred, but the course packages require Python 3.11 or newer. *Avoid using the system Python or installing packages globally!* This can cause conflicts between projects and your operating system's dependencies. Only install packages to the system Python is you expressly know what you are doing and why you are doing it! For project development purposes _**always**_ use virtual environments to create isolated Python environments as this allows you to manage dependencies and avoid version conflicts.
 
 Recommended baseline workflow:
 
@@ -26,7 +26,7 @@ pip install numpy scipy matplotlib jupyter
 
 Depending on system configuration, you may need to use `python3` instead of `python` in the above command. You can also use `python -m pip` instead of just `pip` to ensure you are using the pip associated with your virtual environment. If you are using a package manager like `uv` or `pixi`, they will handle the creation of virtual environments and installation of dependencies for you, so you can follow their documentation for setting up your project environment.
 
-## Core Language Features to Use
+## Core Language Features to Use {#sec-python-core-language-features}
 
 ### Type Hints and Dataclasses
 
@@ -102,7 +102,7 @@ x = np.array([x0, v0], dtype=float)
 P = np.eye(2) * 10.0
 ```
 
-## Project Structure for Assignments
+## Project Structure for Assignments {#sec-python-project-structure-assignments}
 
 I highly recommend using `uv` as a package manager for Python to keep code modular and testable. `uv init --lib` sets up a project with a `src/` directory for your code. I would recommend that you set up your projects as such a Python package, even if you are not planning to distribute it. This will help you keep your code organized and make it easier to test and reuse. 
 
@@ -122,7 +122,7 @@ project/
 pyproject.toml # Project metadata and dependencies	
 ```
 
-## Visualization Habits
+## Visualization Habits {#sec-python-visualization-habits}
 
 Plot diagnostics routinely:
 
@@ -132,7 +132,7 @@ Plot diagnostics routinely:
 
 Readable diagnostic plotting often catches model and tuning issues before deep debugging.
 
-## Common Mistakes
+## Common Mistakes {#sec-python-common-mistakes}
 
 - Mixing radians and degrees in the same pipeline.
 - Silent shape broadcasting errors.

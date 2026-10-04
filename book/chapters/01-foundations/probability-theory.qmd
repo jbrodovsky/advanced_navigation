@@ -1,8 +1,8 @@
-# Probability Theory Refresher {#probability-theory}
+# Probability Theory Refresher {#sec-probability}
 
 This chapter refreshes the probability concepts required to model uncertainty in state estimation. Students should already know these ideas; this chapter aligns notation and emphasizes navigation-specific usage. The other major underlying component of state estimation and modern navigation system is probability theory, which provides the mathematical framework for modeling uncertainty in state estimation. This chapter serves as a refresher on key probability concepts, with a focus on their application to navigation problems. It is assumed that students are already familiar with these ideas from prior coursework, but this chapter will align notation and emphasize the aspects most relevant to navigation.
 
-## Random Variables
+## Random Variables {#sec-probability-random-variables}
 
 A random variable is a function that maps outcomes of a random process to numerical values. For example, the position of a robot at time $t$ can be modeled as a random variable $\mathbf{x}_t$. Random variables can be discrete (taking on countable values) or continuous (taking on values in a continuum). In modern inertial navigation, we typically use some sort of digital computer to estimate state work with discrete time intervals. Digital computers are also discrete, so we often model states as discrete random variables. However, the underlying physical processes are continuous, and we often use continuous probability distributions derived, simplified, or discretized to model uncertainty in state estimation.
 
@@ -38,7 +38,7 @@ $$
 \mathbf{\Sigma} = \mathbb{E}\left[(\mathbf{x}-\boldsymbol{\mu})(\mathbf{x}-\boldsymbol{\mu})^T\right]
 $$
 
-## Conditional Probability and Bayes' Rule
+## Conditional Probability and Bayes' Rule {#sec-probability-conditional-probability-bayes}
 
 Conditional probability is the probability of an event occurring given that another event has already occurred. Put more generally, conditional probability allows us to update our *belief* about something based on new evidence or measurements. Mathematically, this is formulated as Bayes' rule:
 
@@ -67,13 +67,14 @@ For discrete systems, the prediction and update steps can be expressed as:
 
 Where $\eta$ is a normalization constant to ensure that the belief sums to one. The prediction step propagates the belief forward in time based on the motion model and control inputs, while the update step incorporates new measurements to refine the belief. This recursive process allows the filter to maintain an updated estimate of the state over time, accounting for both process and measurement uncertainties.
 
-### Bayesian Filters in Python {#bayesian-filters-python}
+### Bayesian Filters in Python {#sec-probability-bayesian-filters-python}
 
 The update step is the easiest place to see Bayes' rule directly in code. In one dimension, suppose we have a prior belief about position and then receive a noisy position measurement. The likelihood tells us which states are consistent with the measurement, and the posterior is the normalized product of the prior and likelihood.
 
 ```{python}
 #| label: bayesian-filter-1d-update
 #| fig-cap: "One-dimensional Bayesian filter update. The posterior is the normalized product of the prior belief and the measurement likelihood."
+#| code-fold: true
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -134,7 +135,7 @@ ax.grid(True, alpha=0.3)
 plt.show()
 ```
 
-## Cross-Covariance, Independence, and Correlation
+## Cross-Covariance, Independence, and Correlation {#sec-probability-cross-covariance-independence}
 
 We can compare two random variables $X$ and $Y$ using the **cross-covariance** which measures how much the two variables vary together. The cross-covariance is defined as:
 $$
@@ -143,7 +144,7 @@ $$
 
 **Independent** variables have zero cross-covariance. However, zero covariance does not necessarily imply independence unless the variables are jointly Gaussian. In navigation systems, we often assume that process and measurement noise are independent for simplicity, but in reality, there may be correlations due to shared environmental factors or sensor characteristics. Ignoring these correlations can lead to inconsistent estimates and overconfident uncertainty bounds. Therefore, it is important to carefully consider the covariance structure of the noise when designing filters and interpreting their outputs.
 
-## A Case Study in Probability Theory: Why you should never gamble against the house
+## A Case Study in Probability Theory: Why you should never gamble against the house {#sec-probability-case-study-probability}
 
 Probability theory is abstract. Betting is concrete. The gambling industry has spent centuries engineering systems that are mathematically guaranteed to extract money from participants, and those systems are a beautiful — if sobering — application of everything in this chapter. Understanding them will also sharpen your intuition for why an imperfect prior or a biased likelihood function corrupts your state estimate in exactly the same way a crooked bookie corrupts your payout.
 
@@ -300,6 +301,7 @@ For $v = 4.7\%$, the margin is $\approx 4.5\%$ per dollar — that is the house'
 ```{python}
 #| label: vig-visualization
 #| fig-cap: "Expected profit per $1 stake as a function of bookmaker vig. The bettor's EV is always negative once any vig is present."
+#| code-fold: true
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -357,7 +359,7 @@ $$\mathbb{E}[\text{profit}] = -\tau$$
 The bettor loses the take $\tau$ in expectation *regardless of which horse wins*, regardless of the bettor's skill in picking horses, and regardless of the odds displayed on the board. The take is extracted before any payout calculations are made. A typical 20 % take means that, in the long run, every dollar bet at the track returns 80 cents.
 
 ::: {.callout-note}
-## Connection to Bayesian Filtering
+## Connection to Bayesian Filtering {#sec-probability-connection-bayesian-filtering}
 
 There is a structural analogy worth noting. In Bayes' rule:
 

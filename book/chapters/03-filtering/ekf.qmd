@@ -1,4 +1,4 @@
-# Kalman Filtering and the Extended Kalman Filter
+# Kalman Filtering and the Extended Kalman Filter {#sec-ekf}
 
 The Bayes filter gives the exact recursive structure, but exact belief
 distributions are usually too expensive to maintain. The Kalman filter makes
@@ -13,7 +13,7 @@ systems through local linearization. The final section connects the EKF idea to
 error-state inertial navigation, where the filter estimates small errors rather
 than the full navigation state directly.
 
-## Linear Gaussian Systems
+## Linear Gaussian Systems {#sec-ekf-linear-gaussian-systems}
 
 The discrete-time linear system model is
 
@@ -58,7 +58,7 @@ The symbols have standard roles:
 If these assumptions are true, the Kalman filter is the exact Bayes filter for
 the linear Gaussian system.
 
-## Prediction
+## Prediction {#sec-ekf-prediction}
 
 The predicted state mean is
 
@@ -86,7 +86,7 @@ noise. If $\mathbf{Q}_k$ is too small, the filter becomes overconfident and may
 reject valid measurements. If $\mathbf{Q}_k$ is too large, the filter will
 wander around and let measurements dominate.
 
-## Measurement Update
+## Measurement Update {#sec-ekf-measurement-update}
 
 The innovation is the difference between the actual measurement and the
 predicted measurement:
@@ -144,7 +144,7 @@ $$
 It is a few more matrix multiplies, but it is less likely to destroy symmetry
 or positive semidefiniteness through roundoff.
 
-## Kalman Gain Intuition
+## Kalman Gain Intuition {#sec-ekf-kalman-gain-intuition}
 
 In a scalar measurement problem, the gain is
 
@@ -184,7 +184,7 @@ The gain is not a magic tuning knob. It is the consequence of the uncertainty
 model. If the gain seems wrong, inspect $\mathbf{P}^-$ and $\mathbf{R}$ before
 you start sprinkling constants into the code.
 
-## A Constant-Velocity Example
+## A Constant-Velocity Example {#sec-ekf-constant-velocity-example}
 
 For 1D motion with position $s$ and velocity $\dot{s}$,
 
@@ -258,7 +258,7 @@ def kalman_update(x_bar, P_bar, z, H, R):
 This is the basic pattern behind many navigation filters. The state and matrix
 dimensions grow, but the loop remains prediction, innovation, gain, correction.
 
-## Continuous Models and Discretization
+## Continuous Models and Discretization {#sec-ekf-continuous-models-discretization}
 
 Real motion is continuous. Digital filters run at discrete time steps. A common
 continuous-time linear model is
@@ -332,7 +332,7 @@ This is not the only valid noise model. The important point is that
 $\mathbf{Q}$ should reflect how uncertainty enters the state, not just be a
 small diagonal matrix because the code needed one.
 
-## Why the Linear Kalman Filter Breaks
+## Why the Linear Kalman Filter Breaks {#sec-ekf-why-linear-kalman}
 
 The linear Kalman filter relies on two assumptions:
 
@@ -347,7 +347,7 @@ rotation group, not in ordinary Euclidean coordinates. None of this is linear.
 The Extended Kalman Filter keeps the Gaussian belief but replaces nonlinear
 models with local linear approximations.
 
-## Nonlinear System Model
+## Nonlinear System Model {#sec-ekf-nonlinear-system-model}
 
 The nonlinear process and measurement models are
 
@@ -412,7 +412,7 @@ $$
 \right|_{\hat{\mathbf{x}}^-}.
 $$
 
-## EKF Prediction
+## EKF Prediction {#sec-ekf-prediction-2}
 
 The EKF prediction is
 
@@ -434,7 +434,7 @@ $$
 
 The nonlinear function moves the mean. The Jacobian moves the covariance.
 
-## EKF Update
+## EKF Update {#sec-ekf-update}
 
 The innovation is
 
@@ -486,7 +486,7 @@ $$
 \mathbf{K}_k\mathbf{R}_k\mathbf{K}_k^T.
 $$
 
-## Example: Range to a Landmark
+## Example: Range to a Landmark {#sec-ekf-example-range-landmark}
 
 For a 2D state
 
@@ -572,7 +572,7 @@ linearization may be excellent. Far away, it may be misleading. If the estimate
 is already wrong enough, the EKF can confidently walk itself away from the
 truth.
 
-## Computing Jacobians
+## Computing Jacobians {#sec-ekf-computing-jacobians}
 
 Analytical Jacobians are usually preferred when the model is small and stable.
 They are fast, exact for the written model, and make the coupling between states
@@ -622,7 +622,7 @@ Do not treat finite differences as a substitute for understanding the model.
 They are a good smoke test. They are not a license to ignore singularities,
 angle wrapping, units, or frame conventions.
 
-## Consistency Checks
+## Consistency Checks {#sec-ekf-consistency-checks}
 
 An EKF can produce reasonable-looking state estimates while its covariance is
 wrong. Consistency checks compare residual behavior against the uncertainty the
@@ -654,7 +654,7 @@ Large innovations can mean:
 The EKF is not fragile because it uses matrices. It is fragile because it is
 very good at hiding bad modeling assumptions behind clean matrices.
 
-## Practical Implementation Considerations
+## Practical Implementation Considerations {#sec-ekf-practical-implementation-considerations}
 
 The Kalman and Extended Kalman filters are simple on paper. Most implementation
 failures come from numerical linear algebra, state representation, or bad
@@ -726,7 +726,7 @@ angles should be wrapped into the correct interval before applying the update.
 For 3D attitude, use an error-state or manifold-aware representation rather than
 pretending Euler angles behave nicely everywhere.
 
-## Error-State Filtering
+## Error-State Filtering {#sec-ekf-error-state-filtering}
 
 Many inertial navigation systems use an error-state Kalman filter rather than a
 full-state EKF. The nominal navigation state is propagated by the inertial
@@ -786,7 +786,7 @@ linear even though the full attitude and position dynamics are nonlinear. It
 also keeps the attitude representation on the correct geometric object instead
 of pretending Euler angles are harmless everywhere.
 
-## INS/GNSS Bridge
+## INS/GNSS Bridge {#sec-ekf-ins-gnss-bridge}
 
 In loosely coupled INS/GNSS integration, the inertial navigation solution is
 propagated at high rate using IMU data, while GNSS provides slower position or
@@ -832,7 +832,7 @@ rate, gravity, lever arms, time synchronization, and attitude error definitions
 are included. The important filtering idea is simple: use the high-rate inertial
 system for propagation and slower external measurements to bound drift.
 
-## When the EKF Is a Good Choice
+## When the EKF Is a Good Choice {#sec-ekf-when-ekf-good}
 
 The EKF is a good practical filter when:
 
@@ -852,7 +852,7 @@ The EKF is a poor fit when:
 
 The EKF is popular because it is effective, not because it is forgiving.
 
-## Algorithm Summary
+## Algorithm Summary {#sec-ekf-algorithm-summary}
 
 For each time step:
 

@@ -110,7 +110,7 @@ format:
     theme:
       light: cosmo
       dark: darkly
-    code-fold: true
+    code-fold: false  # plotting cells opt in with `#| code-fold: true`
     toc: true
     math: true
   pdf:

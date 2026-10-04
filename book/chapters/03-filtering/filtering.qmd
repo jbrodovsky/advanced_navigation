@@ -1,4 +1,4 @@
-# Filtering and State Estimation
+# Filtering and State Estimation {#sec-filtering}
 
 Navigation is not a single measurement. It is a sequence of educated guesses.
 At each time step we have a belief about the vehicle state, a model of how the
@@ -15,7 +15,7 @@ $$
 That sentence is the whole course in miniature. The hard part is deciding how
 to represent the belief and how much of the physics we can afford to model.
 
-## The Navigation State
+## The Navigation State {#sec-filtering-navigation-state}
 
 The state vector collects the quantities we want to estimate. For a small
 ground robot, a minimal state might be
@@ -45,7 +45,7 @@ Here $\mathbf{z}_{1:t}$ is the measurement history and $\mathbf{u}_{1:t}$ is the
 input or control history. The belief is the estimator's best summary of
 everything it has seen so far.
 
-## Prediction and Update
+## Prediction and Update {#sec-filtering-prediction-update}
 
 Most recursive navigation filters use two operations.
 
@@ -114,7 +114,7 @@ ax.legend()
 plt.show()
 ```
 
-## What Makes a Filter Different?
+## What Makes a Filter Different? {#sec-filtering-what-makes-filter}
 
 All filters in this part of the course are trying to solve the same recursive
 Bayesian estimation problem. They differ mainly in how they represent the
@@ -133,7 +133,7 @@ belief.
 This table is not a ranking. A well-designed simple Kalman filter is often more
 valuable than a particle filter that is tuned by optimism and caffeine.
 
-## Parametric and Nonparametric Filters
+## Parametric and Nonparametric Filters {#sec-filtering-parametric-nonparametric-filters}
 
 Kalman-style filters are **parametric**. They assume the belief can be
 represented by a fixed set of parameters, usually the mean $\boldsymbol{\mu}$
@@ -162,7 +162,7 @@ mass over discrete regions. A particle filter stores weighted samples. These
 methods can represent multimodal beliefs, but they pay for that flexibility
 with computation and tuning.
 
-## Why Linear Gaussian Models Matter
+## Why Linear Gaussian Models Matter {#sec-filtering-why-linear-gaussian}
 
 The Kalman filter appears in navigation because linear transformations of
 Gaussian random variables are still Gaussian. If
@@ -195,7 +195,7 @@ is generally not Gaussian anymore. EKFs and UKFs are disciplined ways of saying:
 "We know the posterior is not exactly Gaussian, but we are going to keep a
 Gaussian approximation because the engineering trade is worth it."
 
-## The Practical Design Questions
+## The Practical Design Questions {#sec-filtering-practical-design-questions}
 
 Before writing a filter, answer these questions:
 
@@ -212,7 +212,7 @@ Before writing a filter, answer these questions:
 The equations are important, but these modeling decisions are where navigation
 systems usually succeed or quietly get weird.
 
-## What This Part Covers
+## What This Part Covers {#sec-filtering-what-this-part}
 
 This part starts with the full Bayes filter because it is the cleanest
 statement of the problem. It then moves to Kalman filtering, where Gaussian

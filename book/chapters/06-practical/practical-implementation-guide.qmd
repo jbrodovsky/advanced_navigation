@@ -1,11 +1,4 @@
----
-title: "Practical Implementation Guide"
-subtitle: "From offline INS/GNSS prototypes to deployed vehicle software"
-author: "James Brodovsky"
-date: "2026-05-19"
----
-
-# Practical Implementation Guide
+# Practical Implementation Guide {#sec-practical}
 
 The projects in this course are mostly written in Python and usually run against recorded data. That is the right place to learn the math. It is also not the same thing as putting an inertial navigation system on a real vehicle.
 
@@ -21,7 +14,7 @@ The short version is this:
 
 Skipping steps is a traditional way to create a very expensive random number generator.
 
-## From Laptop Replay to Vehicle Software
+## From Laptop Replay to Vehicle Software {#sec-practical-from-laptop-replay}
 
 A useful navigation package usually moves through several stages.
 
@@ -44,7 +37,7 @@ The offline prototype answers a narrow question: "Can this estimator produce a r
 
 The most important engineering habit is to keep replay alive. If a field test produces a bad result and you cannot replay the exact sensor stream, calibration, configuration, and estimator version, then you do not really have a debugging workflow. You have a story about what probably happened.
 
-## Reference Architecture for a Navigation Package
+## Reference Architecture for a Navigation Package {#sec-practical-reference-architecture-navigation}
 
 A vehicle navigation package is more than an EKF loop. A practical layout looks something like this:
 
@@ -79,7 +72,7 @@ Each block should have a narrow responsibility.
 
 The estimator core should not need to know whether a measurement came from a serial port, ROS topic, flight controller bus, recorded log, or simulator. That separation is not aesthetic. It is what lets you test the math without the vehicle and test the vehicle plumbing without rewriting the math.
 
-## Time, Latency, and Delayed Measurements
+## Time, Latency, and Delayed Measurements {#sec-practical-time-latency-delayed}
 
 Timing mistakes are one of the easiest ways to make a good estimator look bad. There are three different times that matter:
 
@@ -161,7 +154,7 @@ Different sensors make timing painful in different ways.
 
 The autonomy stack also needs a latency contract. A controller can tolerate some delay if it knows what time the state represents. It cannot safely use a state whose timestamp convention changes from one software path to another.
 
-## INS Error Behavior in the Real World
+## INS Error Behavior in the Real World {#sec-practical-ins-error-behavior}
 
 An INS does not fail randomly. It tends to fail in recognizable ways.
 
@@ -216,7 +209,7 @@ background reality. If you work in that domain, read a dedicated strapdown INS
 text and treat the simplified course implementation as the beginning, not the
 finish line.
 
-## Translating Python Prototypes to Embedded Code
+## Translating Python Prototypes to Embedded Code {#sec-practical-translating-python-prototypes}
 
 Python is excellent for learning, plotting, and building reference
 implementations. It is usually not what runs inside a flight controller or tightly
@@ -301,7 +294,7 @@ position_ned_m = state.position_ned_m
 This looks fussy until the day it prevents a degree/radian bug from steering a
 vehicle into the wrong patch of reality.
 
-## Calibration, Configuration, and Frame Management
+## Calibration, Configuration, and Frame Management {#sec-practical-calibration-configuration-frame}
 
 Calibration is not a side quest. It is part of the estimator.
 
@@ -332,7 +325,7 @@ The convention itself is less important than consistency. Mixed conventions are
 the source of many navigation failures that look mysterious until someone draws
 the axes.
 
-## Real-Time Execution and Health Monitoring
+## Real-Time Execution and Health Monitoring {#sec-practical-real-time-execution}
 
 A real-time navigation package has timing budgets. Approximate values might look
 like this:
@@ -450,7 +443,7 @@ down," "return control to a human," "use attitude-only stabilization," or "coast
 briefly on IMU-only navigation." The unacceptable behavior is silently publishing
 a confident state estimate after the estimator knows it is unhealthy.
 
-## Validation Ladder
+## Validation Ladder {#sec-practical-validation-ladder}
 
 Do not jump from a plot on recorded data to a full autonomous field test. Build a
 validation ladder.
@@ -484,7 +477,7 @@ If you cannot explain a failure from the logs, add better logs before the next
 test. Repeating a field test without better instrumentation is usually just
 collecting more confusion.
 
-## Common Failure Modes
+## Common Failure Modes {#sec-practical-common-failure-modes}
 
 Most deployed navigation failures are not exotic. They are ordinary mistakes with
 large consequences.
@@ -519,7 +512,7 @@ different frame, or smoother than the estimator actually provides.
 These are not glamorous problems. They are also the problems that consume real
 engineering time.
 
-## Practical Checklist
+## Practical Checklist {#sec-practical-checklist}
 
 Before trusting a navigation system on a vehicle, check the following:
 

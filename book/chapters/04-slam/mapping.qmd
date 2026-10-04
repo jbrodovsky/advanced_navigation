@@ -1,4 +1,4 @@
-# Mapping for SLAM
+# Mapping for SLAM {#sec-mapping}
 
 Mapping is the part of navigation where sensor measurements become a representation of the world. In localization, the map is assumed known and the question is "where am I?" In mapping, the trajectory is assumed known well enough and the question is "what is around me?" In SLAM, both questions are asked at the same time, which is exactly why life gets interesting.
 
@@ -9,7 +9,7 @@ This chapter keeps two map representations in view:
 
 The project does not require students to build a dense lidar map. It requires them to turn laser scans into tree landmarks, associate those landmarks over time, and use them inside FastSLAM.
 
-## Mapping as a Bayesian Problem
+## Mapping as a Bayesian Problem {#sec-mapping-as-bayesian-problem}
 
 Let $x_{1:t}$ be a known trajectory, $z_{1:t}$ be measurements, and $m$ be the map. The mapping posterior is
 
@@ -27,7 +27,7 @@ $$
 
 The choice of map representation determines what $m$ means and what an update looks like.
 
-## Occupancy Grid Maps
+## Occupancy Grid Maps {#sec-mapping-occupancy-grid-maps}
 
 An occupancy grid divides the world into cells. Each cell stores the probability that the corresponding patch of space is occupied:
 
@@ -75,7 +75,7 @@ For a 2D lidar beam:
 
 This representation is excellent for "where can I drive?" It is not the representation used in the Victoria Park FastSLAM project because FastSLAM's classic factorization is easiest with a finite set of landmarks.
 
-## Landmark Maps
+## Landmark Maps {#sec-mapping-landmark-maps}
 
 A landmark map stores discrete features:
 
@@ -121,7 +121,7 @@ $$
 
 That one equation is the bridge from laser features to a map.
 
-## Victoria Park Dataset Primer
+## Victoria Park Dataset Primer {#sec-mapping-victoria-park-dataset}
 
 The course provides the original Victoria Park MATLAB data [@VictoriaParkDataset]. Download it into `data/victoria-park` from the repository root with `uv run python scripts/fetch_data.py victoria-park`. The important files are:
 
@@ -205,7 +205,7 @@ if vp is not None:
 
 The GPS is useful for sanity checking, plotting, and rough performance context. It should not be treated as perfect truth. The original papers explicitly note GPS degradation in the park environment; this is part of why the dataset is useful.
 
-## From Laser Scan to Tree Candidates
+## From Laser Scan to Tree Candidates {#sec-mapping-from-laser-scan}
 
 The original dataset includes a MATLAB tree detector. For the course project, students should implement their own Python feature extractor, but the original detector is a useful guide:
 
@@ -295,7 +295,7 @@ if vp is not None:
 
 In a real implementation, students should tune the segmentation thresholds, reject tiny segments, reject suspiciously wide objects, and track how many new landmarks are born per distance traveled. A detector that creates thousands of false trees will make any SLAM backend look worse than it really is.
 
-## Landmark Map Quality Checks
+## Landmark Map Quality Checks {#sec-mapping-landmark-map-quality}
 
 A useful landmark map should pass several practical checks:
 
@@ -306,7 +306,7 @@ A useful landmark map should pass several practical checks:
 
 For Victoria Park, the map is not judged by photorealism. It is judged by whether the tree landmark structure and vehicle path are mutually consistent.
 
-## Occupancy Grids vs. Landmark Maps
+## Occupancy Grids vs. Landmark Maps {#sec-mapping-occupancy-grids-landmark}
 
 | Question | Occupancy grid | Landmark map |
 |---|---|---|
@@ -318,7 +318,7 @@ For Victoria Park, the map is not judged by photorealism. It is judged by whethe
 
 Occupancy grids answer "where is space free?" Landmark maps answer "where are repeatable features?" FastSLAM uses the second question.
 
-## Summary
+## Summary {#sec-mapping-summary}
 
 Mapping is not one algorithm. It is the design choice that decides what the robot remembers about the world.
 
@@ -329,4 +329,4 @@ For this module:
 3. Victoria Park turns raw laser scans into tree observations;
 4. data association determines whether those observations improve the map or corrupt it.
 
-The next chapter combines the landmark map with the unknown vehicle trajectory.
+@sec-slam combines the landmark map with the unknown vehicle trajectory.

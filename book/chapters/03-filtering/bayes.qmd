@@ -1,4 +1,4 @@
-# Bayes Filtering
+# Bayes Filtering {#sec-bayes}
 
 The Bayes filter is the most direct expression of recursive state estimation.
 It does not assume the belief is Gaussian. It does not assume the models are
@@ -9,7 +9,7 @@ That makes it beautiful, general, and usually impossible to run directly for a
 serious navigation state. We study it anyway because every filter that follows
 is an approximation of this one.
 
-## The Belief
+## The Belief {#sec-bayes-belief}
 
 Let $\mathbf{x}_t$ be the state at time $t$, $\mathbf{u}_t$ be the input used
 for propagation, and $\mathbf{z}_t$ be the measurement. The belief after
@@ -32,7 +32,7 @@ $$
 The bar is not decoration. It means the estimator has propagated forward but
 has not yet used the new measurement.
 
-## The Markov Assumption
+## The Markov Assumption {#sec-bayes-markov-assumption}
 
 The exact belief depends on the entire history. That is honest but not useful.
 The Bayes filter becomes recursive by assuming the current state captures all
@@ -54,7 +54,7 @@ term, a clock error, or a flexing sensor mount that materially affects future
 measurements, the filter will pretend the missing variable is noise. Sometimes
 that is fine. Sometimes it is where the bug lives.
 
-## Prediction
+## Prediction {#sec-bayes-prediction}
 
 The prediction step marginalizes over the previous state:
 
@@ -91,7 +91,7 @@ $$
 That expression is just matrix multiplication when the transition probabilities
 are arranged into a matrix.
 
-## Update
+## Update {#sec-bayes-update}
 
 After prediction, the measurement update applies Bayes' rule:
 
@@ -121,7 +121,7 @@ $$
 Prediction usually spreads probability mass. Update redistributes it toward
 states that better explain the measurement.
 
-## A 1D Hallway Example
+## A 1D Hallway Example {#sec-bayes-1d-hallway-example}
 
 Suppose a robot moves along a 10 meter hallway. The hallway has several doors.
 The robot can move forward by roughly one meter per time step, but the motion is
@@ -196,7 +196,7 @@ The posterior does not need to be Gaussian. If the measurement supports several
 door locations, the belief can keep several hypotheses alive. This is one of the
 major advantages of full-distribution filtering.
 
-## Vectorized Discrete Bayes Filter
+## Vectorized Discrete Bayes Filter {#sec-bayes-vectorized-discrete-bayes}
 
 For a discrete state grid, the Bayes filter can be written compactly:
 
@@ -231,7 +231,7 @@ already has one million entries. Add heading, velocity, IMU bias, and map
 features, and the grid becomes absurd. This is the curse of dimensionality
 wearing a very practical hat.
 
-## Transition Models as Matrices
+## Transition Models as Matrices {#sec-bayes-transition-models-as}
 
 The transition matrix encodes how motion uncertainty spreads belief. A sharp
 transition model says the input is reliable. A broad transition model says the
@@ -268,7 +268,7 @@ In real navigation systems, this model is not just a statistical afterthought.
 It is where unmodeled acceleration, wheel slip, ocean current, wind, actuator
 error, and IMU noise often enter the estimator.
 
-## Measurement Likelihoods
+## Measurement Likelihoods {#sec-bayes-measurement-likelihoods}
 
 The update step depends on the measurement likelihood:
 
@@ -303,7 +303,7 @@ When the measurement model is ambiguous, the likelihood can be multimodal. That
 is not a problem for the Bayes filter. It becomes a problem only when we force
 the posterior into a representation that cannot express multiple hypotheses.
 
-## Why We Usually Approximate
+## Why We Usually Approximate {#sec-bayes-why-we-usually}
 
 The Bayes filter is exact in the sense that it follows directly from probability
 theory. It is not usually practical in its full form because it requires either:
@@ -322,7 +322,7 @@ filters approximate the belief with weighted samples.
 Different approximations fail differently. A good navigation engineer knows
 which failure mode they are buying.
 
-## Practical Implementation Considerations
+## Practical Implementation Considerations {#sec-bayes-practical-implementation-considerations}
 
 The Bayes filter equations are short, but direct implementations can fail for
 very ordinary numerical reasons.
@@ -379,7 +379,7 @@ In practice:
 - treat zero-likelihood measurements as model failures, not just as divide-by
   zero bugs.
 
-## Algorithm Summary
+## Algorithm Summary {#sec-bayes-algorithm-summary}
 
 The Bayes filter loop is short:
 

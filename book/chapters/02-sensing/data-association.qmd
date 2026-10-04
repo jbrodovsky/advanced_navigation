@@ -1,10 +1,10 @@
-# Features, Maps, and Data Association
+# Features, Maps, and Data Association {#sec-feature-association}
 
 Measurements become useful when we know what they refer to. A range to "something" is weaker than a range to a particular wall. A pixel coordinate of "a corner" is weaker than a pixel coordinate of the top-left corner of tag 37. Data association is the problem of connecting measurements to the corresponding objects, features, or map elements.
 
 This chapter is intentionally lighter than the later SLAM data-association chapter. Here the goal is to explain why perception pipelines produce correspondences and why those correspondences are part of the observation model.
 
-## From Raw Signals to Features
+## From Raw Signals to Features {#sec-feature-association-from-raw-signals}
 
 Sensors produce raw signals:
 
@@ -23,7 +23,7 @@ Estimators usually do not consume the raw signal directly. A perception pipeline
 
 A feature is useful when it is repeatable, localizable, and meaningful to the model. "Bright blob at some pixel" is not enough. "Corner 2 of AprilTag 37 at pixel $(u, v)$" is enough to form a PnP correspondence.
 
-## Feature-Based and Location-Based Maps
+## Feature-Based and Location-Based Maps {#sec-feature-association-based-location-based}
 
 A feature-based map stores discrete objects:
 
@@ -42,7 +42,7 @@ A location-based map stores values over space. Examples include occupancy grids,
 
 Both map types can support navigation. The right choice depends on what the sensor can detect and what the estimator needs.
 
-## What Data Association Does
+## What Data Association Does {#sec-feature-association-what-data-association}
 
 Suppose a robot detects three landmarks:
 
@@ -70,7 +70,7 @@ $$
 
 If the association is wrong, the update can be worse than no update. A filter that confidently corrects toward the wrong landmark is doing exactly what it was told to do. The bug is not in the Kalman gain. The bug is in the measurement interpretation.
 
-## Gating With Predicted Measurements
+## Gating With Predicted Measurements {#sec-feature-association-gating-predicted-measurements}
 
 A common first defense is gating. Given a candidate state $\hat{\mathbf{x}}$ and map feature $m_j$, predict the measurement:
 
@@ -122,7 +122,7 @@ def associate_by_mahalanobis(z: np.ndarray,
 
 For a 2D measurement, a gate threshold of about $5.99$ corresponds to a 95 percent chi-squared gate, and $9.21$ corresponds to about 99 percent. Those numbers only make sense if the residual really is approximately Gaussian and the covariance is credible.
 
-## Ambiguity and Perceptual Aliasing
+## Ambiguity and Perceptual Aliasing {#sec-feature-association-ambiguity-perceptual-aliasing}
 
 Data association is easy when every feature is unique. AprilTags are helpful because each tag has an ID. Even then, the corners must be ordered correctly and false detections must be handled. Natural features are harder. One tree trunk can look like another. One hallway corner can look like another. One patch of ocean can look like another, often with less sympathy.
 
@@ -135,7 +135,7 @@ Perceptual aliasing occurs when distinct places or features produce similar meas
 - multiple hypotheses in difficult cases;
 - maps with distinctive features when possible.
 
-## Failure Modes
+## Failure Modes {#sec-feature-association-failure-modes}
 
 Common association failures include:
 
@@ -148,7 +148,7 @@ Common association failures include:
 
 The last one is not glamorous, but it is common. A beautiful estimator cannot save a pipeline that mixes camera, body, world, ENU, NED, row-column, and x-y conventions casually.
 
-## AprilTags as a Friendly Case
+## AprilTags as a Friendly Case {#sec-feature-association-apriltags-as-friendly}
 
 The drone project uses AprilTags because they remove much of the hardest association problem. Each detected tag reports an ID, and each tag has four known corners. This gives direct correspondences:
 
@@ -163,4 +163,4 @@ That is exactly what Perspective-n-Point needs. The perception problem becomes:
 3. Pair those world points with the corresponding image pixel points.
 4. Solve for the camera pose.
 
-This is still not automatic. The map coordinates, corner ordering, camera intrinsics, distortion model, and camera-to-body transform all have to be consistent. The next chapter walks through that complete observation model.
+This is still not automatic. The map coordinates, corner ordering, camera intrinsics, distortion model, and camera-to-body transform all have to be consistent. @sec-pnp walks through that complete observation model.

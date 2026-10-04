@@ -1,6 +1,6 @@
-# Assignment 2: Victoria Park FastSLAM
+# Project 2: Victoria Park FastSLAM {#sec-project2}
 
-## Overview
+## Overview {#sec-project2-overview}
 
 In this project, you will implement a FastSLAM system for the original Victoria Park dataset. A vehicle was driven through Victoria Park in Sydney, Australia while collecting wheel odometry, steering, GPS, and SICK laser scanner data. The natural landmarks are tree trunks extracted from 2D laser scans.
 
@@ -19,7 +19,7 @@ This project is worth **25% of the course grade**.
 
 The attached FastSLAM paper is technical context, not an instruction sheet. Use it to understand the factorization, the Victoria Park experiment, and the data-association problem. Your implementation should be your own clear Python implementation.
 
-## Dataset
+## Dataset {#sec-project2-dataset}
 
 Download the Victoria Park data once from the repository root:
 
@@ -46,7 +46,7 @@ Important conventions:
 - GPS is useful for rough plotting and sanity checks, but it is not perfect ground truth and must not be used as a recurring filter update.
 - The laser scanner reports range-bearing structure in the vehicle/scanner frame. You are responsible for documenting your scanner angle convention.
 
-## Starter Package
+## Starter Package {#sec-project2-starter-package}
 
 Work from the Module 2 package:
 
@@ -85,7 +85,7 @@ The package intentionally does **not** implement the complete assignment for you
 
 You may add helper modules, notebooks, scripts, and tests. Keep the package organized enough that another engineer can run it without reverse-engineering your folder habits.
 
-## System Model
+## System Model {#sec-project2-system-model}
 
 Use a planar vehicle pose:
 
@@ -128,7 +128,7 @@ where $r_t$ is range and $\beta_t$ is bearing in the scanner/vehicle frame. You 
 
 FastSLAM factorizes the SLAM posterior by conditioning landmark estimates on each sampled path [@Montemerlo2002FastSLAM; @Thrun2004FastSLAM]. In implementation terms, each particle owns its own pose, trajectory history, landmark dictionary, and weight.
 
-## Forward Mechanization and State Transition
+## Forward Mechanization and State Transition {#sec-project2-forward-mechanization-state}
 
 Use a bicycle-style planar motion model. With wheelbase $L$, speed $v$, steering angle $\delta$, and heading $\theta$:
 
@@ -186,7 +186,7 @@ v_t \\
 
 then propagate each particle with $\tilde u_t^{[i]}$. You must report the wheelbase value, process-noise covariance, and any steering or speed preprocessing you use.
 
-## Observation Model
+## Observation Model {#sec-project2-observation-model}
 
 For pose $x = [p_x, p_y, \theta]^T$ and landmark $\ell_j = [m_x, m_y]^T$, define:
 
@@ -254,7 +254,7 @@ $$P_\ell = G R G^T.$$
 
 This covariance is conditional on the particle pose. If your implementation also accounts for pose uncertainty during landmark birth, document that extension clearly.
 
-## Part A: Dataset Loading and Laser Feature Extraction
+## Part A: Dataset Loading and Laser Feature Extraction {#sec-project2-part-dataset-loading}
 
 ### Goal
 
@@ -283,7 +283,7 @@ Turn raw laser scans into candidate tree observations.
 
 Do not overfit the detector to one scan. A detector that works on one frame and floods the full dataset with false trees is not a working detector.
 
-## Part B: Data Association and Landmark Management
+## Part B: Data Association and Landmark Management {#sec-project2-part-b-data}
 
 ### Goal
 
@@ -310,7 +310,7 @@ Decide whether each tree observation is an existing landmark, a new landmark, or
 
 FastSLAM lets different particles make different association decisions. Avoid forcing one global association table onto every particle.
 
-## Part C: FastSLAM Backend
+## Part C: FastSLAM Backend {#sec-project2-part-c-fastslam}
 
 ### Goal
 
@@ -358,7 +358,7 @@ $$N_\text{eff} = \frac{1}{\sum_i (w^{[i]})^2}.$$
 
 Use log weights unless you have a clear reason not to. Normalize angles consistently. Use `np.linalg.solve` instead of explicitly forming matrix inverses. Keep measurement covariance, process noise, gate threshold, and resampling threshold as tunable parameters, and report the values you used.
 
-## Optional Extension: FastSLAM 2.0
+## Optional Extension: FastSLAM 2.0 {#sec-project2-optional-extension-fastslam}
 
 FastSLAM 2.0 uses a proposal distribution informed by the latest measurement, rather than sampling pose only from the motion model. This can reduce particle count requirements, but it is easier to implement incorrectly.
 
@@ -371,7 +371,7 @@ If you implement FastSLAM 2.0, your report must:
 
 FastSLAM 2.0 is not required for full credit.
 
-## Part D: Analysis and Comparison
+## Part D: Analysis and Comparison {#sec-project2-part-d-analysis}
 
 ### Goal
 
@@ -401,7 +401,7 @@ Also analyze your own FastSLAM results as you vary:
 
 You are not required to implement loop closure or pose graph optimization. You should discuss whether your final map suggests revisited areas, duplicate landmarks, or particle depletion around long loops. Explain how a graph-based smoother could help and what additional loop-closure front end would be needed.
 
-## Deliverables
+## Deliverables {#sec-project2-deliverables}
 
 Submit:
 
@@ -423,7 +423,7 @@ Submit:
 
 Your report should be concise and technical. Show evidence. Do not write a travel essay about the park unless it somehow explains a covariance matrix.
 
-## Contract Grading Rubric
+## Contract Grading Rubric {#sec-project2-contract-grading-rubric}
 
 Project 2 is graded out of `100` project points.
 
@@ -437,7 +437,7 @@ Project 2 is graded out of `100` project points.
 | Evaluation and diagnostics | 15 | Provides clear trajectory, map, runtime, particle, association, map-growth, and parameter-sensitivity evidence tied to implementation decisions. ***15 points*** | Provides useful plots and diagnostics, but some sensitivity studies, runtime evidence, or interpretation are limited. \| Evidence is shallow, difficult to reproduce, or not sufficient to diagnose whether the implementation is working. \| Evaluation is missing or unsupported by meaningful outputs. \| ***12 points*** \| ***10 points*** \| \| |
 | Technical report and method comparison | 10 | Report is concise, reproducible, and technically grounded; compares EKF-SLAM, FastSLAM, and GraphSLAM using the student's actual results and failure modes. ***10 points*** | Report is mostly clear and correct, but some comparisons are generic or some reproducibility details are thin. \| Report is superficial, poorly organized, or weakly connected to the code and plots. \| Report or comparison analysis is missing. \| ***8 points*** \| ***7 points*** \| \| |
 
-## Suggested Milestones
+## Suggested Milestones {#sec-project2-suggested-milestones}
 
 1.  Load the dataset and plot several laser scans.
 2.  Build a feature extractor and tune it on a small scan subset.
@@ -448,7 +448,7 @@ Project 2 is graded out of `100` project points.
 7.  Scale to a longer segment and add diagnostics.
 8.  Complete the comparison and failure-mode report.
 
-## References
+## References {#sec-project2-references}
 
 - FastSLAM original formulation: @Montemerlo2002FastSLAM
 - FastSLAM with unknown data association and Victoria Park context: @Thrun2004FastSLAM

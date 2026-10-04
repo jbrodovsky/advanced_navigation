@@ -1,12 +1,12 @@
-# Loop Closure and Long-Term Consistency
+# Loop Closure and Long-Term Consistency {#sec-loop-closure}
 
 Loop closure occurs when a robot recognizes that it has returned to a previously visited place. The measurement is not just "I see a feature." It is "this current region corresponds to that old region."
 
 This matters because dead reckoning drifts. A four-kilometer path through Victoria Park can look locally plausible while ending up globally misaligned. Loop closure is the mechanism that can pull the trajectory back into consistency.
 
-For this module, loop closure is a required analysis topic, not a required implementation component. The project already asks students to implement feature extraction, association, and FastSLAM. That is enough for a 25% project.
+In Project 2, loop closure is something to analyze rather than implement: the project already covers feature extraction, association, and FastSLAM (see @sec-project2).
 
-## Why Drift Accumulates
+## Why Drift Accumulates {#sec-loop-closure-why-drift-accumulates}
 
 Suppose odometry has a small heading bias. Each short motion update looks reasonable. Over hundreds or thousands of updates, the position error grows. When the robot returns near the start, the estimated pose may be far away from where the map says it should be.
 
@@ -19,7 +19,7 @@ This is the essential loop-closure pattern:
 
 The difficult part is that a false loop closure can be worse than no loop closure. A single confident wrong match can bend the map into nonsense.
 
-## Recognition and Verification
+## Recognition and Verification {#sec-loop-closure-recognition-verification}
 
 Loop closure has two stages:
 
@@ -35,7 +35,7 @@ In Victoria Park, a simple analysis can ask:
 - Does the vehicle trajectory return near previously mapped structure?
 - Did particle diversity survive long enough to represent the loop-closing hypothesis?
 
-## Why Filtering SLAM Struggles
+## Why Filtering SLAM Struggles {#sec-loop-closure-why-filtering-slam}
 
 Filtering methods update the current state as measurements arrive. EKF-SLAM keeps a dense covariance, but the state still evolves causally. FastSLAM keeps a set of particles, but resampling removes low-weight path hypotheses.
 
@@ -47,7 +47,7 @@ This creates a loop-closure problem:
 
 This is why particle count, process noise, data association, and resampling threshold all affect long-loop behavior.
 
-## Why GraphSLAM Handles Loops Naturally
+## Why GraphSLAM Handles Loops Naturally {#sec-loop-closure-why-graphslam-handles}
 
 GraphSLAM keeps past poses as variables. A loop closure adds a constraint between two distant poses [@DurrantWhyteBailey2006SLAMTutorial]:
 
@@ -63,7 +63,7 @@ $$
 
 The tradeoff is that the backend is more complex. Sparse linear algebra and robust loss functions become central. This is powerful, but it is outside the required project implementation.
 
-## Loop Closure in the Project Report
+## Loop Closure in the Project Report {#sec-loop-closure-project-report}
 
 Students should not be asked to implement pose-graph optimization for this project. They should analyze loop closure using their FastSLAM results.
 
@@ -78,7 +78,7 @@ Recommended report questions:
 
 This is a compare-and-contrast analysis, not another coding assignment.
 
-## Robustness Concerns
+## Robustness Concerns {#sec-loop-closure-robustness-concerns}
 
 Loop closure failure cases:
 
@@ -90,7 +90,7 @@ Loop closure failure cases:
 
 The right response is conservative verification. In navigation, a missed correction is usually less damaging than a confident false correction.
 
-## Summary
+## Summary {#sec-loop-closure-summary}
 
 Loop closure is essential for long-term consistency, but it is a large topic. In this module:
 

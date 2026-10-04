@@ -1,11 +1,4 @@
----
-title: "Mathematical Reference and Derivations"
-subtitle: "Complete mathematical foundations for navigation algorithms"
-author: "James Brodovsky"
-date: "2026-05-19"
----
-
-# Mathematical Reference and Derivations
+# Mathematical Reference and Derivations {#sec-math-reference}
 
 This chapter serves as a comprehensive mathematical reference for the navigation algorithms and theory presented throughout the course. It provides detailed proofs, complete derivations, and reference equations that students and practitioners can consult when implementing algorithms or understanding the theoretical foundations.
 
@@ -15,7 +8,7 @@ main text needs more detail, while treating the primary chapter and its runnable
 example as the source of the course workflow.
 :::
 
-## Kalman Filter Optimality
+## Kalman Filter Optimality {#sec-math-reference-kalman-filter-optimality}
 
 ### Wiener Filter Foundation
 
@@ -70,7 +63,7 @@ Setting $\frac{\partial \ell}{\partial \mathbf{x}_k} = 0$ and solving recursivel
 
 ---
 
-## Extended Kalman Filter Error Analysis
+## Extended Kalman Filter Error Analysis {#sec-math-reference-extended-kalman-filter}
 
 ### Linearization Error Bounds
 
@@ -127,7 +120,7 @@ $$\lim_{k\to\infty} \mathbb{E}[\|\delta\mathbf{x}_k\|^2] < \infty$$
 
 ---
 
-## Quaternion Kinematics and Derivatives
+## Quaternion Kinematics and Derivatives {#sec-math-reference-quaternion-kinematics-derivatives}
 
 ### Quaternion Representation
 
@@ -198,7 +191,7 @@ This relationship is essential for EKF Jacobian computation in navigation system
 
 ---
 
-## Pose Graph Optimization Mathematics
+## Pose Graph Optimization Mathematics {#sec-math-reference-pose-graph-optimization}
 
 ### Factor Graph Representation
 
@@ -263,7 +256,7 @@ where $\mathbf{H} = \mathbf{J}^T\mathbf{J}$ is the Gauss-Newton Hessian, $\mathb
 
 ---
 
-## Bundle Adjustment Mathematics
+## Bundle Adjustment Mathematics {#sec-math-reference-bundle-adjustment-mathematics}
 
 ### Camera Projection Model
 
@@ -343,7 +336,7 @@ $$\frac{\partial \pi}{\partial \mathbf{X}} = \mathbf{K} \begin{bmatrix}
 
 ---
 
-## Numerical Stability Considerations
+## Numerical Stability Considerations {#sec-math-reference-numerical-stability-considerations}
 
 ### Matrix Conditioning
 
@@ -387,7 +380,7 @@ This approach maintains symmetry and positive definiteness to machine precision.
 
 ---
 
-## References and Further Reading
+## References and Further Reading {#sec-math-reference-references-further-reading}
 
 **Fundamental references:**
 - Kalman, R. E. (1960). "A new approach to linear filtering and prediction problems." Journal of Basic Engineering.
