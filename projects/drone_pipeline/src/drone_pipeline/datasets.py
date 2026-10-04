@@ -202,9 +202,11 @@ def parse_drone_parameters(text: str, source: str = "parameters.txt") -> DronePa
         if match is None:
             raise fail("Yaw", "no 'Yaw = ...' line")
         try:
-            yaw = _eval_scalar_expression(match.group(1))
-        except (SyntaxError, ValueError) as error:
-            raise fail("Yaw", str(error)) from error
+            yaw = float(_eval_scalar_expression(match.group(1)))
+        except (SyntaxError, ValueError, TypeError, ArithmeticError) as error:
+            raise fail("Yaw", f"{type(error).__name__}: {error}") from error
+        if not np.isfinite(yaw):
+            raise fail("Yaw", f"value {yaw} is not a finite real number")
 
         body = _bracket_after(text, r"tag\s+ids")
         if body is None:

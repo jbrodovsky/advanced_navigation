@@ -267,11 +267,7 @@ class FastSLAMSolution(fastslam.FastSLAM):
 
         self.next_landmark_id += len(new_ids)
         self.last_update_s = float(time_s)
-        weights = self.normalize_log_weights()
-        n_eff = float(1.0 / np.sum(weights * weights))
-        resampled = n_eff < self.resample_threshold * len(self.particles)
-        if resampled:
-            self.resample()
+        n_eff, resampled = self.resample_if_needed()
         n = len(self.particles)
         self.history.append(
             {

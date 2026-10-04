@@ -160,6 +160,54 @@ def polar(range_m: float, bearing_deg: float) -> tuple[float, float]:
 # ---------------------------------------------------------------------------
 
 
+class ResampleBookkeepingTests(unittest.TestCase):
+    """Provided support code: the best particle survives a resample."""
+
+    class _CopyFirst(fastslam.FastSLAM):
+        def resample(self) -> None:  # minimal stand-in for the student method
+            n = len(self.particles)
+            self.particles = [self.particles[0].copy() for _ in range(n)]
+            for particle in self.particles:
+                particle.log_weight = -math.log(n)
+
+    def test_best_particle_is_remembered_across_a_resample(self) -> None:
+        slam = self._CopyFirst.from_initial_pose(4)
+        for i, particle in enumerate(slam.particles):
+            particle.pose_xy_theta = np.array([float(i), 0.0, 0.0])
+            particle.log_weight = 0.0
+        slam.particles[2].log_weight = 10.0  # dominant: N_eff ~ 1 < 0.5 N
+        n_eff, resampled = slam.resample_if_needed()
+        self.assertTrue(resampled)
+        self.assertLess(n_eff, 2.0)
+        # The resampled set holds copies of particle 0; the report must still use particle 2.
+        np.testing.assert_allclose(slam.best_particle().pose_xy_theta, [2.0, 0.0, 0.0])
+
+    def test_no_snapshot_without_resampling(self) -> None:
+        slam = self._CopyFirst.from_initial_pose(4)
+        for i, particle in enumerate(slam.particles):
+            particle.pose_xy_theta = np.array([float(i), 0.0, 0.0])
+        slam.particles[3].log_weight += 0.1  # nearly uniform: no resample
+        _, resampled = slam.resample_if_needed()
+        self.assertFalse(resampled)
+        self.assertIs(slam.best_particle(), slam.particles[3])
+
+
+class RunAllArgumentTests(unittest.TestCase):
+    def test_nonpositive_scan_count_is_rejected(self) -> None:
+        for value in ("0", "-5"):
+            with self.subTest(scans=value), self.assertRaises(SystemExit):
+                run_all.main(["--scans", value])
+
+    @unittest.skipIf(REAL_DATA is None, FETCH_HINT)
+    def test_too_short_segment_is_rejected_before_evaluation(self) -> None:
+        dataset = load_victoria_park_data()
+        minimum = run_all.minimum_segment_scans(dataset, valid_gps_mask(dataset))
+        self.assertGreater(minimum, 1)
+        self.assertLess(minimum, 200)
+        with tempfile.TemporaryDirectory() as tmp_dir, self.assertRaises(SystemExit):
+            run_all.main(["--scans", str(minimum - 1), "--out", tmp_dir])
+
+
 class DecodingTests(unittest.TestCase):
     def test_decode_masks_flags_and_marks_no_return(self) -> None:
         raw = np.array([1234, 8000, 7999, 8191, 8192 + 1457, 0], dtype=np.uint16)

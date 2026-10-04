@@ -385,6 +385,20 @@ def run_and_evaluate(
     return run, evaluation
 
 
+MIN_GPS_FIXES = 2  # an SE(2) alignment needs at least two reference points
+
+
+def minimum_segment_scans(dataset, valid: np.ndarray, min_gps_fixes: int = MIN_GPS_FIXES) -> int:
+    """Smallest number of scans whose segment contains odometry and ``min_gps_fixes`` valid GPS fixes."""
+    t_needed = float(dataset.odometry_time_s[0])
+    gps_times = np.sort(np.asarray(dataset.gps_time_s, dtype=np.float64)[np.asarray(valid, dtype=bool)])
+    gps_times = gps_times[gps_times >= dataset.odometry_time_s[0]]
+    if gps_times.size < min_gps_fixes:
+        return dataset.num_scans + 1  # never enough
+    t_needed = max(t_needed, float(gps_times[min_gps_fixes - 1]))
+    return int(np.searchsorted(dataset.laser_time_s, t_needed, side="left")) + 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--scans", type=int, default=SEGMENT_SCANS, help=f"number of scans to process (default {SEGMENT_SCANS})")
@@ -393,14 +407,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=Path("results") / "project2", help="output folder")
     parser.add_argument("--progress", type=int, default=0, help="print a progress line every N scans")
     args = parser.parse_args(argv)
+    if not args.all and args.scans < 1:
+        parser.error("--scans must be a positive number of scans")
 
+    dataset = load_victoria_park_data()
+    valid = valid_gps_mask(dataset)
+    stop_scan = dataset.num_scans if args.all else min(args.scans, dataset.num_scans)
+    minimum = minimum_segment_scans(dataset, valid)
+    if stop_scan < minimum:
+        parser.error(
+            f"--scans {args.scans} is too short to evaluate: the segment needs odometry and at least "
+            f"{MIN_GPS_FIXES} valid GPS fixes, which takes at least {minimum} scans"
+        )
+    t_stop = float(dataset.laser_time_s[stop_scan - 1])
     out_dir = args.out
     out_dir.mkdir(parents=True, exist_ok=True)
     log = StageLog()
-    dataset = load_victoria_park_data()
-    stop_scan = dataset.num_scans if args.all else min(args.scans, dataset.num_scans)
-    t_stop = float(dataset.laser_time_s[stop_scan - 1])
-    valid = valid_gps_mask(dataset)
     log.add("Dataset", "ok", f"{stop_scan} scans, {dataset.laser_time_s[0]:.1f}-{t_stop:.1f} s, "
             f"{np.count_nonzero(valid)} valid GPS fixes in the whole log")
 

@@ -132,6 +132,16 @@ class ParticleFilterSolution(filters.ParticleFilterNavigator):
         self.particles[:, ANGLES] = wrap_angles(self.particles[:, ANGLES])
 
     def update(self, z):
+        # Prior innovation and NIS, from the particles and weights BEFORE the
+        # likelihood is applied (the posterior would be pulled toward z).
+        z_hat = self.estimate("weighted_mean")[:6]
+        dz = _measurement_residual(self.particles[:, :6], z_hat)
+        S = (self.weights[:, None] * dz).T @ dz + self.R
+        nu_bar = _measurement_residual(z, z_hat)
+        nis = float(nu_bar @ np.linalg.solve(S, nu_bar))
+        if self.nis_gate is not None and nis > self.nis_gate:
+            self.history.append({"nis": nis, "accepted": False, "n_eff": self.effective_sample_size})
+            return False
         nu = _measurement_residual(z, self.particles[:, :6])
         R_inv = np.linalg.inv(self.R)
         log_like = -0.5 * np.einsum("ni,ij,nj->n", nu, R_inv, nu)
@@ -139,12 +149,6 @@ class ParticleFilterSolution(filters.ParticleFilterNavigator):
         log_w -= log_w.max()
         w = np.exp(log_w)
         self.weights = w / w.sum()
-        # NIS of the particle-predicted measurement, for comparison with the KFs.
-        z_hat = self.estimate("weighted_mean")[:6]
-        dz = _measurement_residual(self.particles[:, :6], z_hat)
-        S = (self.weights[:, None] * dz).T @ dz + self.R
-        nu_bar = _measurement_residual(z, z_hat)
-        nis = float(nu_bar @ np.linalg.solve(S, nu_bar))
         self.history.append({"nis": nis, "accepted": True, "n_eff": self.effective_sample_size})
         return True
 
