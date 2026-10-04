@@ -10,7 +10,7 @@ A defensible suite, with the role of each sensor:
 | Sensor | Measures | Resolved in | Dominant error | Role |
 |---|---|---|---|---|
 | IMU (navigation or tactical grade, FOG or RLG gyros) | Specific force, angular rate | Body | Bias drift, random walk | Propagation at 100+ Hz |
-| DVL (bottom track) | Velocity over the seafloor | Instrument, rotated to body | Misalignment, sound-speed scale factor, loss of bottom lock | Bounds velocity error, so position error grows roughly linearly with distance instead of with $t^2$ or $t^3$ |
+| DVL (bottom track) | Velocity over the seafloor | Instrument, rotated to body | Misalignment, sound-speed scale factor, loss of bottom lock | Bounds velocity error, so position error grows roughly linearly with distance. Free-inertial position error grows like $t^2$ from an accelerometer bias, and its standard deviation grows like $t^{3/2}$ from white acceleration noise (the position variance grows like $t^3$) |
 | Pressure (depth) sensor | Water pressure, hence depth | Vertical | Water density and tide model, small bias | Bounds the vertical channel absolutely |
 | Magnetometer or gyrocompass heading | Field direction / Earth-rate heading | Body | Hull and thruster magnetic distortion | Helps bound heading; often weak on a steel vehicle |
 | Acoustic positioning (USBL from the ship, or LBL transponders) | Range and bearing to beacons | Ship or beacon frame | Sound-speed refraction, multipath, low rate | Absolute position fixes at depth |

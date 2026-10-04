@@ -8,7 +8,7 @@ Instructor-only. Exercise numbers match `## Exercises {#sec-filtering-exercises}
 add and variances add:
 
 - predicted mean: $\mu^- = 2.0 + 1.2 = 3.2$
-- predicted variance: $\sigma^{-2} = 0.7^2 + 0.85^2 = 0.49 + 0.7225 = 1.2125$
+- predicted variance: $(\sigma^-)^2 = 0.7^2 + 0.85^2 = 0.49 + 0.7225 = 1.2125$
   (standard deviation 1.101)
 
 **Update.** The posterior density is proportional to the product of the

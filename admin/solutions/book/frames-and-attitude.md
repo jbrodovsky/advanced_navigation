@@ -129,10 +129,12 @@ where its bow points. With speed over ground 12.0 kn, the velocity component
 perpendicular to the keel is $12.0\sin(-3°) = -0.63$ kn (0.63 kn toward port)
 and the along-keel component is $12.0\cos 3° = 11.98$ kn.
 
-**(c)** The ship is being set to port, toward roughly $298°$ T (heading minus
-$90°$), i.e. toward the west-northwest. That is at least a 0.63 kn
-cross-keel component of current and/or wind leeway. The along-track part of the
-current cannot be determined without the speed through the water from a log.
+**(c)** The ship is being set to port. What this data determines is only the
+cross-keel component: 0.63 kn of current and/or leeway toward $298°$ T (heading
+minus $90°$). The along-keel component of the set is unknown without the speed
+through the water from a log, and it can change both the total set's direction
+and its magnitude, so no overall set bearing or drift can be stated from COG,
+SOG, and heading alone.
 Full credit requires noting that GNSS course is not heading, so initializing an
 INS yaw from this COG would put a 3° error into the attitude.
 
