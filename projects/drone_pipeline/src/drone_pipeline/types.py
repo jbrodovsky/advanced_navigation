@@ -10,7 +10,16 @@ import numpy as np
 
 @dataclass(slots=True)
 class DronePacket:
-    img: np.ndarray
+    """One onboard packet: AprilTag detections plus IMU readings.
+
+    ``drpy`` holds the packet's rate signal, and ``rate_field`` records which raw
+    field it came from. In ``studentdata1``-``7`` that is ``omg``, the body
+    angular rate (it tracks the Vicon angular velocity closely). In
+    ``studentdata0`` it is the file's ``drpy`` field, whose physical meaning is
+    still unconfirmed: it may be Euler-angle rates or use another frame (GitHub
+    issue #4). Check ``rate_field`` before treating ``drpy`` as a body rate.
+    """
+
     id: np.ndarray
     p1: np.ndarray
     p2: np.ndarray
@@ -20,6 +29,10 @@ class DronePacket:
     rpy: np.ndarray
     drpy: np.ndarray
     acc: np.ndarray
+    p0: np.ndarray | None = None
+    img: np.ndarray | None = None
+    is_ready: bool | None = None
+    rate_field: str = "omg"
 
 
 @dataclass(slots=True)

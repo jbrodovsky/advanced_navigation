@@ -1,9 +1,8 @@
 # Syllabus
 
-This is a sample syllabus for an approximately sixteen-week semester. For WPI
+This is the syllabus for an approximately sixteen-week semester. For WPI
 students, Canvas and the official academic calendar remain the authoritative
-sources for policies and deadlines. The sample is also intended to help other
-instructors adapt the openly available notes and projects.
+sources for policies and deadlines.
 
 ## Learning Outcomes
 

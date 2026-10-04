@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
 import numpy as np
+from scipy.io import savemat
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from victoria_park_slam.datasets import load_victoria_park_data
+from victoria_park_slam.data_paths import DatasetNotFoundError
+from victoria_park_slam.datasets import load_victoria_park_data, resolve_victoria_park_root
 from victoria_park_slam.utils import (
     effective_sample_size,
     inverse_range_bearing,
@@ -22,7 +25,17 @@ from victoria_park_slam.utils import (
 )
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+FETCH_HINT = "Victoria Park data not downloaded; run `uv run python scripts/fetch_data.py victoria-park`"
+
+
+def _real_data_root() -> Path | None:
+    try:
+        return resolve_victoria_park_root()
+    except DatasetNotFoundError:
+        return None
+
+
+REAL_DATA = _real_data_root()
 
 
 class VictoriaParkTests(unittest.TestCase):
@@ -77,13 +90,37 @@ class VictoriaParkTests(unittest.TestCase):
         self.assertTrue(np.all(indexes >= 0))
         self.assertTrue(np.all(indexes < 3))
 
-    def test_load_victoria_park_data(self) -> None:
-        dataset_root = REPO_ROOT / "data/victoria-park"
-        if not dataset_root.exists():
-            self.skipTest("Victoria Park data/victoria-park files are unavailable")
-
-        dataset = load_victoria_park_data(dataset_root)
+    def test_load_synthetic_dataset_converts_units(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            laser = np.full((2, 361), 1234, dtype=np.uint16)
+            savemat(root / "aa3_lsr2.mat", {"LASER": laser, "TLsr": np.array([[1000.0], [1250.0]])})
+            savemat(
+                root / "aa3_dr.mat",
+                {"speed": np.array([[2.0], [2.5]]), "steering": np.array([[0.0], [0.1]]), "time": np.array([[1000.0], [1025.0]])},
+            )
+            savemat(
+                root / "aa3_gpsx.mat",
+                {"La_m": np.array([[1.0]]), "Lo_m": np.array([[2.0]]), "timeGps": np.array([[1100.0]])},
+            )
+            dataset = load_victoria_park_data(root)
         self._assert_dataset_shapes(dataset)
+        self.assertAlmostEqual(dataset.laser_ranges_m[0, 0], 12.34)
+        np.testing.assert_allclose(dataset.laser_time_s, [1.0, 1.25])
+        np.testing.assert_allclose(dataset.odometry_time_s, [1.0, 1.025])
+        np.testing.assert_allclose(dataset.gps_time_s, [1.1])
+
+    def test_missing_dataset_explains_how_to_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.assertRaises(DatasetNotFoundError) as caught:
+                load_victoria_park_data(Path(tmp_dir))
+        self.assertIn("scripts/fetch_data.py victoria-park", str(caught.exception))
+
+    @unittest.skipIf(REAL_DATA is None, FETCH_HINT)
+    def test_load_real_dataset(self) -> None:
+        dataset = load_victoria_park_data()
+        self._assert_dataset_shapes(dataset)
+        self.assertEqual(dataset.laser_ranges_m.shape[0], 7249)
 
     def _assert_dataset_shapes(self, dataset) -> None:
         self.assertEqual(dataset.laser_ranges_m.shape[1], 361)

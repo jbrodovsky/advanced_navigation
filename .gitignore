@@ -1,16 +1,29 @@
+# Course datasets: fetched with scripts/fetch_data.py, never committed.
+/data/*
+!/data/README.md
+
+# Local reading material and scratch areas
 readings/
-data/
-/.quarto/
-**/*.quarto_ipynb
 attic/
 lectures/
+
+# Python
 .venv/
-book/output/*
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Quarto
+/.quarto/
+**/*.quarto_ipynb
+book/output/
+book/**/*_files/
+!book/_freeze/**/*_files/
+
+# LaTeX build products for book/images/src
 book/images/src/*.aux
 book/images/src/*.fdb_latexmk
 book/images/src/*.fls
 book/images/src/*.log
 book/images/src/*.pdf
 book/images/src/*.synctex.gz
-
-*.pyc

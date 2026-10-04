@@ -1,0 +1,54 @@
+# Download sources for the course datasets, read by scripts/fetch_data.py.
+#
+# Instructor workflow (see README.md, "Instructor tasks"):
+#   1. uv run python scripts/package_datasets.py all
+#   2. Upload each zip from data/_upload/ to the shared course folder on
+#      Google Drive or OneDrive.
+#   3. Share each zip FILE (not the folder) as "anyone with the link can view".
+#   4. Paste that file's share link into `url` below. If you rebuilt the
+#      archive from different data, also update `sha256` and `size_bytes`
+#      from the package_datasets.py output (the builds are deterministic, so
+#      unchanged data reproduces the values already recorded here).
+#
+# `provider` may be "auto" (detected from the link), "gdrive", "onedrive",
+# "https" (a direct download link), or "github" (the MEMS dataset repository).
+
+[datasets.drone-data]
+description = "Project 1: quadrotor IMU, AprilTag corner detections, camera images and Vicon truth"
+provider = "auto"
+url = "REPLACE_ME"
+sha256 = "2f944a3984b4de97cfba6a1a84c2913fa5a6ff0a3b62d310e2cb1cd571ad02d2"
+size_bytes = 571590643
+archive = "drone-data.zip"
+expected_files = [
+    "parameters.txt",
+    "studentdata0.mat",
+    "studentdata1.mat",
+    "studentdata2.mat",
+    "studentdata3.mat",
+    "studentdata4.mat",
+    "studentdata5.mat",
+    "studentdata6.mat",
+    "studentdata7.mat",
+]
+issue = 1
+credit = "Provenance and redistribution terms to be confirmed (GitHub issue #3)."
+
+[datasets.victoria-park]
+description = "Project 2: Victoria Park laser, odometry and GPS logs"
+provider = "auto"
+url = "REPLACE_ME"
+sha256 = "4346e0cff21b350a08ad912fc55f38d0952fd3b78fd58b685c4fcc2d80e47f80"
+size_bytes = 1494193
+archive = "victoria-park.zip"
+expected_files = ["aa3_lsr2.mat", "aa3_dr.mat", "aa3_gpsx.mat", "info.txt"]
+issue = 2
+credit = "Victoria Park dataset: J. Guivant and E. Nebot, Australian Centre for Field Robotics, University of Sydney."
+
+[datasets.mems-nav-dataset]
+description = "Project 3: smartphone MEMS IMU and GNSS trials with a reference solution"
+provider = "github"
+url = "https://github.com/jbrodovsky/mems-nav-dataset"
+ref = "main"
+expected_files = ["input", "baseline", "manifest.json"]
+credit = "MEMS navigation dataset: J. Brodovsky (MIT license, see the dataset repository)."

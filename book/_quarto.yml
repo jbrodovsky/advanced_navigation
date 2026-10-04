@@ -2,8 +2,14 @@ project:
   type: book
   output-dir: output
 
+# Code cells are executed once on the instructor's machine (with the datasets
+# present) and the results are stored in _freeze/, which is committed. Builds
+# without the data, such as CI, reuse those stored results.
+execute:
+  freeze: auto
+
 website:
-  title: "Advanced Autonomous Navigation"
+  title: "Advanced Robot Navigation"
   description: "Bridging robotics and aerospace navigation"
   navbar:
     left:
@@ -34,9 +40,10 @@ website:
         href: https://github.com/yourusername/advanced-navigation
 
 book:
-  title: "Advanced Autonomous Navigation"
+  title: "Advanced Robot Navigation"
   subtitle: "A Practical Guide to State Estimation, Simultaneous Localization and Mapping (SLAM), and Inertial Navigation for Roboticists and Autonomous Vehicle Engineers"
   author: "James Brodovsky"
+  page-footer: "© 2026 James Brodovsky. All rights reserved."
   chapters:
     - index.qmd
     - part: "Introduction"
@@ -118,5 +125,3 @@ format:
     math: true
     cover: images/cover.png
 
-metadata:
-  copyright: "2024 James Brodovsky"

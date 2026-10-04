@@ -600,10 +600,10 @@ https://github.com/jbrodovsky/mems-nav-dataset
 The data files are not checked into this course repository. Fetch the synchronized measurement data and baseline reference solution with:
 
 ``` bash
-python scripts/fetch_ins_gnss_data.py
+uv run python scripts/fetch_data.py mems-nav-dataset
 ```
 
-By default this writes:
+This writes:
 
 ```         
 data/mems-nav-dataset/
@@ -617,13 +617,10 @@ The `input` directory contains the time-synchronized measurements students use a
 Load one paired trial with the starter package:
 
 ``` python
-from pathlib import Path
-
 from ins_gnss.datasets import list_mems_nav_trials, load_mems_nav_trial
 
-dataset_root = Path("data/mems-nav-dataset")
-trial_name = list_mems_nav_trials(dataset_root)[0]
-trial = load_mems_nav_trial(dataset_root, trial_name)
+trial_name = list_mems_nav_trials()[0]  # finds data/mems-nav-dataset
+trial = load_mems_nav_trial(None, trial_name)
 
 imu_samples = trial.imu_samples
 gnss_samples = trial.gnss_samples

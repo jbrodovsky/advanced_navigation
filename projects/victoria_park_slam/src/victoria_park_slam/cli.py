@@ -5,12 +5,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .datasets import DEFAULT_VICTORIA_PARK_ROOT, load_victoria_park_data
+from .datasets import load_victoria_park_data
 from .plotting import plot_scan_xy
 from .utils import scan_to_xy
 
 
-def _print_summary(root: Path = DEFAULT_VICTORIA_PARK_ROOT) -> None:
+def _print_summary(root: Path | None = None) -> None:
     dataset = load_victoria_park_data(root)
     print(f"root: {dataset.root}")
     print(f"laser scans: {dataset.laser_ranges_m.shape[0]} x {dataset.laser_ranges_m.shape[1]}")
@@ -29,7 +29,7 @@ def _print_summary(root: Path = DEFAULT_VICTORIA_PARK_ROOT) -> None:
         print(f"gps samples: {dataset.gps_time_s.size}")
 
 
-def _plot_scan(root: Path, scan_index: int, output: Path | None) -> None:
+def _plot_scan(root: Path | None, scan_index: int, output: Path | None) -> None:
     dataset = load_victoria_park_data(root)
     scan_xy_m = scan_to_xy(dataset.laser_ranges_m[scan_index])
     fig, _ = plot_scan_xy(scan_xy_m, title=f"Victoria Park scan {scan_index}")
@@ -52,8 +52,8 @@ def main() -> None:
         "root",
         nargs="?",
         type=Path,
-        default=DEFAULT_VICTORIA_PARK_ROOT,
-        help="path to the MATLAB files; defaults to data/victoria-park",
+        default=None,
+        help="folder with the MATLAB files; defaults to data/victoria-park at the repository root",
     )
 
     scan = subparsers.add_parser("plot-scan", help="plot one laser scan in scanner coordinates")
@@ -61,8 +61,8 @@ def main() -> None:
         "root",
         nargs="?",
         type=Path,
-        default=DEFAULT_VICTORIA_PARK_ROOT,
-        help="path to the MATLAB files; defaults to data/victoria-park",
+        default=None,
+        help="folder with the MATLAB files; defaults to data/victoria-park at the repository root",
     )
     scan.add_argument("--index", type=int, default=0, help="scan index to plot")
     scan.add_argument("--output", type=Path, help="optional image path")
