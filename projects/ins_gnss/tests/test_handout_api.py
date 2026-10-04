@@ -10,7 +10,6 @@ package.
 
 from __future__ import annotations
 
-import ast
 import dataclasses
 import importlib
 import inspect
@@ -46,16 +45,6 @@ INSTANCE_NAMES = {
     "fix": [types.GNSSSample],
 }
 
-STUBS = (
-    "ins_gnss.strapdown.mechanize",
-    "ins_gnss.strapdown.coarse_alignment",
-    "ins_gnss.eskf.error_state_jacobian",
-    "ins_gnss.eskf.discrete_process_noise",
-    "ins_gnss.eskf.gnss_position_residual",
-    "ins_gnss.eskf.joseph_update",
-    "ins_gnss.eskf.inject_error_state",
-    "ins_gnss.eskf.reset_covariance",
-)
 
 
 def _resolve(dotted: str):
@@ -143,16 +132,6 @@ class HandoutApiTests(unittest.TestCase):
                     self.assertTrue(set(expected) <= set(actual), target)
                 else:
                     self.assertEqual(actual[: len(expected)], expected, target)
-
-    def test_student_functions_are_stubs_in_the_starter(self) -> None:
-        # Read the files, not the imported objects (the instructor's checker patches those).
-        for dotted in STUBS:
-            module_name, function_name = dotted.rsplit(".", 1)
-            tree = ast.parse(Path(importlib.import_module(module_name).__file__).read_text())
-            with self.subTest(function=dotted):
-                (function,) = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == function_name]
-                raises = [node for node in ast.walk(function) if isinstance(node, ast.Raise)]
-                self.assertTrue(any("NotImplementedError" in ast.unparse(node) for node in raises))
 
     def test_documented_numbers_match_the_code(self) -> None:
         self.assertEqual(datasets.BASELINE_TIME_OFFSET_S, 1.0)

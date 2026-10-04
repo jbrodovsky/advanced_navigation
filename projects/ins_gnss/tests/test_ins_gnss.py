@@ -486,6 +486,12 @@ class EvaluationTests(unittest.TestCase):
         self.assertAlmostEqual(results[1].error_at(30.0), 5.0, places=2)
         np.testing.assert_allclose(results[1].horizontal_sigma_m, 2.0)
 
+    def test_gnss_only_track_takes_the_short_way_across_the_antimeridian(self) -> None:
+        east, west = math.radians(179.999), math.radians(-179.999)
+        fixes = [gnss_fix(0.0, 0.3, east, 10.0), gnss_fix(1.0, 0.3, west, 10.0)]
+        _, lon, _ = gnss_only_track(fixes, np.array([0.5]))
+        self.assertAlmostEqual(abs(float(lon[0])), math.pi, places=9)
+
     def test_gnss_only_track_interpolates_and_extrapolates(self) -> None:
         fixes = [gnss_fix(float(t), float(lat), -1.3, 50.0, speed_mps=10.0, bearing_rad=0.0) for t, lat in zip(self.t, self.lat)]
         del fixes[50:60]  # an 11 s gap: extrapolate at constant velocity
@@ -752,6 +758,26 @@ class GNSSUpdateTests(unittest.TestCase):
             numerical[:, j] = -(plus - minus) / 2e-4
         np.testing.assert_allclose(H, numerical, atol=1e-5)
         np.testing.assert_allclose(H[:, ATT], -skew(C @ lever), atol=1e-12)
+
+    def test_velocity_residual_jacobian_with_lever_arm(self) -> None:
+        state = nominal_state()
+        lever = np.array([0.5, -0.3, -1.2])
+        gyro = np.array([0.02, -0.01, 0.3])  # turning, so the lever arm moves
+        C = quat_to_dcm(state.q_bn)
+        antenna_velocity = state.velocity_ned_mps + C @ np.cross(gyro - state.gyro_bias_rps, lever)
+        fix = gnss_fix(0.0, state.latitude_rad, state.longitude_rad, state.height_m, velocity_ned_mps=antenna_velocity)
+        nu0, H = call_or_skip(self, eskf.gnss_velocity_residual, state, fix, lever, gyro)
+        np.testing.assert_allclose(nu0, 0.0, atol=1e-9)
+        numerical = np.zeros((2, 15))
+        for j in range(15):
+            step = np.zeros(15)
+            step[j] = 1e-5
+            plus, _ = eskf.gnss_velocity_residual(perturb(state, step), fix, lever, gyro)
+            minus, _ = eskf.gnss_velocity_residual(perturb(state, -step), fix, lever, gyro)
+            numerical[:, j] = -(plus - minus) / 2e-5
+        # Velocity, attitude, and gyro-bias columns are all nonzero with a lever arm.
+        np.testing.assert_allclose(H, numerical, atol=1e-6)
+        self.assertGreater(np.abs(H[:, GYRO_BIAS]).max(), 0.1)
 
     def test_joseph_update_matches_the_textbook_filter(self) -> None:
         rng = np.random.default_rng(7)
