@@ -1,276 +1,1704 @@
-# Advanced Navigation Topics {#sec-advanced-slam}
+# Factor Graphs, Manifolds, and Modern Back-ends {#sec-advanced-slam}
 
-## Why This Chapter Exists {#sec-advanced-slam-why-this-chapter}
+::: {.callout-note title="Advanced topics chapter: not assessed"}
+This chapter goes beyond the course projects. Nothing here is a project
+requirement, and no library beyond NumPy, SciPy, and Matplotlib is needed to run
+its examples. It is written for the student who wants to read a modern SLAM or
+visual-inertial paper, or open the source of a production estimator, and
+recognize every moving part.
+:::
 
-This chapter is a brief tour of topics that sit beyond the required course
-projects. These are not new assignment requirements, and students will not be
-assessed on implementing them. The goal is professional awareness: if you keep
-working in autonomous navigation, these are the ideas, acronyms, and research
-directions you will keep seeing.
+Over the last several chapters the book has handed you a box of parts. The
+Rauch-Tung-Striebel smoother (@sec-kf-smoothing) revisited the past with future
+data. The information filter (@sec-information-filter-marginalization-conditioning)
+showed that forgetting a variable is a Schur complement, and that forgetting
+makes matrices dense. The error-state filter (@sec-ekf-error-state-filtering)
+kept attitude on the rotation group and estimated only a small error. The loop
+closure chapter built an $SE(2)$ pose graph from scratch and solved it with
+sparse Gauss-Newton (@sec-loop-closure-pose-graph). The visual-navigation chapter
+introduced IMU preintegration and the MSCKF (@sec-visual-nav-vio). This chapter
+is the exploded-view drawing that shows how those parts fit together in a modern
+estimation back end.
 
-The course projects emphasize implementable foundations: filtering, visual
-navigation, FastSLAM, and loose INS/GNSS integration. Modern navigation systems
-build on those foundations, but they often use more complex optimization,
-multi-sensor fusion, raw GNSS processing, learned perception, and resilience
-methods for environments where one sensor cannot be trusted.
+Three ideas carry the whole structure. **Factor graphs** say what is being
+estimated and what each measurement says about it, and they turn navigation into
+sparse nonlinear least squares. **Manifolds** say how to do calculus on
+attitudes and poses, which are not vectors no matter how much we would like them
+to be. **Marginalization** says how to forget the past without lying about it.
+Each gets a section with working code. The chapter then closes with shorter
+tours of research directions (resilient navigation, mapping, hybrid filters,
+learned components) and some advice on reading the literature.
 
-Think of this chapter as a map of the neighborhood, not a demand that you build
-the entire city by Friday.
+None of this is new in spirit. Photogrammetrists were adjusting "bundles" of
+rays by sparse least squares in the late 1950s [@triggs2000], and the RTS
+smoother appeared in an aerospace journal in 1965 [@rauch1965]. What changed
+is that sparse solvers, manifold calculus, and cheap computers made it routine
+to run these batch ideas onboard, in real time, over thousands of states.
 
 ## Factor Graphs and Smoothing {#sec-advanced-slam-factor-graphs-smoothing}
 
-Many modern navigation systems are written as optimization problems rather than
-only as recursive filters. Instead of estimating only the current state, a
-smoothing system estimates a window or full history of states. Measurements become
-factors that constrain those states.
+### The Factor-Graph View of Navigation {#sec-advanced-slam-factor-graph-view}
 
-Common factors include:
+A **factor graph** is a bipartite graph with two kinds of nodes: *variables*
+(the unknowns: poses, velocities, IMU biases, landmarks, clock offsets,
+calibration parameters) and *factors* (the probabilistic constraints among them:
+measurements, motion models, and priors) [@dellaert2017factor]. A factor is
+connected to exactly the variables it depends on. Write $\mathcal{X}$ for the
+set of all variables, $\mathcal{X}_k \subset \mathcal{X}$ for those touched by
+factor $k$, and $\mathcal{Z}$ for the measurements. The posterior factorizes as
+a product of factors, and with Gaussian noise each factor is the exponential of
+a squared Mahalanobis residual:
 
-- IMU preintegration between keyframes;
-- camera reprojection residuals;
-- lidar or radar scan-matching residuals;
-- GNSS pseudorange, Doppler, carrier phase, or position factors;
-- wheel odometry, barometer, magnetometer, or terrain constraints;
-- loop-closure constraints between revisited locations.
+$$
+\begin{aligned}
+p(\mathcal{X} \mid \mathcal{Z}) &\propto \prod_k \phi_k(\mathcal{X}_k), \\
+\phi_k(\mathcal{X}_k) &\propto \exp\left(-\tfrac{1}{2}\left\|\mathbf{h}_k(\mathcal{X}_k) \ominus \mathbf{z}_k\right\|^2_{\boldsymbol{\Sigma}_k}\right), \\
+\mathcal{X}^\star &= \arg\min_{\mathcal{X}} \sum_k \left\|\mathbf{h}_k(\mathcal{X}_k) \ominus \mathbf{z}_k\right\|^2_{\boldsymbol{\Sigma}_k},
+\end{aligned}
+$$ {#eq-advanced-slam-map}
 
-The graph view is powerful because it treats heterogeneous measurements in one
-consistent framework. A visual-inertial-GNSS smoother, for example, can contain
-camera factors, IMU factors, GNSS factors, and prior factors in the same
-least-squares problem.
+with $\|\mathbf{e}\|^2_{\boldsymbol{\Sigma}} = \mathbf{e}^T\boldsymbol{\Sigma}^{-1}\mathbf{e}$.
+The maximum a posteriori (MAP) estimate is a nonlinear least-squares problem,
+which is the GraphSLAM statement of @sec-slam-graphslam-one-page and the pose
+graph cost of @eq-loop-closure-pose-graph-cost with more kinds of factors. The
+$\ominus$ is there because some measurements live on manifolds; it is the
+subject of @sec-advanced-slam-lie-groups. A prior is just a factor attached to a
+single variable, so "prior" and "measurement" stop being different concepts.
 
-This does not make filtering obsolete. Filters are still useful when memory,
-latency, or certification constraints are tight. Smoothing is attractive when
-past states should be revisited, as in loop closure, bundle adjustment, and
-post-processing. Many deployed systems use both: a real-time filter for immediate
-state output and a smoother for mapping, delayed corrections, or offline analysis.
+The graph view is valuable because it is indifferent to where a measurement came
+from. @tbl-advanced-slam-factors lists the factors in a typical
+visual-inertial-GNSS navigation system, and @fig-advanced-slam-factor-graph draws
+a small instance.
 
-The practical concept to remember is **sparsity**. A useful factor graph is not
-just a giant dense matrix. Each measurement usually touches only a few states, so
-the solver can exploit sparse linear algebra. That is one reason graph methods
-scale better than a naive full covariance over every pose and landmark.
+| Factor | Variables touched | Residual |
+|---|---|---|
+| Prior (initial or marginal) | one state, or a set of states | state $\ominus$ prior mean |
+| IMU preintegration | states $i$, $j$ and biases | rotation, velocity, position increments |
+| Bias random walk | biases at $i$, $j$ | $\mathbf{b}_j - \mathbf{b}_i$ |
+| Camera reprojection | one pose and one landmark | pixel minus projection |
+| Lidar or radar scan match | two poses | relative pose $\ominus$ measured |
+| Wheel or DVL odometry | two poses (or one velocity) | relative motion $\ominus$ measured |
+| GNSS position, pseudorange, Doppler | one state (and clock) | measured minus predicted |
+| Barometer, depth, magnetometer | one state | measured minus predicted |
+| Loop closure | two distant poses | relative pose $\ominus$ measured |
 
-## Visual-Inertial Odometry and SLAM {#sec-advanced-slam-visual-inertial-odometry}
+: Common factors in a navigation factor graph. {#tbl-advanced-slam-factors}
 
-Visual-inertial odometry (VIO) estimates motion by combining camera measurements
-with IMU measurements. Visual-inertial SLAM extends this with mapping and loop
-closure.
+```{mermaid}
+%%| label: fig-advanced-slam-factor-graph
+%%| fig-cap: "A small visual-inertial-GNSS factor graph. Circles are variables: keyframe states x0 to x3 (pose, velocity, and IMU biases) and landmarks l0 and l1. Dark boxes are factors: a prior on the oldest state, IMU preintegration factors between consecutive keyframes, camera factors between keyframes and the landmarks they see, a GNSS factor on x2, and a loop closure between x3 and x0. Each factor connects only the few variables its measurement depends on, which is why the problem is sparse."
 
-The combination works because the sensors fail differently:
+flowchart LR
+    P["prior"]:::factor --- x0(("x0"))
+    x0 --- I01["IMU"]:::factor --- x1(("x1"))
+    x1 --- I12["IMU"]:::factor --- x2(("x2"))
+    x2 --- I23["IMU"]:::factor --- x3(("x3"))
+    x0 --- c00["cam"]:::factor --- l0(("l0"))
+    x1 --- c10["cam"]:::factor --- l0
+    x1 --- c11["cam"]:::factor --- l1(("l1"))
+    x2 --- c21["cam"]:::factor --- l1
+    x3 --- c31["cam"]:::factor --- l1
+    x2 --- G2["GNSS"]:::factor
+    x3 --- LC["loop"]:::factor --- x0
+    classDef factor fill:#333,stroke:#333,color:#fff
+```
+
+Solving @eq-advanced-slam-map works exactly as in the loop-closure chapter.
+Linearize every residual at the current estimate,
+$\mathbf{e}_k(\mathcal{X} \oplus \boldsymbol{\delta}) \approx \mathbf{e}_k + \mathbf{J}_k\boldsymbol{\delta}$,
+whiten each one by $\boldsymbol{\Sigma}_k^{-1/2}$, and stack them into a tall
+sparse system $\mathbf{A}\boldsymbol{\delta} \approx -\mathbf{r}$. Its normal
+equations are $\mathbf{H}\boldsymbol{\delta} = -\mathbf{b}$ with
+$\mathbf{H} = \mathbf{A}^T\mathbf{A}$ (@eq-loop-closure-normal-equations), and
+block $(i, j)$ of $\mathbf{H}$ is nonzero only if some factor touches both
+variable $i$ and variable $j$. The sparsity pattern of $\mathbf{H}$ *is* the
+graph, with each factor folded into edges among its variables. Square-root SAM
+[@dellaert2006] factors $\mathbf{A} = \mathbf{Q}\mathbf{R}$ instead, or
+equivalently $\mathbf{H} = \mathbf{R}^T\mathbf{R}$ by Cholesky, and solves the
+triangular system $\mathbf{R}\boldsymbol{\delta} = -\mathbf{Q}^T\mathbf{r}$.
+
+### Filtering, Fixed-Lag Smoothing, and Full Smoothing {#sec-advanced-slam-filter-smoother-spectrum}
+
+Given a factor graph, the main design decision is which variables to keep.
+@tbl-advanced-slam-spectrum lays out the three standard answers.
+
+| Estimator | Variables kept | What happens to old states | What gets relinearized |
+|---|---|---|---|
+| Filter (EKF, ESKF, MSCKF) | the current state (plus landmarks in EKF-SLAM, clones in the MSCKF) | marginalized immediately | only the current state, once per update |
+| Fixed-lag smoother | the states in a sliding window | marginalized into a prior factor when they leave the window | everything in the window, every iteration |
+| Full smoother (batch or incremental) | every state | kept | everything (incrementally: whatever has moved) |
+
+: The filter-smoother spectrum. {#tbl-advanced-slam-spectrum}
+
+The three are closer relatives than they look. Take the linear-Gaussian chain of
+@sec-kf, with one factor per dynamics step and one per measurement, and solve it
+by sparse Gaussian elimination in time order. Eliminating $\mathbf{x}_0$
+combines its prior, its measurement, and the dynamics factor into a Gaussian
+factor on $\mathbf{x}_1$: a Kalman update at time 0 followed by a prediction to
+time 1. Keep going and the last elimination leaves the filter's posterior on
+$\mathbf{x}_N$. Back-substitution then sweeps backward through the conditionals
+that elimination produced and returns the RTS smoothed means of @eq-kf-rts (the
+smoothed covariances follow from the same conditionals). *The Kalman
+filter is the forward sweep of sparse elimination on a chain, and the RTS
+smoother is the back-substitution* [@dellaert2017factor]. For a linear-Gaussian
+problem all three estimators in @tbl-advanced-slam-spectrum give the same
+estimate of the newest state; they differ only in what they can say about the
+past.
+
+For nonlinear problems they really do differ, and the difference is
+relinearization. A filter linearizes each measurement once, at whatever the
+estimate happened to be when the measurement arrived, and that choice is baked
+in forever (@sec-loop-closure-why-filtering-slam). A smoother keeps the
+variables and relinearizes them as the estimate improves. A fixed-lag smoother is
+the compromise most real-time visual-inertial and lidar-inertial systems choose:
+relinearize the recent past, where the estimate is still moving, and marginalize
+the distant past into a prior factor (@sec-advanced-slam-marginalization). Full
+smoothing is what you run when you need the whole trajectory right, such as for
+mapping, survey post-processing, or a flight-test reference trajectory. Keeping
+a window of states also makes late measurements easy. An acoustic fix that
+arrives two seconds after it was taken, or a GNSS solution delayed by
+processing, is simply a factor attached to the state at its own timestamp; as
+long as that state is still in the window, nothing has to be rolled back and
+reprocessed, which is the hard part of handling delayed measurements in a
+filter (@sec-practical-time-sync).
+
+One consequence matters for the rest of the stack. A smoother revises the past,
+and when a loop closure arrives it may revise the *present* by meters. A
+controller fed that estimate would see a step, which is exactly what control
+loops must not see. Production systems therefore publish two things: a smooth,
+continuous, locally accurate odometry estimate for control, and a separate,
+slowly updated correction that carries it into the global frame for planning.
+ROS encodes the pattern as its `map`, `odom`, and `base_link` frames (in ROS's
+ENU world and FLU body axes [@rep103]; from the book's NED and FRD, swap north
+and east and negate down for the world frame, negate $y$ and $z$ for the body
+frame, and reorder quaternions to ROS's scalar-last convention). @sec-practical
+develops the interface; the point here is that the choice of back end shapes
+what navigation can promise downstream.
+
+### Sparsity and Variable Ordering {#sec-advanced-slam-ordering}
+
+Elimination has a cost that depends on the order. Eliminating a variable means
+collecting every factor that touches it, forming the joint Gaussian of the
+variable and its neighbors (its *separator*), and splitting that into a
+conditional for the variable and a new factor on the separator. The conditional
+becomes one block row of $\mathbf{R}$. The new factor is exactly the Schur
+complement of @eq-information-marginal, so it connects *every pair* of the
+eliminated variable's neighbors. Eliminating a variable is marginalizing it, and
+the new connections are **fill-in**, the same fill-in that @fig-information-fill-in
+showed for filtering.
+
+Which order minimizes fill-in is NP-hard in general, but greedy heuristics work
+very well. The simplest, **minimum degree**, always eliminates the variable with
+the fewest current neighbors. Production solvers use refinements such as COLAMD
+and METIS. The cell below plays the "elimination game" symbolically on a small
+SLAM graph (40 poses in a chain, 16 landmarks each seen by five consecutive
+poses, and a revisit at the end that re-observes the first two landmarks) and
+counts the nonzeros of $\mathbf{R}$ under three orders. It then checks the
+symbolic count against a real Cholesky factorization of a random information
+matrix with the same sparsity pattern.
+
+```{python}
+#| label: advanced-slam-ordering
+import matplotlib.pyplot as plt
+import numpy as np
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
+
+# A small SLAM factor graph: a pose chain, landmarks seen by short runs of poses,
+# and a revisit at the end where the last three poses see l0 and l1 again.
+n_poses, n_landmarks = 40, 16
+poses = [f"x{k}" for k in range(n_poses)]
+landmarks = [f"l{m}" for m in range(n_landmarks)]
+variables = poses + landmarks
+factors = [("x0",)]                                             # prior on the first pose
+factors += [(poses[k], poses[k + 1]) for k in range(n_poses - 1)]  # odometry
+for m in range(n_landmarks):
+    first = round(m * (n_poses - 6) / (n_landmarks - 1))
+    factors += [(poses[k], landmarks[m]) for k in range(first, first + 5)]
+for k in range(n_poses - 3, n_poses):                           # the revisit
+    factors += [(poses[k], "l0"), (poses[k], "l1")]
+
+
+def neighbors(factors):
+    """Variable adjacency: two variables are neighbors if a factor touches both."""
+    nbrs = {v: set() for v in variables}
+    for factor in factors:
+        for a in factor:
+            nbrs[a].update(b for b in factor if b != a)
+    return nbrs
+
+
+def eliminate(order, factors):
+    """Symbolic elimination in the given order.
+
+    Eliminating a variable connects all of its remaining neighbors (the Schur
+    complement). Returns the sparsity pattern of the upper-triangular factor R
+    (rows and columns in elimination order) and the number of fill-in pairs.
+    """
+    nbrs = neighbors(factors)
+    position = {v: i for i, v in enumerate(order)}
+    R = np.eye(len(order), dtype=bool)
+    fill = 0
+    for v in order:
+        separator = nbrs.pop(v)
+        for a in separator:
+            R[position[v], position[a]] = True
+            nbrs[a].discard(v)
+        for a in separator:
+            new = separator - nbrs[a] - {a}
+            nbrs[a] |= new
+            fill += len(new)
+    return R, fill // 2                     # each new pair was counted from both ends
+
+
+def minimum_degree_order(factors):
+    """Greedy minimum degree: repeatedly eliminate the variable with fewest neighbors."""
+    nbrs = neighbors(factors)
+    order = []
+    while nbrs:
+        v = min(nbrs, key=lambda u: (len(nbrs[u]), variables.index(u)))
+        separator = nbrs.pop(v)
+        for a in separator:
+            nbrs[a].discard(v)
+            nbrs[a] |= separator - {a}
+        order.append(v)
+    return order
+
+
+orders = {
+    "poses first (filtering order)": poses + landmarks,
+    "landmarks first (BA order)": landmarks + poses,
+    "greedy minimum degree": minimum_degree_order(factors),
+}
+
+# A random information matrix with this sparsity, for a numerical cross-check.
+rng = np.random.default_rng(1)
+index = {v: i for i, v in enumerate(variables)}
+H_random = np.zeros((len(variables), len(variables)))
+for factor in factors:
+    for _ in range(2):                      # two random residual rows per factor
+        J = np.zeros(len(variables))
+        J[[index[a] for a in factor]] = rng.normal(size=len(factor))
+        H_random += np.outer(J, J)
+
+patterns = {}
+for name, order in orders.items():
+    R, fill = eliminate(order, factors)
+    perm = [index[v] for v in order]
+    L = np.linalg.cholesky(H_random[np.ix_(perm, perm)])
+    patterns[name] = R
+    print(f"{name:30s} nonzeros in R: {R.sum():3d} (Cholesky: {(L != 0).sum():3d}),"
+          f" fill-in pairs: {fill:3d}")
+```
+
+```{python}
+#| label: fig-advanced-slam-ordering
+#| fig-cap: "Variable ordering and fill-in. (a) Sparsity of the information matrix H, poses first and then landmarks: a tridiagonal odometry chain, pose-landmark blocks, and the revisit in the corner. (b)-(d) The upper-triangular factor R for three elimination orders. Eliminating the poses first, which is what a filter does, connects every landmark to every other (the dense lower-right block). Eliminating the landmarks first, the bundle-adjustment order, is much better. Greedy minimum degree is better still."
+#| code-fold: true
+fig, axes = plt.subplots(1, 4, figsize=(13, 3.6))
+H_pattern = np.zeros((len(variables), len(variables)), dtype=bool)
+for factor in factors:
+    ids = [index[a] for a in factor]
+    H_pattern[np.ix_(ids, ids)] = True
+panels = [("(a) H", H_pattern)] + [
+    (f"({'bcd'[k]}) R, {name.split(' (')[0]}", R) for k, (name, R) in enumerate(patterns.items())
+]
+for ax, (title, pattern) in zip(axes, panels):
+    ax.spy(pattern, markersize=1.6, color="C0")
+    ax.set_title(f"{title}\n{pattern.sum()} nonzeros", fontsize=9)
+    ax.set_xticks([])
+    ax.set_yticks([])
+plt.tight_layout()
+plt.show()
+```
+
+The symbolic counts match the numerical Cholesky factor exactly, which is the
+point of the elimination game: fill-in is decided by the graph, before a single
+number is computed. The filtering order is the worst of the three, and
+@fig-advanced-slam-ordering shows why: once the poses are gone, every landmark
+is connected to every other, the dense map of EKF-SLAM in square-root
+information form. The bundle-adjustment order, landmarks first, is the reduced camera system
+of @eq-visual-nav-schur, and here it leaves fill mostly among nearby poses.
+Minimum degree, which knows nothing about poses or landmarks, beats both. For
+real problems the differences are not 2:1 but orders of magnitude, which is why
+every serious solver computes an ordering before it factors anything.
+
+### Incremental Smoothing and the Bayes Tree {#sec-advanced-slam-bayes-tree}
+
+Elimination does more than solve the linear system. Each eliminated variable
+leaves behind a conditional density $p(\theta \mid \text{separator})$, and the
+collection of conditionals is a Bayes network that represents the same
+posterior. Grouping the conditionals into cliques gives a tree, the **Bayes
+tree**, whose root holds the last variables eliminated, normally the most recent
+states [@kaess2012isam2].
+
+The tree explains what changes when a new measurement arrives. A factor that
+touches only recent variables affects only the cliques that contain them and
+their ancestors on the path to the root. Everything else in the tree, which is
+almost all of the past, is untouched and is reused as is. iSAM2 exploits this:
+it detaches the affected top of the tree, turns it back into factors, adds the
+new factors, re-eliminates just that piece with a fresh local ordering (a
+constrained COLAMD that keeps the newest variables near the root), and reattaches
+it [@kaess2012isam2]. It also relinearizes only variables whose estimates have
+drifted more than a threshold from their linearization points, so a smooth
+trajectory is relinearized rarely and a loop closure triggers relinearization
+along the loop. The incremental-smoothing paragraph of the loop-closure chapter
+(@sec-loop-closure-incremental-smoothing) gives the cost intuition: an odometry
+update is nearly free, a loop closure costs roughly the length of the loop.
+iSAM2 is the incremental descendant of square-root SAM [@dellaert2006], which
+first showed that keeping the whole trajectory and factoring the sparse
+square-root information matrix beats carrying a dense filter covariance.
+
+### Software {#sec-advanced-slam-software}
+
+You do not need any of these libraries for this course, but you will meet them
+the moment you open a modern navigation code base. **GTSAM**, from Dellaert's
+group at Georgia Tech, implements factor graphs, iSAM2, on-manifold pose and
+rotation types, and the preintegrated IMU factor; it has Python bindings, and
+LIO-SAM is built on it. **g2o** is a general graph optimizer used by ORB-SLAM.
+**Ceres Solver**, from Google, is a general robustified nonlinear least-squares
+library with automatic differentiation and manifold support, and it is the
+optimizer inside VINS-Mono and OKVIS. All three speak the language of this
+chapter: variables that live on manifolds with a $\oplus$, factors with
+residuals, noise models and robust kernels, and a sparse solver with an
+ordering. If you can write the factor and its Jacobian, the library does the
+rest.
+
+## Visual-Inertial Odometry as a Factor Graph {#sec-advanced-slam-visual-inertial-odometry}
+
+The visual-navigation chapter covers VIO in detail: the MSCKF and its null-space
+trick (@sec-visual-nav-msckf), IMU preintegration
+(@sec-visual-nav-preintegration), the four unobservable directions
+(@sec-visual-nav-vio-observability), and the systems worth knowing by name
+(@sec-visual-nav-vi-systems). The combination works because the two sensors fail
+in complementary ways (@tbl-advanced-slam-vio-sensors):
 
 | Sensor | Strength | Weakness |
 |---|---|---|
 | Camera | Rich geometric constraints from the environment | Sensitive to lighting, blur, texture, and scale ambiguity |
-| IMU | High-rate short-term motion and gravity information | Bias-driven drift when used alone |
+| IMU | High-rate short-term motion, metric scale, and the gravity direction | Bias-driven drift when used alone |
 
-In a modern VIO system, the IMU usually propagates motion between camera frames.
-The camera then corrects drift by tracking features, direct photometric patches,
-or learned descriptors. Many systems maintain keyframes rather than every image.
-Keyframes limit computation while preserving enough history for optimization.
+: Why cameras and IMUs are fused. {#tbl-advanced-slam-vio-sensors}
 
-A central idea is **IMU preintegration**. Instead of adding every IMU sample as a
-separate graph constraint, the system summarizes many high-rate IMU samples into
-a relative motion factor between two keyframes. That factor depends on current
-accelerometer and gyro bias estimates, so serious implementations also track the
-Jacobian of the preintegrated measurement with respect to those biases.
+In factor-graph terms, optimization-based VIO is the graph of
+@fig-advanced-slam-factor-graph without the GNSS factor. Each keyframe $i$ has a
+state with attitude $\mathbf{C}_i = \mathbf{C}_{b_i}^n$, velocity
+$\mathbf{v}_i$, position $\mathbf{p}_i$, and IMU biases. The preintegrated
+increments $\Delta\mathbf{C}_{ij}$, $\Delta\mathbf{v}_{ij}$, and
+$\Delta\mathbf{p}_{ij}$ of @eq-visual-nav-preintegration become one factor
+between keyframes $i$ and $j$, whose residuals compare the increments with the
+keyframe states [@forster2017preintegration]:
 
-VIO also exposes observability issues that are easy to miss in simple examples:
+$$
+\begin{aligned}
+\mathbf{r}_{\Delta C} &= \operatorname{Log}\left(\Delta\mathbf{C}_{ij}^T\,\mathbf{C}_i^T\mathbf{C}_j\right), \\
+\mathbf{r}_{\Delta v} &= \mathbf{C}_i^T\left(\mathbf{v}_j - \mathbf{v}_i - \mathbf{g}^n\Delta t_{ij}\right) - \Delta\mathbf{v}_{ij}, \\
+\mathbf{r}_{\Delta p} &= \mathbf{C}_i^T\left(\mathbf{p}_j - \mathbf{p}_i - \mathbf{v}_i\Delta t_{ij} - \tfrac{1}{2}\mathbf{g}^n\Delta t_{ij}^2\right) - \Delta\mathbf{p}_{ij}.
+\end{aligned}
+$$ {#eq-advanced-slam-imu-factor}
 
-- monocular vision alone does not know metric scale;
-- gravity direction and accelerometer bias are coupled during initialization;
-- pure rotation provides poor translation information;
-- weak excitation makes some calibration states hard to estimate;
-- camera-IMU time offset can look like bad estimator tuning.
+Each residual vanishes when the keyframe states agree with what the IMU says
+happened between them. The increments are corrected to first order for the
+current bias estimates, a bias random-walk factor links consecutive biases, and
+the rotation residual is a $\operatorname{Log}$ on $SO(3)$, so its Jacobians
+need the manifold calculus of the next section. Camera factors attach
+reprojection residuals between keyframes and landmarks, and a marginal prior
+factor summarizes everything that has slid out of the window.
 
-Systems such as MSCKF-style filters, sliding-window bundle adjustment, and
-ORB-SLAM-style visual-inertial SLAM all live in this design space. The details
-differ, but the recurring pattern is the same: use IMU for high-rate propagation,
-vision for environmental constraints, and careful timing/calibration to make the
-fusion meaningful.
+The well-known systems are different answers to the questions of
+@tbl-advanced-slam-spectrum. The MSCKF [@mourikis2007msckf] and OpenVINS
+[@geneva2020openvins] are filters over a window of cloned poses, and their
+null-space projection is a way of marginalizing each feature the moment its
+track ends. OKVIS [@leutenegger2015okvis] and VINS-Mono [@qin2018vins] are
+fixed-lag smoothers: they optimize a window of keyframes with preintegrated IMU
+factors and reprojection residuals and marginalize the oldest keyframe into a
+prior. ORB-SLAM3 [@campos2021orbslam3] adds a persistent map, local bundle
+adjustment, and loop closure on top. Lupton and Sukkarieh's original
+preintegration paper [@lupton2012visual] was motivated by the same smoothing
+view: integrate the IMU once, so that relinearizing a keyframe does not mean
+reintegrating hundreds of samples.
 
-## Advanced GNSS Processing {#sec-advanced-slam-gnss-processing}
+## On-Manifold Estimation {#sec-advanced-slam-lie-groups}
 
-GNSS receiver signals, observables, RTK/PPP context, and the boundary between
-loose, tight, and deep integration now have a dedicated optional chapter:
-@sec-adv-gnss. The required course material remains the loose INS/GNSS
-workflow in @sec-global-nav through @sec-ins-errors.
+Attitude is not a vector. The book has said so since @sec-frames-rotation-vector
+and has dealt with it locally: wrap headings (@sec-ukf-angles), keep the
+quaternion in the nominal state and estimate a three-component error
+(@sec-frames-small-angle-error), use a reset Jacobian after injecting a
+correction (@sec-ekf-error-state-filtering). This section collects those tricks
+into one systematic method that works for any estimator, filter or smoother,
+and for any pose-like variable. The standard references are Barfoot
+[@barfoot2017] and Solà's error-state notes and his short "micro Lie theory"
+[@sola2017; @sola2018micro], whose notation we mostly follow.
+
+### Groups, Tangent Spaces, Exp, and Log {#sec-advanced-slam-exp-log}
+
+The rotations form the **special orthogonal group**
+$SO(3) = \{\mathbf{C} \in \mathbb{R}^{3\times3} : \mathbf{C}^T\mathbf{C} = \mathbf{I},\ \det\mathbf{C} = 1\}$.
+It is a group (rotations compose and invert) and a smooth three-dimensional
+surface inside the nine-dimensional space of matrices: a **Lie group**. Poses
+form the **special Euclidean group** $SE(3)$ of homogeneous transforms
+$\mathbf{T} = \begin{bmatrix} \mathbf{C} & \mathbf{r} \\ \mathbf{0}^T & 1 \end{bmatrix}$
+(@sec-frames-camera-transforms), and planar poses form $SE(2)$, the group of
+the loop-closure chapter.
+
+At the identity, a Lie group has a flat **tangent space** of the same dimension:
+three numbers for $SO(3)$, six for $SE(3)$, three for $SE(2)$. For $SO(3)$ the
+tangent vectors are rotation vectors $\boldsymbol{\phi}$, written as skew
+matrices $[\boldsymbol{\phi}]_\times$ when we need them as matrices. Two maps
+connect the tangent space with the group:
+
+$$
+\begin{aligned}
+\operatorname{Exp}(\boldsymbol{\phi}) &= \exp\left([\boldsymbol{\phi}]_\times\right) \in SO(3), \\
+\operatorname{Log}\left(\operatorname{Exp}(\boldsymbol{\phi})\right) &= \boldsymbol{\phi},
+\end{aligned}
+$$ {#eq-advanced-slam-exp-log}
+
+where the second line holds for rotation angles $\|\boldsymbol{\phi}\| < \pi$,
+because $\operatorname{Log}$ always returns an angle in $[0, \pi]$.
+$\operatorname{Exp}$ is Rodrigues' formula (@eq-frames-rodrigues).
+$\operatorname{Log}$ recovers the angle from the trace and the axis from the
+skew-symmetric part, with care near $0$ (divide by $\sin\phi$) and near $\pi$
+(the skew part vanishes). For $SE(3)$, with tangent vector
+$\boldsymbol{\xi} = [\boldsymbol{\rho};\ \boldsymbol{\phi}]$,
+
+$$
+\operatorname{Exp}(\boldsymbol{\xi}) =
+\begin{bmatrix}
+\operatorname{Exp}(\boldsymbol{\phi}) & \mathbf{J}_l(\boldsymbol{\phi})\,\boldsymbol{\rho} \\
+\mathbf{0}^T & 1
+\end{bmatrix},
+$$
+
+where $\mathbf{J}_l$ is the left Jacobian defined below [@barfoot2017]. The
+matrix $\mathbf{V}(\phi)$ in the loop-closure chapter's $SE(2)$ logarithm is the
+planar version of the same object.
+
+### Plus and Minus, Left and Right {#sec-advanced-slam-plus-minus}
+
+Estimation needs two operations: move an estimate by a small correction
+($\oplus$), and measure the difference between two group elements as a vector
+($\ominus$). On a group there are two natural choices, depending on which side
+the correction multiplies [@sola2018micro]:
+
+$$
+\begin{aligned}
+\mathbf{X} \oplus_r \boldsymbol{\tau} &= \mathbf{X}\operatorname{Exp}(\boldsymbol{\tau}), \\
+\mathbf{Y} \ominus_r \mathbf{X} &= \operatorname{Log}\left(\mathbf{X}^{-1}\mathbf{Y}\right), \\
+\mathbf{X} \oplus_l \boldsymbol{\tau} &= \operatorname{Exp}(\boldsymbol{\tau})\mathbf{X}, \\
+\mathbf{Y} \ominus_l \mathbf{X} &= \operatorname{Log}\left(\mathbf{Y}\mathbf{X}^{-1}\right).
+\end{aligned}
+$$ {#eq-advanced-slam-plus-minus}
+
+For attitude $\mathbf{C}_b^n$ the two sides have physical meanings. A right
+perturbation $\mathbf{C}_b^n\operatorname{Exp}(\boldsymbol{\tau})$ rotates the
+body frame about axes fixed in the *body*; a left perturbation
+$\operatorname{Exp}(\boldsymbol{\tau})\mathbf{C}_b^n$ rotates it about axes fixed
+in the *navigation* frame. The book's attitude error convention
+(@sec-frames-conventions), $\mathbf{C}_b^n = \operatorname{Exp}(\delta\boldsymbol{\theta})\hat{\mathbf{C}}_b^n$,
+is the left choice, and "true minus estimate" becomes
+
+$$
+\delta\boldsymbol{\theta} = \mathbf{C}_b^n \ominus_l \hat{\mathbf{C}}_b^n
+= \operatorname{Log}\left(\mathbf{C}_b^n(\hat{\mathbf{C}}_b^n)^T\right),
+$$
+
+a rotation vector resolved in NED. Its north and east components are tilt
+errors and its down component is the heading error, which is why inertial
+navigators like this convention. Solà's error-state notes use the right choice,
+with $\delta\boldsymbol{\theta}$ resolved in the body frame [@sola2017]. Neither
+is more correct. The two are related by the **adjoint**,
+$\mathbf{X}\operatorname{Exp}(\boldsymbol{\tau})\mathbf{X}^{-1} = \operatorname{Exp}(\operatorname{Ad}_\mathbf{X}\boldsymbol{\tau})$,
+which for $SO(3)$ is the rotation itself, $\operatorname{Ad}_\mathbf{C} = \mathbf{C}$.
+The same attitude can therefore be written both ways,
+
+$$
+\begin{aligned}
+\operatorname{Exp}(\delta\boldsymbol{\theta}^n)\,\hat{\mathbf{C}}_b^n
+&= \hat{\mathbf{C}}_b^n\operatorname{Exp}(\delta\boldsymbol{\theta}^b), \\
+\delta\boldsymbol{\theta}^n &= \hat{\mathbf{C}}_b^n\,\delta\boldsymbol{\theta}^b .
+\end{aligned}
+$$
+
+That is just "resolve a body-frame vector in the navigation frame." For $SE(3)$
+with $\boldsymbol{\tau} = [\boldsymbol{\rho};\ \boldsymbol{\phi}]$ the adjoint is
+$\begin{bmatrix} \mathbf{C} & [\mathbf{r}]_\times\mathbf{C} \\ \mathbf{0} & \mathbf{C} \end{bmatrix}$.
+What matters is consistency: the residuals, the Jacobians, the covariance, the
+injection, and the reset must all use the same side. Mixing them is the
+classic way to get a Jacobian that is wrong by exactly a rotation, and therefore
+works perfectly while the vehicle points north (@sec-math-reference-quaternion-kinematics-derivatives).
+
+A pose can live on $SE(3)$ or on the product $SO(3) \times \mathbb{R}^3$. They
+differ only in how a correction moves the position: on $SE(3)$ a translation
+correction is applied in the rotated frame and couples to the rotation, while on
+$SO(3) \times \mathbb{R}^3$ position is corrected additively in NED, as the
+error-state filter does. GTSAM's `Pose3` is $SE(3)$; many VIO systems, and the
+example below, use the product.
+
+### Jacobians on the Manifold {#sec-advanced-slam-manifold-jacobians}
+
+The derivative of a function of a group element is defined through the
+perturbation: perturb the input by a small tangent vector, measure the change of
+the output (with $\ominus$ if the output is also on a group), and take the
+linear part. The building blocks for $SO(3)$ are the **right and left
+Jacobians**,
+
+$$
+\begin{aligned}
+\operatorname{Exp}(\boldsymbol{\phi} + \delta\boldsymbol{\phi})
+&\approx \operatorname{Exp}(\boldsymbol{\phi})\operatorname{Exp}\left(\mathbf{J}_r(\boldsymbol{\phi})\,\delta\boldsymbol{\phi}\right) \\
+&\approx \operatorname{Exp}\left(\mathbf{J}_l(\boldsymbol{\phi})\,\delta\boldsymbol{\phi}\right)\operatorname{Exp}(\boldsymbol{\phi}), \\
+\operatorname{Log}\left(\mathbf{C}\operatorname{Exp}(\delta\boldsymbol{\phi})\right)
+&\approx \operatorname{Log}(\mathbf{C}) + \mathbf{J}_r^{-1}\left(\operatorname{Log}\mathbf{C}\right)\delta\boldsymbol{\phi},
+\end{aligned}
+$$ {#eq-advanced-slam-jacobian-defs}
+
+which say how a change in the rotation vector maps to a rotation on the right or
+on the left, and how $\operatorname{Log}$ responds to a perturbation. In closed
+form, with $\phi = \|\boldsymbol{\phi}\|$ [@barfoot2017; @sola2018micro],
+
+$$
+\begin{aligned}
+\mathbf{J}_r(\boldsymbol{\phi}) &= \mathbf{I} - \frac{1 - \cos\phi}{\phi^2}[\boldsymbol{\phi}]_\times
++ \frac{\phi - \sin\phi}{\phi^3}[\boldsymbol{\phi}]_\times^2, \\
+\mathbf{J}_l(\boldsymbol{\phi}) &= \mathbf{J}_r(-\boldsymbol{\phi}) = \mathbf{J}_r(\boldsymbol{\phi})^T
+= \operatorname{Exp}(\boldsymbol{\phi})\,\mathbf{J}_r(\boldsymbol{\phi}), \\
+\mathbf{J}_r^{-1}(\boldsymbol{\phi}) &= \mathbf{I} + \tfrac{1}{2}[\boldsymbol{\phi}]_\times
++ \left(\frac{1}{\phi^2} - \frac{1 + \cos\phi}{2\phi\sin\phi}\right)[\boldsymbol{\phi}]_\times^2 .
+\end{aligned}
+$$ {#eq-advanced-slam-so3-jacobians}
+
+All three approach $\mathbf{I}$ for small $\phi$, which is why small-angle work
+can often ignore them, and none can be ignored when the angle is not small. With
+these and the adjoint, the Jacobians of the common operations follow in a line
+each (@tbl-advanced-slam-jacobians). Each entry is the matrix that multiplies
+the input perturbation to give the output perturbation, for the side named in
+the column.
+
+| Operation | Right (body) perturbation | Left (nav) perturbation, the book's |
+|---|---|---|
+| $\mathbf{Z} = \mathbf{X}\mathbf{Y}$, with respect to $\mathbf{X}$ | $\mathbf{C}_Y^T$ | $\mathbf{I}$ |
+| $\mathbf{Z} = \mathbf{X}\mathbf{Y}$, with respect to $\mathbf{Y}$ | $\mathbf{I}$ | $\mathbf{C}_X$ |
+| $\mathbf{X}^{-1}$ | $-\mathbf{C}_X$ | $-\mathbf{C}_X^T$ |
+| $\mathbf{C}\mathbf{v}$ (output a vector) | $-\mathbf{C}[\mathbf{v}]_\times$ | $-[\mathbf{C}\mathbf{v}]_\times$ |
+| $\operatorname{Log}(\mathbf{C})$ (output a vector) | $\mathbf{J}_r^{-1}(\operatorname{Log}\mathbf{C})$ | $\mathbf{J}_l^{-1}(\operatorname{Log}\mathbf{C})$ |
+
+: Jacobians of common $SO(3)$ operations. {#tbl-advanced-slam-jacobians}
+
+The rotation-times-vector rows are @eq-math-reference-jacobian-nav and its
+body-frame twin. As an example of the chain rule, take a relative-pose
+measurement $(\Delta\tilde{\mathbf{C}}_{ij}, \Delta\tilde{\mathbf{p}}_{ij})$ of
+pose $j$ in the body frame of pose $i$, with poses on $SO(3) \times \mathbb{R}^3$:
+
+$$
+\mathbf{e}_{ij} =
+\begin{bmatrix}
+\mathbf{e}_p \\ \mathbf{e}_\theta
+\end{bmatrix}
+=
+\begin{bmatrix}
+\mathbf{C}_i^T(\mathbf{p}_j - \mathbf{p}_i) - \Delta\tilde{\mathbf{p}}_{ij} \\
+\operatorname{Log}\left(\Delta\tilde{\mathbf{C}}_{ij}^T\,\mathbf{C}_i^T\mathbf{C}_j\right)
+\end{bmatrix}.
+$$ {#eq-advanced-slam-relpose-factor}
+
+This is the 3D version of @eq-loop-closure-se2-residual and the same pattern as
+the rotation residual of @eq-advanced-slam-imu-factor. Perturb with the book's
+convention, $\mathbf{C}_j \leftarrow \operatorname{Exp}(\delta\boldsymbol{\theta}_j)\mathbf{C}_j$
+and $\mathbf{p}_j \leftarrow \mathbf{p}_j + \delta\mathbf{p}_j$. Moving the
+perturbation through $\mathbf{C}_j$ with the adjoint gives
+$\mathbf{C}_i^T\operatorname{Exp}(\delta\boldsymbol{\theta}_j)\mathbf{C}_j = \mathbf{C}_i^T\mathbf{C}_j\operatorname{Exp}(\mathbf{C}_j^T\delta\boldsymbol{\theta}_j)$,
+and the $\operatorname{Log}$ rule of @eq-advanced-slam-jacobian-defs finishes
+the job. With the state perturbation ordered $\delta\mathbf{x}_i = [\delta\mathbf{p}_i;\ \delta\boldsymbol{\theta}_i]$,
+position first as in the error-state filter,
+
+$$
+\begin{aligned}
+\frac{\partial\mathbf{e}_{ij}}{\partial\delta\mathbf{x}_i} &=
+\begin{bmatrix}
+-\mathbf{C}_i^T & \mathbf{C}_i^T[\mathbf{p}_j - \mathbf{p}_i]_\times \\
+\mathbf{0} & -\mathbf{J}_r^{-1}(\mathbf{e}_\theta)\,\mathbf{C}_j^T
+\end{bmatrix}, \\
+\frac{\partial\mathbf{e}_{ij}}{\partial\delta\mathbf{x}_j} &=
+\begin{bmatrix}
+\mathbf{C}_i^T & \mathbf{0} \\
+\mathbf{0} & \mathbf{J}_r^{-1}(\mathbf{e}_\theta)\,\mathbf{C}_j^T
+\end{bmatrix}.
+\end{aligned}
+$$ {#eq-advanced-slam-relpose-jacobians}
+
+Notice that the residual is a body-frame (right) construct while the
+perturbation is a navigation-frame (left) one. That is fine, because each
+Jacobian is derived for the perturbation the update will actually apply; the
+$\mathbf{C}_j^T$ factors are the adjoints that convert between the two sides.
+
+### Covariance on the Manifold {#sec-advanced-slam-manifold-covariance}
+
+A Gaussian on a group is defined in the tangent space at the mean:
+$\mathbf{C}_b^n = \operatorname{Exp}(\delta\boldsymbol{\theta})\hat{\mathbf{C}}_b^n$
+with $\delta\boldsymbol{\theta} \sim \mathcal{N}(\mathbf{0}, \mathbf{P})$. The
+attitude block of every error-state filter in this book is exactly such a
+covariance, resolved in NED. The right-perturbation version of the same
+uncertainty has covariance $\hat{\mathbf{C}}^T\mathbf{P}\hat{\mathbf{C}}$, by the
+adjoint. Propagation follows from @tbl-advanced-slam-jacobians. For a
+composition $\mathbf{Z} = \mathbf{X}\mathbf{Y}$ of independent uncertain
+rotations, the left perturbations add as
+$\delta\mathbf{z} \approx \delta\mathbf{x} + \mathbf{C}_X\delta\mathbf{y}$, so
+
+$$
+\mathbf{P}_Z \approx \mathbf{P}_X + \mathbf{C}_X\,\mathbf{P}_Y\,\mathbf{C}_X^T .
+$$
+
+With $\mathbf{X} = \mathbf{C}_{b_k}^n$ and $\mathbf{Y}$ a noisy gyro increment
+in the body frame, this is the attitude part of strapdown covariance
+propagation: gyro noise is rotated into NED by the current attitude and added.
+
+A Gaussian in tangent coordinates is not a Gaussian in Cartesian coordinates. A
+vehicle with a well-known position but an uncertain heading, driven forward
+some distance, has a position cloud shaped like a banana, curved along the arc
+of possible headings. An ellipse in north and east cannot represent that, while
+a Gaussian in the exponential coordinates of the pose represents it well
+[@barfoot2017]. This is one more reason to keep uncertainty on the manifold.
+
+### Gauss-Newton on a Manifold {#sec-advanced-slam-manifold-gauss-newton}
+
+Least squares on a manifold changes three things relative to the vector case:
+the residual uses $\ominus$, the Jacobians are taken with respect to the tangent
+perturbation, and the update is applied with $\oplus$
+(@eq-advanced-slam-plus-minus):
+
+1. Linearize: $\mathbf{e}_k(\mathcal{X} \oplus \boldsymbol{\delta}) \approx \mathbf{e}_k(\mathcal{X}) + \mathbf{J}_k\boldsymbol{\delta}$.
+2. Solve $\mathbf{H}\boldsymbol{\delta} = -\mathbf{b}$, with $\mathbf{H} = \sum_k \mathbf{J}_k^T\boldsymbol{\Sigma}_k^{-1}\mathbf{J}_k$ and $\mathbf{b} = \sum_k \mathbf{J}_k^T\boldsymbol{\Sigma}_k^{-1}\mathbf{e}_k$.
+3. Update every variable on its manifold, $\mathcal{X} \leftarrow \mathcal{X} \oplus \boldsymbol{\delta}$, and repeat.
+
+At convergence, $\mathbf{H}^{-1}$ is the covariance of the tangent-space error at
+the solution, in the same convention as the $\oplus$. The loop-closure chapter's
+additive update of $(x, y, \theta)$ followed by wrapping is a valid $\oplus$ in
+2D. In 3D, additive updates to Euler angles or quaternion components are not,
+which is why every 3D solver carries an explicit $\oplus$.
+
+The **error-state Kalman filter is the filtering cousin of this idea**. Its
+nominal state lives on the manifold; its error state lives in the tangent space
+at the nominal (left, in this book); its covariance is a covariance on the
+manifold; its measurement update is one linearized Gauss-Newton step in that
+tangent space (the iterated EKF of @sec-ekf-iterated-ekf takes several);
+injection is the $\oplus$; and the reset moves the tangent space to the new
+nominal. The reset Jacobian of @eq-ekf-reset-jacobian is in fact the left
+Jacobian, $\mathbf{G} = \mathbf{J}_l(\delta\hat{\boldsymbol{\theta}})$, truncated
+to first order; for Solà's body-frame error it is $\mathbf{J}_r(\delta\hat{\boldsymbol{\theta}})$,
+which explains the sign flip noted in @sec-ekf-error-state-filtering. A filter
+takes one tangent-space step per measurement for the current state and never
+returns; a smoother takes as many as it likes, for every state, as the estimate
+improves.
+
+### $SO(3)$ in Code {#sec-advanced-slam-so3-code}
+
+The cell below implements $\operatorname{Exp}$ and $\operatorname{Log}$
+(@eq-advanced-slam-exp-log) and the Jacobians of @eq-advanced-slam-so3-jacobians and checks them numerically:
+against SciPy, against finite differences of their definitions, against each
+other, and against the error-state reset. Two implementation details deserve a
+comment. $\operatorname{Log}$ computes the angle with `arctan2` of the sine and
+cosine rather than `arccos` of the cosine, because `arccos` near $\pm 1$ turns
+a rounding error of $10^{-16}$ into an angle error of $10^{-8}$; and near
+$\pi$, where the skew-symmetric part carries no axis information, it reads the
+axis from the symmetric part.
+
+```{python}
+#| label: advanced-slam-so3
+from scipy.spatial.transform import Rotation
+
+
+def skew(a):
+    """[a]_x, so that skew(a) @ b == np.cross(a, b)."""
+    return np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
+
+
+def vee(A):
+    """Inverse of skew: the vector a with [a]_x = A."""
+    return np.array([A[2, 1], A[0, 2], A[1, 0]])
+
+
+def so3_exp(phi):
+    """Exp: rotation vector -> rotation matrix (Rodrigues' formula)."""
+    angle = np.linalg.norm(phi)
+    K = skew(phi)
+    if angle < 1e-8:
+        return np.eye(3) + K + 0.5 * K @ K               # Taylor series near zero
+    return (np.eye(3) + np.sin(angle) / angle * K
+            + (1.0 - np.cos(angle)) / angle**2 * K @ K)
+
+
+def so3_log(C):
+    """Log: rotation matrix -> rotation vector with angle in [0, pi]."""
+    w = 0.5 * vee(C - C.T)                               # = sin(angle) * axis
+    cos_angle = 0.5 * (np.trace(C) - 1.0)
+    angle = np.arctan2(np.linalg.norm(w), cos_angle)     # better conditioned than arccos
+    if angle < 1e-6:
+        return (1.0 + angle**2 / 6.0) * w                # angle / sin(angle) ~ 1 + angle^2 / 6
+    if np.pi - angle > 1e-4:
+        return angle / np.sin(angle) * w
+    # Near pi: (C + C^T)/2 = cos(angle) I + (1 - cos(angle)) u u^T gives the axis.
+    uuT = (0.5 * (C + C.T) - cos_angle * np.eye(3)) / (1.0 - cos_angle)
+    k = np.argmax(np.diag(uuT))
+    u = uuT[:, k] / np.sqrt(uuT[k, k])
+    return angle * (u if u @ w >= 0.0 else -u)          # sign from the skew part
+
+
+def so3_right_jacobian(phi):
+    """J_r(phi), with Exp(phi + d) ~= Exp(phi) Exp(J_r(phi) d)."""
+    angle = np.linalg.norm(phi)
+    K = skew(phi)
+    if angle < 1e-6:
+        return np.eye(3) - 0.5 * K + K @ K / 6.0
+    return (np.eye(3) - (1.0 - np.cos(angle)) / angle**2 * K
+            + (angle - np.sin(angle)) / angle**3 * K @ K)
+
+
+def so3_left_jacobian(phi):
+    """J_l(phi) = J_r(-phi), with Exp(phi + d) ~= Exp(J_l(phi) d) Exp(phi)."""
+    return so3_right_jacobian(-phi)
+
+
+def so3_right_jacobian_inv(phi):
+    """Closed-form inverse of J_r(phi)."""
+    angle = np.linalg.norm(phi)
+    K = skew(phi)
+    if angle < 1e-6:
+        return np.eye(3) + 0.5 * K + K @ K / 12.0
+    coef = 1.0 / angle**2 - (1.0 + np.cos(angle)) / (2.0 * angle * np.sin(angle))
+    return np.eye(3) + 0.5 * K + coef * K @ K
+
+
+def numerical_jacobian(f, x0, eps=1e-6):
+    """Central-difference Jacobian of the vector function f at x0."""
+    return np.column_stack([(f(x0 + d) - f(x0 - d)) / (2 * eps) for d in eps * np.eye(len(x0))])
+
+
+rng = np.random.default_rng(11)
+
+# 1. Exp agrees with SciPy, and Log inverts Exp, from tiny angles up to exactly pi.
+worst = 0.0
+for angle in [0.0, 1e-9, 1e-4, 0.3, 1.0, 2.5, np.pi - 1e-3, np.pi - 1e-6, np.pi]:
+    for _ in range(50):
+        axis = rng.normal(size=3)
+        phi = angle * axis / np.linalg.norm(axis)
+        C = so3_exp(phi)
+        worst = max(worst, np.abs(C - Rotation.from_rotvec(phi).as_matrix()).max(),
+                    np.abs(so3_exp(so3_log(C)) - C).max())
+print(f"Exp vs SciPy and Exp(Log(C)) vs C, angles 0 to pi: worst error {worst:.1e}")
+
+# 2. Jacobian definitions and identities at a decidedly non-small rotation.
+phi = np.array([0.9, -1.4, 0.6])                         # |phi| = 1.77 rad, about 101 deg
+C = so3_exp(phi)
+zero = np.zeros(3)
+checks = {
+    "J_r vs Log(Exp(phi)^T Exp(phi + d))": np.abs(
+        so3_right_jacobian(phi) - numerical_jacobian(lambda d: so3_log(C.T @ so3_exp(phi + d)), zero)),
+    "J_l vs Log(Exp(phi + d) Exp(phi)^T)": np.abs(
+        so3_left_jacobian(phi) - numerical_jacobian(lambda d: so3_log(so3_exp(phi + d) @ C.T), zero)),
+    "J_r^-1 vs Log(C Exp(d))": np.abs(
+        so3_right_jacobian_inv(phi) - numerical_jacobian(lambda d: so3_log(C @ so3_exp(d)), zero)),
+    "J_l = Exp(phi) J_r": np.abs(so3_left_jacobian(phi) - C @ so3_right_jacobian(phi)),
+    "adjoint: C Exp(v) C^T = Exp(C v)": np.abs(
+        C @ so3_exp(np.array([0.1, 0.2, -0.3])) @ C.T - so3_exp(C @ np.array([0.1, 0.2, -0.3]))),
+}
+for name, err in checks.items():
+    print(f"{name:38s} max error {err.max():.1e}")
+
+# 3. The error-state reset (nav-frame error) is the left Jacobian.
+dtheta_hat = np.deg2rad(3.0) * rng.standard_normal(3)    # an injected attitude correction
+G = numerical_jacobian(lambda d: so3_log(so3_exp(d) @ so3_exp(-dtheta_hat)), dtheta_hat)
+print(f"reset Jacobian: |G - J_l(dtheta_hat)| = {np.abs(G - so3_left_jacobian(dtheta_hat)).max():.1e},"
+      f" |G - (I + [dtheta_hat/2]x)| = {np.abs(G - np.eye(3) - 0.5 * skew(dtheta_hat)).max():.1e}")
+```
+
+Every identity holds to finite-difference precision. The last line is worth a
+second look: the exact reset Jacobian is $\mathbf{J}_l(\delta\hat{\boldsymbol{\theta}})$,
+and the first-order form used in @eq-ekf-reset-jacobian is off only at second
+order in a $3^\circ$ correction, as the error-state chapter found.
+
+### Example: A Climbing Orbit With GNSS {#sec-advanced-slam-orbit-example}
+
+Now a complete on-manifold problem that goes beyond the planar pose graph. An
+inspection drone climbs in a spiral around a steel tower: 5 m/s on a 30 m
+radius, climbing 0.4 m/s, banked into the turn, for 90 s. Visual-inertial
+odometry provides a relative pose between consecutive 1 Hz keyframes, with 0.1 m
+of noise per axis in translation and $0.5^\circ$ per axis in rotation. The
+tower blocks much of the sky, so only one keyframe in six has a GNSS fix the
+receiver trusts, with 1.5 m horizontal and 3 m vertical noise, measured at an
+antenna 0.3 m forward of and 0.2 m above the IMU. And the drone took off next to
+the steel tower, where its magnetometer was useless, so its initial heading
+guess is $40^\circ$ wrong.
+
+The variables are 90 poses on $SO(3) \times \mathbb{R}^3$, attitude
+$\mathbf{C}_i = \mathbf{C}_{b_i}^n$ and position $\mathbf{p}_i$ in NED. The
+factors are the relative-pose odometry of @eq-advanced-slam-relpose-factor and a
+GNSS factor with a lever arm $\boldsymbol{\ell}^b$:
+
+$$
+\begin{aligned}
+\mathbf{e}_k &= \mathbf{p}_k + \mathbf{C}_k\boldsymbol{\ell}^b - \tilde{\mathbf{z}}_k, \\
+\frac{\partial\mathbf{e}_k}{\partial\delta\mathbf{x}_k} &=
+\begin{bmatrix} \mathbf{I} & -[\mathbf{C}_k\boldsymbol{\ell}^b]_\times \end{bmatrix},
+\end{aligned}
+$$
+
+where the attitude column is the left-perturbation entry for
+$\mathbf{C}\mathbf{v}$ in @tbl-advanced-slam-jacobians. There is no prior on the
+first pose and no gauge to fix: with absolute position fixes spread around a
+non-degenerate trajectory, every pose is determined, heading included. This is
+the factor-graph version of the INS/GNSS heading alignment of @sec-ins-gnss, in
+which heading becomes observable because the vehicle moves and turns.
+
+```{python}
+#| label: advanced-slam-orbit-simulate
+rng = np.random.default_rng(5)
+
+# Truth: a coordinated, climbing right turn around a tower 30 m east of the start (NED).
+n_kf, dt = 90, 1.0
+speed, radius, climb, gravity = 5.0, 30.0, 0.4, 9.81
+yaw_rate = speed / radius
+bank = np.arctan(speed * yaw_rate / gravity)       # coordinated-turn roll, about 4.9 deg
+pitch = np.arctan2(climb, speed)                    # flight-path angle, about 4.6 deg
+C_true = np.array([Rotation.from_euler("ZYX", [yaw_rate * k * dt, pitch, bank]).as_matrix()
+                   for k in range(n_kf)])
+p_true = np.array([[radius * np.sin(yaw_rate * k * dt), radius * (1 - np.cos(yaw_rate * k * dt)),
+                    -climb * k * dt] for k in range(n_kf)])
+
+# VIO odometry: pose k+1 relative to body frame k, with noise.
+sigma_odo = np.r_[np.full(3, 0.10), np.full(3, np.deg2rad(0.5))]    # [m]*3, [rad]*3
+Omega_odo = np.diag(sigma_odo**-2.0)
+odometry = []
+for k in range(n_kf - 1):
+    dC = C_true[k].T @ C_true[k + 1] @ so3_exp(rng.normal(0.0, sigma_odo[3:]))
+    dp = C_true[k].T @ (p_true[k + 1] - p_true[k]) + rng.normal(0.0, sigma_odo[:3])
+    odometry.append((k, k + 1, dC, dp))
+
+# GNSS at one keyframe in six, antenna 0.3 m forward of and 0.2 m above the IMU (FRD).
+lever_arm = np.array([0.3, 0.0, -0.2])
+sigma_gnss = np.array([1.5, 1.5, 3.0])                              # N, E, D [m]
+Omega_gnss = np.diag(sigma_gnss**-2.0)
+gnss = [(k, p_true[k] + C_true[k] @ lever_arm + rng.normal(0.0, sigma_gnss))
+        for k in range(0, n_kf, 6)]
+
+# Initial guess: dead reckoning from the first fix, with the heading 40 deg wrong.
+C_dr = [so3_exp(np.deg2rad([0.0, 0.0, 40.0])) @ C_true[0]]
+p_dr = [gnss[0][1]]
+for _, _, dC, dp in odometry:
+    p_dr.append(p_dr[-1] + C_dr[-1] @ dp)
+    C_dr.append(C_dr[-1] @ dC)
+C_dr, p_dr = np.array(C_dr), np.array(p_dr)
+print(f"{n_kf} keyframes, {len(odometry)} odometry factors, {len(gnss)} GNSS factors;"
+      f" dead reckoning ends {np.linalg.norm(p_dr[-1] - p_true[-1]):.1f} m from the truth")
+```
+
+The factors and the $\oplus$ come next, followed by a finite-difference check of
+the analytic Jacobians of @eq-advanced-slam-relpose-jacobians, perturbing with
+the same $\oplus$ that the solver will use.
+
+```{python}
+#| label: advanced-slam-orbit-factors
+def odometry_factor(C_i, p_i, C_j, p_j, dC_meas, dp_meas):
+    """Relative-pose residual [e_p; e_theta] and its Jacobians A = de/dx_i, B = de/dx_j.
+
+    Perturbations are [dp; dtheta] with p <- p + dp and C <- Exp(dtheta) C
+    (the book's navigation-frame attitude error).
+    """
+    d = p_j - p_i
+    e_theta = so3_log(dC_meas.T @ C_i.T @ C_j)
+    e = np.r_[C_i.T @ d - dp_meas, e_theta]
+    Jr_inv = so3_right_jacobian_inv(e_theta)
+    A, B = np.zeros((6, 6)), np.zeros((6, 6))
+    A[:3, :3], A[:3, 3:] = -C_i.T, C_i.T @ skew(d)
+    A[3:, 3:] = -Jr_inv @ C_j.T
+    B[:3, :3] = C_i.T
+    B[3:, 3:] = Jr_inv @ C_j.T
+    return e, A, B
+
+
+def gnss_factor(C_k, p_k, z):
+    """Antenna position minus the fix, and its Jacobian with respect to [dp; dtheta]."""
+    e = p_k + C_k @ lever_arm - z
+    J = np.hstack([np.eye(3), -skew(C_k @ lever_arm)])
+    return e, J
+
+
+def oplus(C, p, dx):
+    """Apply stacked corrections [dp_0, dtheta_0, dp_1, dtheta_1, ...] on the manifold."""
+    dx = dx.reshape(-1, 6)
+    return np.array([so3_exp(dth) @ Ck for Ck, dth in zip(C, dx[:, 3:])]), p + dx[:, :3]
+
+
+# Finite-difference check at the (badly wrong) initial guess, perturbing with oplus.
+i, j, dC, dp = odometry[17]
+k, z = gnss[2]
+_, A, B = odometry_factor(C_dr[i], p_dr[i], C_dr[j], p_dr[j], dC, dp)
+_, J_gnss = gnss_factor(C_dr[k], p_dr[k], z)
+
+
+def perturb(which, dx):
+    """The dead-reckoning poses with pose `which` moved by dx = [dp; dtheta]."""
+    C2, p2 = C_dr.copy(), p_dr.copy()
+    C2[[which]], p2[[which]] = oplus(C_dr[[which]], p_dr[[which]], dx)
+    return C2, p2
+
+
+def odometry_residual(which, dx):
+    C2, p2 = perturb(which, dx)
+    return odometry_factor(C2[i], p2[i], C2[j], p2[j], dC, dp)[0]
+
+
+def gnss_residual(dx):
+    C2, p2 = perturb(k, dx)
+    return gnss_factor(C2[k], p2[k], z)[0]
+
+
+errors = [np.abs(A - numerical_jacobian(lambda dx: odometry_residual(i, dx), np.zeros(6))).max(),
+          np.abs(B - numerical_jacobian(lambda dx: odometry_residual(j, dx), np.zeros(6))).max(),
+          np.abs(J_gnss - numerical_jacobian(gnss_residual, np.zeros(6))).max()]
+print("Jacobian check, max |analytic - numerical|: odometry A {:.1e}, B {:.1e}, GNSS {:.1e}".format(*errors))
+```
+
+The solver assembles the sparse normal equations exactly as the loop-closure
+chapter did, solves, and applies the correction with `oplus`. It then reports
+three things about the answer: the accuracy, the covariance $\mathbf{H}^{-1}$ on
+the manifold, and whether the final cost is plausible for the number of degrees
+of freedom.
+
+```{python}
+#| label: advanced-slam-orbit-solve
+from scipy.stats import chi2
+
+
+def normal_equations(C, p):
+    """Sparse H, gradient b, and cost sum(e^T Omega e) of the linearized orbit problem."""
+    n = len(C)
+    rows, cols, vals = [], [], []
+    b = np.zeros(6 * n)
+    cost = 0.0
+    r6, c6 = np.meshgrid(np.arange(6), np.arange(6), indexing="ij")
+
+    def add_block(i, j, block):
+        rows.extend((6 * i + r6).ravel())
+        cols.extend((6 * j + c6).ravel())
+        vals.extend(block.ravel())
+
+    for i, j, dC, dp in odometry:
+        e, A, B = odometry_factor(C[i], p[i], C[j], p[j], dC, dp)
+        add_block(i, i, A.T @ Omega_odo @ A)
+        add_block(i, j, A.T @ Omega_odo @ B)
+        add_block(j, i, B.T @ Omega_odo @ A)
+        add_block(j, j, B.T @ Omega_odo @ B)
+        b[6 * i:6 * i + 6] += A.T @ Omega_odo @ e
+        b[6 * j:6 * j + 6] += B.T @ Omega_odo @ e
+        cost += e @ Omega_odo @ e
+    for k, z in gnss:
+        e, J = gnss_factor(C[k], p[k], z)
+        add_block(k, k, J.T @ Omega_gnss @ J)
+        b[6 * k:6 * k + 6] += J.T @ Omega_gnss @ e
+        cost += e @ Omega_gnss @ e
+    return sp.csc_matrix((vals, (rows, cols)), shape=(6 * n, 6 * n)), b, cost
+
+
+C_est, p_est = C_dr.copy(), p_dr.copy()
+cost_history = []
+for iteration in range(30):
+    H, b, cost = normal_equations(C_est, p_est)
+    cost_history.append(cost)
+    dx = spla.spsolve(H, -b)
+    C_est, p_est = oplus(C_est, p_est, dx)
+    steps = dx.reshape(-1, 6)
+    print(f"iteration {iteration:2d}: cost {cost:9.2f}   max |dp| {np.abs(steps[:, :3]).max():.1e} m"
+          f"   max |dtheta| {np.degrees(np.abs(steps[:, 3:]).max()):.1e} deg")
+    if np.abs(dx).max() < 1e-8:
+        break
+H, b, cost = normal_equations(C_est, p_est)
+cost_history.append(cost)
+
+# Accuracy, covariance on the manifold (nav-frame attitude error), and a chi-square check.
+P_est = np.linalg.inv(H.toarray())
+att_err = np.array([so3_log(Ct @ Ce.T) for Ct, Ce in zip(C_true, C_est)])      # true minus estimate
+att_err_dr = np.array([so3_log(Ct @ Ce.T) for Ct, Ce in zip(C_true, C_dr)])
+pos_err = p_true - p_est
+att_sigma = np.sqrt(np.array([np.diag(P_est[6 * k + 3:6 * k + 6, 6 * k + 3:6 * k + 6])
+                              for k in range(n_kf)]))
+nees_att = np.mean([e @ np.linalg.solve(P_est[6 * k + 3:6 * k + 6, 6 * k + 3:6 * k + 6], e)
+                    for k, e in enumerate(att_err)])
+nees_pos = np.mean([e @ np.linalg.solve(P_est[6 * k:6 * k + 3, 6 * k:6 * k + 3], e)
+                    for k, e in enumerate(pos_err)])
+dof = 6 * len(odometry) + 3 * len(gnss) - 6 * n_kf
+chi2_low, chi2_high = chi2.ppf([0.025, 0.975], dof)
+rmse = lambda e: np.sqrt(np.mean(np.sum(e**2, axis=1)))
+print(f"position RMSE: dead reckoning {rmse(p_true - p_dr):.1f} m, optimized {rmse(pos_err):.2f} m")
+print(f"heading error (down component of dtheta), max |.|: dead reckoning"
+      f" {np.degrees(np.abs(att_err_dr[:, 2]).max()):.1f} deg,"
+      f" optimized {np.degrees(np.abs(att_err[:, 2]).max()):.1f} deg")
+print(f"1-sigma attitude [deg], median over keyframes (N, E, D):"
+      f" {np.round(np.degrees(np.median(att_sigma, axis=0)), 2)}")
+print(f"mean NEES (3 dof each): attitude {nees_att:.2f}, position {nees_pos:.2f}")
+print(f"final cost {cost:.1f} with {dof} degrees of freedom"
+      f" (two-sided 95% chi-square interval {chi2_low:.1f} to {chi2_high:.1f})")
+```
+
+```{python}
+#| label: fig-advanced-slam-orbit
+#| fig-cap: "On-manifold Gauss-Newton for the climbing orbit. (a) Plan view: truth, dead reckoning from a 40 degree heading error (the initial guess), the GNSS fixes, and the optimized trajectory. (b) Cost at each iteration; the first step overshoots because the problem is far from linear at 40 degrees, and convergence is linear once the residuals stop shrinking. (c) Navigation-frame attitude error of the optimized trajectory (true minus estimate) with its 3-sigma bounds from the inverse of H. Heading (down) is well determined; the tilt about north and east is weaker because GNSS displacement along the body axes says little about rotation about them."
+#| code-fold: true
+fig, axes = plt.subplots(1, 3, figsize=(13, 4.2), gridspec_kw={"width_ratios": [1.1, 0.9, 1.1]})
+
+ax = axes[0]
+ax.plot(p_true[:, 1], p_true[:, 0], color="black", linewidth=1.2, label="truth")
+ax.plot(p_dr[:, 1], p_dr[:, 0], "--", color="C1", linewidth=1.2, label="dead reckoning")
+ax.plot(p_est[:, 1], p_est[:, 0], color="C0", linewidth=1.5, label="optimized")
+z_gnss = np.array([z for _, z in gnss])
+ax.plot(z_gnss[:, 1], z_gnss[:, 0], "x", color="C3", markersize=6, label="GNSS fixes")
+ax.set_aspect("equal")
+ax.set_xlabel("east [m]")
+ax.set_ylabel("north [m]")
+ax.set_title("(a) plan view")
+ax.legend(loc="lower left", fontsize=8)
+ax.grid(True, alpha=0.25)
+
+ax = axes[1]
+ax.semilogy(cost_history, "o-", color="C0", markersize=4)
+ax.axhline(dof, color="gray", linestyle=":", label=f"degrees of freedom ({dof})")
+ax.set_xlabel("iteration")
+ax.set_ylabel("cost")
+ax.set_title("(b) convergence")
+ax.legend(fontsize=8)
+ax.grid(True, alpha=0.25, which="both")
+
+ax = axes[2]
+keyframes = np.arange(n_kf)
+for c, (axis_name, color) in enumerate(zip(["north", "east", "down"], ["C2", "C4", "C0"])):
+    ax.plot(keyframes, np.degrees(att_err[:, c]), color=color, linewidth=1.3, label=axis_name)
+    ax.plot(keyframes, 3 * np.degrees(att_sigma[:, c]), "--", color=color, linewidth=0.8)
+    ax.plot(keyframes, -3 * np.degrees(att_sigma[:, c]), "--", color=color, linewidth=0.8)
+ax.set_xlabel("keyframe")
+ax.set_ylabel("attitude error [deg]")
+ax.set_title("(c) attitude error and 3$\\sigma$")
+ax.legend(fontsize=8, ncol=3, loc="upper center")
+ax.grid(True, alpha=0.25)
+
+plt.tight_layout()
+plt.show()
+```
+
+From a start that was $40^\circ$ off in heading, the solver finds the right
+answer in a handful of iterations (@fig-advanced-slam-orbit): position RMSE
+drops from 27.5 m for dead reckoning to 1.5 m, and the worst heading error from
+$44^\circ$ to under $4^\circ$. The first step overshoots, raising the cost,
+because at $40^\circ$ the rotation residuals are far from linear;
+Levenberg-Marquardt (@sec-math-reference-pose-graph-optimization) would damp that
+step, and Exercise 3 asks you to add it. After the first few iterations the
+convergence is linear rather than quadratic, as expected for a problem whose
+residuals do not vanish at the solution.
+
+The answer also passes a sanity check. The attitude errors stay inside their
+$3\sigma$ bounds and the average NEES values are a little below three. That makes
+this realization plausible, but it does not establish that the estimator is
+consistent: the per-keyframe errors are strongly correlated and all come from one
+simulated run. Consistency needs NEES averaged over many independent Monte Carlo
+runs, compared with its chi-square bounds (@sec-kf-consistency); Exercise 3 can
+be extended to do exactly that. The final cost of 44, well inside the
+chi-square interval for its 39 degrees of freedom, is a different and legitimate
+single-run test: it checks the residuals of this solve. It is the smoother's
+version of RAIM (@sec-adv-gnss-raim): if one GNSS fix were bad, the cost would
+land far outside the interval, and the normalized residuals would point at the
+culprit. Panel (c) also shows the anatomy of observability. Heading
+is pinned to about a degree ($1\sigma$), because GNSS displacements over the
+orbit fix the direction the drone is flying. The tilt about north and east is
+about twice as uncertain, because a GNSS displacement along the body's forward
+axis carries no information about rotation about that axis; only the turn and
+the climb expose it. In a real system the accelerometers would pin tilt to gravity
+(@sec-visual-nav-vio-observability), which this example deliberately leaves out.
+
+## Marginalization and Fixed-Lag Smoothing {#sec-advanced-slam-marginalization}
+
+### The Marginal Prior Factor {#sec-advanced-slam-marginal-prior}
+
+A fixed-lag smoother keeps a window of recent states and must eventually let the
+oldest ones go. Deleting them, together with their factors, would throw their
+information away. **Marginalization** keeps the information and removes the
+variables. Split the variables into those to marginalize, $\mathbf{x}_m$, and
+those to keep, $\mathbf{x}_r$. Collect only the factors that touch
+$\mathbf{x}_m$, linearize them at the current estimate $\bar{\mathbf{x}}$, and
+write their contribution to the cost, $\tfrac{1}{2}\sum\mathbf{e}^T\boldsymbol{\Omega}\mathbf{e}$,
+as the quadratic $\tfrac{1}{2}\boldsymbol{\delta}^T\mathbf{H}\boldsymbol{\delta} + \mathbf{b}^T\boldsymbol{\delta}$
+in the perturbation $\boldsymbol{\delta} = \mathbf{x} \ominus \bar{\mathbf{x}}$.
+Minimizing over $\boldsymbol{\delta}_m$ leaves a quadratic in
+$\boldsymbol{\delta}_r$ alone:
+
+$$
+\begin{aligned}
+\mathbf{H}^\star &= \mathbf{H}_{rr} - \mathbf{H}_{rm}\mathbf{H}_{mm}^{-1}\mathbf{H}_{mr}, \\
+\mathbf{b}^\star &= \mathbf{b}_r - \mathbf{H}_{rm}\mathbf{H}_{mm}^{-1}\mathbf{b}_m, \\
+c(\boldsymbol{\delta}_r) &= \tfrac{1}{2}\boldsymbol{\delta}_r^T\mathbf{H}^\star\boldsymbol{\delta}_r + \mathbf{b}^{\star T}\boldsymbol{\delta}_r + \text{const}.
+\end{aligned}
+$$ {#eq-advanced-slam-marginal-prior}
+
+This is the Schur complement of @eq-information-marginal applied to the
+linearized problem, and it is the same algebra as the reduced camera system of
+@eq-visual-nav-schur. The difference is intent. Bundle adjustment eliminates
+the points temporarily, to solve faster, and recovers them by back-substitution.
+Marginalization eliminates $\mathbf{x}_m$ permanently. The quadratic
+$c(\boldsymbol{\delta}_r)$ becomes a new **marginal prior factor** on the kept
+variables; factoring $\mathbf{H}^\star = \mathbf{L}\mathbf{L}^T$ puts it in the
+same form as every other factor, with residual
+$\mathbf{e}_\text{prior} = \mathbf{L}^T(\mathbf{x}_r \ominus \bar{\mathbf{x}}_r) + \mathbf{L}^{-1}\mathbf{b}^\star$
+and unit information.
+
+The marginal prior connects every variable that shared a factor with
+$\mathbf{x}_m$ (its *Markov blanket*), so it is generally a dense factor over
+all of them. Marginalize an old keyframe in a visual-inertial window and the
+prior links the next keyframe's pose, velocity, and biases with every landmark
+the old keyframe saw. Do that repeatedly and the window's information matrix
+fills in, the slow-motion version of @fig-information-fill-in. Sliding-window
+VIO systems therefore marginalize carefully. OKVIS [@leutenegger2015okvis] and
+VINS-Mono [@qin2018vins] marginalize the oldest keyframe together with the
+landmarks anchored in it, but when a recent frame turns out not to be a keyframe
+they *drop* its visual measurements rather than marginalize them, keeping only
+the IMU chain through it. Dropping throws information away, which is
+conservative; marginalizing keeps it, at the price of density. The MSCKF's
+null-space projection (@sec-visual-nav-msckf) is marginalization in disguise: on
+the linearized problem, the projected residuals carry exactly the information
+about the states that the Schur complement of the feature would leave.
+
+The cell below checks @eq-advanced-slam-marginal-prior on a small linear window:
+four keyframe positions in 2D and four landmarks, with a prior on the first
+keyframe, odometry between keyframes, and relative landmark observations.
+Marginalizing the oldest keyframe $k_0$ must reproduce the covariance-form
+marginal exactly, and it shows where the fill-in lands. It also compares
+marginalizing with a tempting shortcut, *conditioning*: holding $k_0$ fixed at
+its estimate and keeping $\mathbf{H}_{rr}$, which is what a naive sliding window
+does when it simply stops optimizing old states.
+
+```{python}
+#| label: advanced-slam-marginalization
+rng = np.random.default_rng(4)
+names = ["k0", "k1", "k2", "k3", "l0", "l1", "l2", "l3"]
+block = {v: slice(2 * i, 2 * i + 2) for i, v in enumerate(names)}
+n_vars = 2 * len(names)
+truth_2d = {"k0": [0.0, 0.0], "k1": [2.0, 0.0], "k2": [4.0, 0.5], "k3": [6.0, 0.5],
+            "l0": [1.0, 3.0], "l1": [3.0, 3.5], "l2": [5.0, 3.0], "l3": [7.0, 3.2]}
+truth_2d = {v: np.array(x) for v, x in truth_2d.items()}
+sees = {"k0": ["l0", "l1"], "k1": ["l1", "l2"], "k2": ["l2", "l3"], "k3": ["l3"]}
+
+# Linear factors: residual = sum_v A_v x_v - z with noise std sigma.
+linear_factors = [([("k0", np.eye(2))], truth_2d["k0"] + rng.normal(0, 0.1, 2), 0.1)]
+for a, c in [("k0", "k1"), ("k1", "k2"), ("k2", "k3")]:
+    linear_factors.append(([(a, -np.eye(2)), (c, np.eye(2))],
+                           truth_2d[c] - truth_2d[a] + rng.normal(0, 0.2, 2), 0.2))
+for kf, seen in sees.items():
+    for lm in seen:
+        linear_factors.append(([(kf, -np.eye(2)), (lm, np.eye(2))],
+                               truth_2d[lm] - truth_2d[kf] + rng.normal(0, 0.3, 2), 0.3))
+
+H_lin, xi_lin = np.zeros((n_vars, n_vars)), np.zeros(n_vars)
+for terms, z, sigma in linear_factors:
+    J = np.zeros((2, n_vars))
+    for v, A_v in terms:
+        J[:, block[v]] = A_v
+    H_lin += J.T @ J / sigma**2
+    xi_lin += J.T @ z / sigma**2                      # information vector (same Schur form as b)
+
+m, r = np.arange(0, 2), np.arange(2, n_vars)          # marginalize k0, keep the rest
+H_star = H_lin[np.ix_(r, r)] - H_lin[np.ix_(r, m)] @ np.linalg.solve(H_lin[np.ix_(m, m)], H_lin[np.ix_(m, r)])
+xi_star = xi_lin[r] - H_lin[np.ix_(r, m)] @ np.linalg.solve(H_lin[np.ix_(m, m)], xi_lin[m])
+P_full = np.linalg.inv(H_lin)
+print("Schur-complement mean       == full solution:   ",
+      np.allclose(np.linalg.solve(H_star, xi_star), np.linalg.solve(H_lin, xi_lin)[r]))
+print("Schur-complement covariance == block of inv(H): ",
+      np.allclose(np.linalg.inv(H_star), P_full[np.ix_(r, r)]))
+
+
+def block_pattern(M, labels):
+    """Which 2x2 blocks of M are nonzero."""
+    return np.array([[np.abs(M[2 * a:2 * a + 2, 2 * c:2 * c + 2]).max() > 1e-9
+                      for c in range(len(labels))] for a in range(len(labels))])
+
+
+before, after = block_pattern(H_lin, names)[1:, 1:], block_pattern(H_star, names[1:])
+print("\nblocks of H for the kept variables:  # = nonzero before,  + = fill-in")
+print("    " + " ".join(f"{v:>2}" for v in names[1:]))
+for a, va in enumerate(names[1:]):
+    row = [" #" if before[a, c] else (" +" if after[a, c] else " .") for c in range(len(names) - 1)]
+    print(f"{va:>3} " + " ".join(row))
+
+# Marginalizing versus conditioning on (fixing) k0.
+P_marg = np.linalg.inv(H_star)
+P_cond = np.linalg.inv(H_lin[np.ix_(r, r)])
+for v in ["k1", "l0"]:
+    i0 = 2 * (names.index(v) - 1)
+    print(f"sigma_x of {v}: marginalized {np.sqrt(P_marg[i0, i0]):.3f} m,"
+          f" conditioned on k0 {np.sqrt(P_cond[i0, i0]):.3f} m")
+eig_diff = np.linalg.eigvalsh(P_marg - P_cond)[::-1]
+print(f"eigenvalues of P_marg - P_cond: {np.round(eig_diff[:2], 4)} and then"
+      f" {len(eig_diff) - 2} zeros (largest |.| {np.abs(eig_diff[2:]).max():.0e})")
+```
+
+The marginal prior reproduces the full solution's mean and covariance exactly,
+as it must for a linear-Gaussian problem. The fill-in lands precisely in
+$k_0$'s Markov blanket: $k_0$ was connected to $k_1$, $l_0$, and $l_1$, and the
+prior now connects $k_1$ to $l_0$ and $l_0$ to $l_1$, pairs that no measurement
+ever linked. Conditioning instead of marginalizing gives smaller standard
+deviations for both $k_1$ and $l_0$, because it pretends that $k_0$ is known
+exactly. The difference $\mathbf{P}_\text{marg} - \mathbf{P}_\text{cond}$ is
+positive semidefinite, with exactly two nonzero eigenvalues, one per coordinate
+of $k_0$: the conditioned covariance is too small in the directions that $k_0$'s
+information reaches and never too large in any. Fixing old states is not a free
+lunch; it is a quiet lie.
+
+### First-Estimates Jacobians and Consistency {#sec-advanced-slam-fej}
+
+Marginalization has a subtler cost in nonlinear problems. The prior factor is a
+*linearization*, frozen at $\bar{\mathbf{x}}_r$ forever. The variables it
+constrains stay in the window and keep moving, and the new factors attached to
+them are linearized at their newer estimates. The information matrix then mixes
+Jacobians evaluated at different points for the same variable, and that can
+manufacture information that no measurement contains.
+
+The damage happens along the unobservable directions. In planar SLAM with
+relative measurements, translating or rotating the whole problem changes no
+residual, so the information matrix has a three-dimensional null space (Exercise
+2 of the loop-closure chapter finds it). The translation directions are the same
+at every estimate, but the rotation direction is not: rotating the world about
+the origin moves pose $i$ along $[-y_i,\ x_i,\ 1]^T$, which depends on where the
+estimate puts the pose. A prior linearized at $\bar{\mathbf{x}}$ has the
+rotation null vector of $\bar{\mathbf{x}}$; a new factor linearized at
+$\hat{\mathbf{x}}$ has that of $\hat{\mathbf{x}}$. Their sum has no common null
+vector for rotation, so the estimator acquires information about the global
+heading, from measurements that contain none. Huang, Mourikis, and Roumeliotis
+traced EKF-SLAM inconsistency to exactly this mechanism [@huang2010], and it is
+the reason VIO filters become overconfident in yaw
+(@sec-visual-nav-vio-observability).
+
+The fix is almost embarrassingly simple. **First-estimates Jacobians** (FEJ)
+evaluate the Jacobians of every factor that involves a variable in the marginal
+prior at that variable's first estimate, the point where the prior was
+linearized, while the residuals still use the current estimate
+[@huang2010]. Every Jacobian of a given variable then shares one linearization
+point, and the null space survives. The price is slightly less accurate
+Jacobians, which is small while estimates stay close to their first values.
+Observability-constrained filters project the Jacobians onto the correct null
+space instead [@hesch2014consistency], and the invariant EKF chooses an error
+definition on the group for which the troublesome Jacobians do not depend on the
+estimate at all [@barrau2017iekf]. OpenVINS uses FEJ throughout, and every
+sliding-window optimizer must at least hold its marginal prior at the prior's own
+linearization point, since a frozen quadratic cannot be relinearized.
+
+The cell below makes the mechanism visible on the smallest example that shows
+it: planar poses $x_0, x_1, x_2$ and landmarks $l_0, l_1$, with odometry and
+landmark observations in the robot frame. Pose $x_0$ is marginalized at the
+first estimates; the new factors (odometry $x_1 \to x_2$ and $x_2$ observing both
+landmarks) are then linearized either at the current estimates (standard) or
+with FEJ. With no absolute measurement anywhere, the information matrix should
+have three zero eigenvalues. To turn "spurious information" into a number, the
+cell also anchors the position of $x_1$, as a single GNSS fix would, and asks
+how well the estimator then claims to know the heading.
+
+```{python}
+#| label: advanced-slam-fej
+def rot2(theta):
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, -s], [s, c]])
+
+
+def drot2T(theta):
+    """Derivative of rot2(theta)^T with respect to theta."""
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[-s, c], [-c, -s]])
+
+
+def odometry_jacobians(xa, xb):
+    """Jacobians of e = [C_a^T (t_b - t_a) - z_t; theta_b - theta_a - z_theta]."""
+    A, B = np.zeros((3, 3)), np.zeros((3, 3))
+    A[:2, :2], A[:2, 2], A[2, 2] = -rot2(xa[2]).T, drot2T(xa[2]) @ (xb[:2] - xa[:2]), -1.0
+    B[:2, :2], B[2, 2] = rot2(xa[2]).T, 1.0
+    return A, B, np.diag(1.0 / np.array([0.1, 0.1, 0.02]) ** 2)
+
+
+def observation_jacobians(x, landmark):
+    """Jacobians of e = C^T (l - t) - z: a landmark position in the robot frame."""
+    A = np.hstack([-rot2(x[2]).T, (drot2T(x[2]) @ (landmark - x[:2]))[:, None]])
+    return A, rot2(x[2]).T, np.eye(2) / 0.1**2
+
+
+layout = {"x0": slice(0, 3), "x1": slice(3, 6), "x2": slice(6, 9), "l0": slice(9, 11), "l1": slice(11, 13)}
+n_fej = 13
+
+
+def information(factor_list, estimate):
+    """Gauss-Newton information matrix of the listed factors, linearized at `estimate`."""
+    H_f = np.zeros((n_fej, n_fej))
+    for kind, a, c in factor_list:
+        jac = odometry_jacobians if kind == "odometry" else observation_jacobians
+        A, B, W = jac(estimate[a], estimate[c])
+        J = np.zeros((A.shape[0], n_fej))
+        J[:, layout[a]], J[:, layout[c]] = A, B
+        H_f += J.T @ W @ J
+    return H_f
+
+
+old_factors = [("odometry", "x0", "x1"), ("observation", "x0", "l0"), ("observation", "x0", "l1"),
+               ("observation", "x1", "l0"), ("observation", "x1", "l1")]
+new_factors = [("odometry", "x1", "x2"), ("observation", "x2", "l0"), ("observation", "x2", "l1")]
+truth_fej = {"x0": np.array([0.0, 0.0, 0.1]), "x1": np.array([1.0, 0.2, 0.3]),
+             "x2": np.array([2.0, 0.6, 0.5]), "l0": np.array([1.5, 2.0]), "l1": np.array([2.5, -1.0])}
+first = {v: x + rng.normal(0, 0.05, x.shape) for v, x in truth_fej.items()}    # first estimates
+step = {v: (np.r_[rng.normal(0, 0.1, 2), rng.normal(0, np.deg2rad(2))] if len(x) == 3
+            else rng.normal(0, 0.1, 2)) for v, x in truth_fej.items()}            # later updates
+
+# Marginalize x0 out of the old factors, linearized at the first estimates.
+H_old = information(old_factors, first)
+keep, drop = np.arange(3, n_fej), np.arange(0, 3)
+prior = H_old[np.ix_(keep, keep)] - H_old[np.ix_(keep, drop)] @ np.linalg.solve(
+    H_old[np.ix_(drop, drop)], H_old[np.ix_(drop, keep)])
+
+
+def heading_sigma_deg(H_k):
+    """Anchor x1's position (delete its rows) and return the claimed 1-sigma heading of x1."""
+    sub = np.arange(2, H_k.shape[0])
+    H_sub = H_k[np.ix_(sub, sub)]
+    eig = np.linalg.eigvalsh(H_sub)
+    return np.inf if eig[0] < 1e-9 * eig[-1] else np.degrees(np.sqrt(np.linalg.inv(H_sub)[0, 0]))
+
+
+for scale in [0.0, 1.0, 3.0, 10.0]:
+    current = {v: first[v] + scale * step[v] for v in first}
+    fej = dict(current, x1=first["x1"], l0=first["l0"], l1=first["l1"])        # old variables at first estimates
+    results = []
+    for estimate in (current, fej):
+        H_total = prior + information(new_factors, estimate)[np.ix_(keep, keep)]
+        results.append((np.linalg.eigvalsh(H_total)[:3], heading_sigma_deg(H_total)))
+    (eig_std, sig_std), (eig_fej, sig_fej) = results
+    print(f"update x{scale:<4}: standard eigenvalues {np.array2string(eig_std, precision=1)},"
+          f" heading sigma {sig_std:6.1f} deg | FEJ heading sigma {sig_fej:.1f} deg")
+```
+
+With no update between marginalization and the new factors (scale 0), both
+versions agree: three zero eigenvalues, and an infinite heading uncertainty,
+which is the truth, since nothing in this problem measures heading. As soon as
+the estimates move, the standard version's third eigenvalue lifts off zero and
+the estimator claims a finite heading uncertainty: about $120^\circ$ after an
+update of typical size (0.1 m and $2^\circ$ per variable), $40^\circ$ after one
+three times larger, and $12^\circ$ after one ten times larger. A
+$120^\circ$ sigma sounds harmless, but the honest answer is "no idea," and the
+claimed information grows with the square of the update. FEJ keeps all three
+null directions at every update size. One marginalization step manufactures
+only a little information, but a sliding window marginalizes at every keyframe
+and the spurious information accumulates, so over a long run the claimed yaw
+uncertainty keeps shrinking while the true yaw error keeps drifting
+(Exercise 4). That is what inconsistency looks like in the field: not a crash,
+but a confident estimator that is wrong.
 
 ## GNSS-Denied and Resilient Navigation {#sec-advanced-slam-gnss-denied-resilient}
 
-GNSS-denied navigation means operating when satellite positioning is unavailable,
-unreliable, or intentionally attacked. This is common indoors, underwater,
-underground, near tall buildings, under foliage, inside warehouses, in combat
-environments, and around jamming or spoofing.
+GNSS-denied navigation means operating when satellite positioning is
+unavailable, degraded, or attacked: indoors, underground, underwater, in urban
+canyons, under foliage, near large steel structures, and increasingly anywhere
+near jamming and spoofing. The receiver-level side of the problem (signals,
+tight and deep coupling, integrity, interference) is the subject of
+@sec-adv-gnss; this section is about what replaces or backs up GNSS.
 
-No single replacement sensor solves the whole problem. Resilient navigation uses
-layers:
+No single aid solves the problem, so resilient systems layer them, each with a
+different failure mode (@tbl-advanced-slam-resilient):
 
 | Aid | Useful when | Main weakness |
 |---|---|---|
-| Visual odometry | Textured scenes and reasonable lighting | Blur, darkness, textureless areas |
-| Lidar odometry | Geometric structure is visible | Dust, rain, glass, feature-poor corridors |
-| Radar odometry | Weather, dust, smoke, long range | Lower angular resolution and harder data association |
-| Terrain-relative navigation | Terrain maps are available | Needs distinctive terrain and good maps |
-| Magnetic anomaly navigation | Magnetic maps are available | Local disturbances and map dependence |
-| Barometric aiding | Altitude changes matter | Weather and pressure drift |
-| Wheel or water-speed aiding | Vehicle-environment contact is reliable | Slip, currents, and calibration |
-| Signals of opportunity | Radio infrastructure exists | Opportunistic and environment-dependent |
-| Cooperative localization | Other agents are nearby | Communication and shared-frame uncertainty |
+| Visual or lidar odometry | texture or geometric structure is visible | darkness, blur, dust, featureless corridors |
+| Radar odometry | weather, dust, smoke, long range | low angular resolution, hard data association |
+| Terrain or bathymetric navigation | a good elevation or depth map exists | flat or repetitive terrain |
+| Magnetic anomaly navigation | a crustal anomaly map exists | vehicle's own magnetic field, map resolution |
+| Celestial navigation | stars are visible (even by day, with the right sensor) | weather, attitude accuracy needed |
+| Signals of opportunity, LEO PNT | radio infrastructure or satellites in view | opportunistic geometry, unknown clocks |
+| Barometer, depth, wheel or DVL odometry | always, for one axis or for velocity | weather, slip, currents, calibration |
+| Cooperative localization | other agents are nearby | communication, shared-frame uncertainty |
 
-The professional habit is graceful degradation. A GNSS-denied system should not
-pretend nothing happened. It should change mode, report lower confidence, adjust
-controller limits when appropriate, and log enough information to explain the
-outage later.
+: Layers of resilient navigation. {#tbl-advanced-slam-resilient}
+
+Map-matching aids are the oldest. Terrain-aided navigation compares radar
+altimeter clearance with a stored elevation map and has guided cruise missiles
+since the 1970s; @sec-pf-terrain-aided-navigation builds one with a particle
+filter [@gustafsson2002]. **Magnetic anomaly navigation** does the same with the
+crustal magnetic field, whose anomalies vary over hundreds of meters to tens of
+kilometers and have been mapped by geological surveys. It is passive and
+unjammable, and flight tests have shown useful accuracy [@canciani2017magnav];
+its hard part is not the filter but removing the aircraft's own magnetic
+signature, a calibration problem attacked with the Tolles-Lawson model, first
+developed around 1950 for submarine-hunting aircraft. Celestial navigation, the
+oldest of all [@bowditch2019], has returned as star trackers small enough for
+aircraft and ships; the SR-71's astro-inertial system tracked stars in daylight
+half a century ago.
+
+Radio alternatives are growing quickly. **Signals of opportunity** (cellular,
+broadcast, and the downlinks of low-Earth-orbit communication constellations)
+were never designed for navigation, so the receiver must estimate the
+transmitters' clocks and sometimes their positions along with its own state.
+**LEO PNT** services are designed for it: an Iridium-based timing and location
+service is operational, and several dedicated LEO navigation constellations are
+in development, attractive because LEO signals arrive far stronger than GNSS
+signals from 20,000 km and sweep across the sky quickly, which helps geometry.
+Terrestrial low-frequency systems such as eLoran are being deployed or
+proposed as national backups in several countries.
+
+In factor-graph terms every one of these is just another factor, which is the
+practical argument for graph back ends in resilient navigation: adding an aid
+means adding a residual and a noise model. Integrity generalizes the same way.
+RAIM (@sec-adv-gnss-raim) tests whether the least-squares residuals are larger
+than chance allows; a smoother can run the same chi-square test on its total
+cost, as the orbit example did, and the normalized residuals point at the factor
+that is lying. The professional habit is graceful degradation: when an aid drops
+out, change mode, grow the uncertainty honestly, report it downstream, and log
+enough to explain the outage afterward.
 
 ## Advanced SLAM and Mapping {#sec-advanced-slam-mapping}
 
-The SLAM module introduced EKF-SLAM, FastSLAM, GraphSLAM, visual navigation, and
-loop closure. Advanced SLAM systems push those ideas in several directions.
+The SLAM module covered EKF-SLAM, FastSLAM, GraphSLAM, visual SLAM, and loop
+closure. Modern systems push those ideas along several axes at once.
 
-### Dense, Semantic, and Dynamic Maps
+**Lidar-inertial odometry** is the workhorse of ground and aerial robots that can
+afford a lidar, and its two best-known open systems neatly illustrate the
+filter-smoother split of @tbl-advanced-slam-spectrum. LIO-SAM [@shan2020liosam]
+is a factor graph solved with iSAM2: preintegrated IMU factors, lidar odometry
+factors from scan-to-local-map matching on keyframes, optional GNSS factors, and
+loop-closure factors, exactly the ingredients of @fig-advanced-slam-factor-graph
+with a lidar in place of the camera. FAST-LIO2 [@xu2022fastlio2] is a tightly
+coupled iterated error-state Kalman filter that registers raw points directly to
+the map, with no feature extraction, and keeps the map in an incremental k-d tree;
+it runs comfortably on small onboard computers. Both are excellent, which says
+something about the filter-versus-smoother debate.
 
-Classical feature maps are compact, but they do not describe all occupied space.
-Dense mapping attempts to reconstruct surfaces, occupancy, or signed distance
-fields. Semantic mapping attaches labels such as road, building, tree, person,
-vehicle, buoy, or runway. Dynamic mapping tries to separate persistent structure
-from moving objects.
+**Dense, semantic, and neural maps** describe more than sparse landmarks. Dense
+maps reconstruct surfaces, occupancy, or signed distance fields; semantic maps
+attach labels such as road, building, vehicle, buoy, or runway; dynamic maps try
+to separate persistent structure from moving objects. Neural radiance fields and
+3D Gaussian splatting represent scenes with learned functions or millions of
+small Gaussians and produce striking reconstructions. For navigation they raise
+hard questions about real-time cost, uncertainty, and validation, but they are
+moving into SLAM quickly (@sec-advanced-slam-learning-based-emerging).
 
-The price is computation and modeling complexity. A dense semantic map is more
-useful to a planner than a sparse point cloud, but it is harder to build,
-maintain, validate, and update over time.
-
-### Lidar, Radar, and Multi-Modal SLAM
-
-Lidar SLAM is common because range measurements give direct geometric structure.
-Radar SLAM is attractive in rain, dust, fog, smoke, and long-range outdoor
-operation. Camera systems are inexpensive and information-rich. IMUs provide
-high-rate motion. GNSS provides global anchoring when available.
-
-Modern systems often combine several of these:
-
-- visual-inertial odometry for local motion;
-- lidar or radar odometry for geometry and robustness;
-- GNSS or map priors for global alignment;
-- semantic perception for object-level reasoning;
-- loop closure for long-term consistency.
-
-The hard part is not drawing the block diagram. The hard part is time alignment,
-calibration, outlier rejection, uncertainty modeling, and knowing which sensor to
-distrust in a particular environment.
-
-### Lifelong and Multi-Robot SLAM
-
-Lifelong SLAM asks what happens when the same environment changes over days,
-months, or years. Multi-robot SLAM asks how multiple agents share maps and
-constraints without assuming perfect communication or a shared initial frame.
-
-These topics matter for fleets, warehouses, ports, cities, mines, farms, and
-large autonomous survey operations. They also expose practical problems:
-
-- map growth must be bounded;
-- old observations may become stale;
-- different robots may use different sensors and clocks;
-- loop closures can be false but highly influential;
-- communication bandwidth is limited;
-- privacy and security may constrain what data can be shared.
+**Multi-robot and lifelong SLAM** ask what happens when several agents share a
+map, or one agent revisits a changing environment for months. Inter-robot loop
+closures are the most valuable and the most dangerous measurements in such a
+system, so consistency checks such as PCM (@sec-loop-closure-robust-kernels)
+were developed for exactly this setting. Distributed solvers optimize a shared
+pose graph without sending all data to one place. Lifelong mapping must bound
+map growth, retire stale observations, and cope with robots whose sensors,
+clocks, and frames differ. These problems matter for fleets in warehouses,
+ports, mines, farms, and survey operations, and they are as much about
+communication and data management as about estimation.
 
 ## Rao-Blackwellized and Hybrid Filters {#sec-advanced-slam-rao-blackwellized-hybrid}
 
-FastSLAM is a Rao-Blackwellized particle filter (RBPF). That phrase is worth
-remembering beyond the project.
+FastSLAM is a Rao-Blackwellized particle filter (@sec-slam,
+@sec-pf-rao-blackwellized): sample the hard part of the state (the robot's path)
+and solve the conditionally easy part (each landmark, given the path) in closed
+form. In the vocabulary of this chapter, Rao-Blackwellization is marginalization
+done analytically inside each sample, and it is the same structural insight that
+makes factor graphs sparse: conditional independence turns one large problem
+into many small ones.
 
-The idea is to sample the hard part of the state and analytically estimate the
-conditional part. In FastSLAM, particles represent robot path hypotheses, while
-landmarks are estimated with small EKFs conditioned on each particle. This reduces
-the dimension that must be sampled directly.
-
-RBPFs appear in other navigation problems:
-
-- sampling discrete mode hypotheses while filtering continuous vehicle state;
-- tracking multiple data-association possibilities;
-- estimating maps conditioned on trajectory samples;
-- combining particle filters with Kalman filters for partially linear systems.
-
-Hybrid methods are attractive when the posterior is not well represented by one
-Gaussian but a full particle filter would be too expensive. They are also easy to
-misuse. Particle depletion, poor proposals, overconfident likelihoods, and weak
-resampling diagnostics can make a hybrid filter look sophisticated while quietly
-throwing away the correct hypothesis.
-
-The takeaway is not "use RBPFs everywhere." The takeaway is that marginalization
-and conditional structure can make hard estimation problems tractable.
+The pattern recurs wherever a navigation posterior is part discrete, part
+continuous, or multimodal: sampling or enumerating discrete mode hypotheses
+(which aid is faulty, which data association is right, which map tile the
+vehicle is on) while filtering the continuous state; marginalized particle
+filters for terrain navigation, with a small Kalman filter per particle for the
+linear velocity and bias states [@gustafsson2002]; and, on the smoothing side,
+multi-hypothesis factors such as the switchable constraints of
+@sec-loop-closure-robust-kernels. Hybrid methods are attractive when one
+Gaussian is too few and a full particle filter too many. They are also easy to
+misuse: particle depletion, poor proposals, overconfident likelihoods, and
+missing resampling diagnostics can make a hybrid filter look sophisticated while
+it quietly discards the correct hypothesis.
 
 ## Learning-Based and Emerging Methods {#sec-advanced-slam-learning-based-emerging}
 
-Machine learning is now part of navigation, but it rarely replaces the entire
-navigation stack. More commonly, learned components provide perception,
-correspondence, depth, uncertainty estimates, or priors that are fused with
-geometric and probabilistic models.
+Machine learning has entered navigation mostly by replacing *components*, not
+the estimator. The learned front ends of @sec-visual-nav-learned-front-ends are
+one example: networks produce keypoints and matches, and geometry turns them into
+motion. Three newer directions are worth knowing.
 
-Important emerging directions include:
+**Learned inertial odometry** regresses motion directly from IMU data. TLIO
+[@liu2020tlio] trains a network on pedestrian motion to predict displacement over
+a short window of gravity-aligned IMU samples, together with a covariance for
+that displacement, and fuses the prediction as a measurement in an error-state
+EKF that also estimates the IMU biases. The network supplies a motion prior that
+pure integration lacks (people walk in recognizable ways) and the filter supplies
+consistency and bias estimation. **Learned dense SLAM** puts a network inside the
+optimization: DROID-SLAM [@teed2021droid] refines dense optical flow with a
+recurrent network and turns it into poses and depths with a differentiable
+bundle-adjustment layer. MASt3R-SLAM [@murai2025mast3rslam] builds real-time
+dense monocular SLAM on a pretrained two-view 3D reconstruction network, a
+"foundation model" for geometry, and assumes little about the camera beyond a
+single center of projection. **Other emerging sensing** includes event cameras,
+which report per-pixel brightness changes with microsecond timing and no motion
+blur, and radar-inertial odometry for weather and smoke that blind cameras and
+lidars.
 
-- **learned visual features**, replacing or augmenting hand-crafted descriptors;
-- **learned depth and optical flow**, especially for difficult visual scenes;
-- **event cameras**, which report brightness changes at very high temporal
-  resolution and are useful for high-speed or high-dynamic-range motion;
-- **radar-inertial odometry**, especially for poor weather and degraded visual
-  environments;
-- **neural implicit maps**, which represent geometry or appearance with neural
-  fields rather than explicit landmarks or grids;
-- **3D Gaussian and NeRF-style mapping**, which can produce rich scene
-  reconstructions but currently raise hard questions about real-time use,
-  uncertainty, and safety-critical validation;
-- **foundation-model perception**, where large pretrained models provide object,
-  scene, or language-conditioned understanding;
-- **learned sensor fusion**, where networks estimate measurement confidence,
-  reject outliers, or provide learned motion priors.
-
-The caution is straightforward: learned systems can be powerful, but navigation
-needs calibrated uncertainty, failure detection, and operational constraints. A
-neural network that works beautifully on a benchmark can still fail in exactly the
-weather, lighting, vehicle vibration, or terrain that matters to your deployment.
+The hard part is evaluating learned components honestly, and the questions are
+the ones this book has asked of every estimator. **Generalization**: was the
+method tested on environments, platforms, and sensors that were not in the
+training set, or on held-out minutes of the same recordings? A network trained
+on pedestrians knows nothing about a quadrotor, and one trained in summer may
+not recognize the same street in snow. **Uncertainty calibration**: a learned
+covariance is a measurement noise model and must pass the same NIS and NEES
+tests as any other (@sec-kf-nees-nis). Networks are routinely overconfident
+exactly where the data were sparse, so check calibration by operating regime
+(turning versus straight, fast versus slow), not just on average.
+**Consistency inside the estimator**: overlapping input windows produce
+correlated errors, which violates the white-noise assumption of the filter
+fusing them; ignoring that is overconfidence by construction. **Failure
+detection**: does the system know when an input is unlike anything it was
+trained on? **Cost**: a method that needs a desktop GPU is not a drop-in for a
+250 g drone. A learned component that passes these tests is a powerful sensor.
+One that has only been tested on its benchmark is a hypothesis.
 
 ## How to Read the Research Literature {#sec-advanced-slam-how-read-research}
 
-Advanced navigation papers can be difficult to compare because they often differ
-in sensors, datasets, compute hardware, initialization assumptions, and failure
-conditions. When reading a paper, ask:
+Navigation papers are hard to compare because they differ in sensors, datasets,
+compute, initialization, and in what they count as success. A few questions
+cut through most of it. What sensors are actually used, and how were they
+calibrated and synchronized? Is the method a filter, a smoother, learned, or a
+hybrid, and does it run online, in real time on stated hardware, or offline? What
+bounds global drift: GNSS, loop closure, a prior map, or nothing (in which case
+the honest metric is drift per distance traveled)? How are outliers and dropouts
+handled, and are failures reported or are only the successful sequences shown?
+Are uncertainty estimates checked for consistency, or merely plotted?
 
-- What sensors are actually used?
-- Is the method filter-based, smoother-based, learning-based, or a hybrid?
-- Does it run online, offline, or in post-processing?
-- What assumptions are made about calibration and synchronization?
-- Is global drift bounded by GNSS, loop closure, maps, or external truth?
-- How does it handle outliers and sensor dropouts?
-- What dataset was used, and does it match the target environment?
-- Does the method report failures, or only successful sequences?
-- Are uncertainty estimates calibrated, or just plotted?
-- What computational hardware was required?
-
-Be especially careful with phrases like "real time," "robust," and
-"state-of-the-art." They are meaningful only relative to a platform, dataset,
-sensor suite, and operating environment.
+Read the evaluation protocol as carefully as the method. Absolute trajectory
+error is computed after aligning the estimate to ground truth, and the alignment
+matters: $SE(3)$ for stereo visual odometry, four degrees of freedom (position
+and yaw) for VIO, because those are exactly its unobservable directions, and
+$\mathrm{Sim}(3)$ for monocular systems, which forgives scale errors that may be
+the method's main weakness [@zhang2018trajectory]. Relative pose error over
+fixed distances measures drift and is harder to game. Results averaged over several runs, with the failure rate
+reported, are worth more than a single best run. And treat "real time,"
+"robust," and "state of the art" as claims relative to a platform, a dataset, a
+sensor suite, and an operating environment, never as properties of an algorithm.
 
 ## Summary {#sec-advanced-slam-summary}
 
-The advanced topics in this chapter are extensions of the same foundations used
-throughout the course:
+1. A factor graph turns navigation into sparse nonlinear least squares: variables
+   for the unknowns, factors for measurements, motion models, and priors. The
+   sparsity of the information matrix is the graph.
+2. Filtering, fixed-lag smoothing, and full smoothing differ in which variables
+   they keep and what they relinearize. On a linear chain the Kalman filter is
+   the forward elimination sweep and the RTS smoother the back-substitution.
+3. Eliminating a variable is marginalizing it and connects its neighbors.
+   Variable ordering controls the fill-in; incremental solvers such as iSAM2
+   reuse everything a new factor does not touch.
+4. Attitudes and poses live on Lie groups. Exp, Log, $\oplus$, $\ominus$, the
+   left and right Jacobians, and the adjoint make Gauss-Newton and covariance
+   work on them. The book's attitude error is a left (navigation-frame)
+   perturbation, and the error-state filter is a one-step on-manifold
+   Gauss-Newton with a reset Jacobian equal to $\mathbf{J}_l$.
+5. Marginalization in a sliding window produces a dense prior factor on the
+   Markov blanket. Its frozen linearization point can manufacture information
+   along unobservable directions; first-estimates Jacobians prevent that.
+6. Resilient navigation, lidar-inertial and dense mapping, hybrid filters, and
+   learned components all fit into the same framework, and all must be judged by
+   the same standards of consistency and honest evaluation.
 
-- factor graphs generalize filtering ideas into sparse optimization over many
-  states and measurements;
-- VIO and visual-inertial SLAM combine high-rate inertial propagation with
-  environmental visual constraints;
-- advanced GNSS processing uses raw measurements, RTK, PPP, and tighter INS/GNSS
-  coupling instead of relying only on receiver position fixes;
-- GNSS-denied navigation is a resilience problem, not a single-sensor replacement
-  problem;
-- advanced SLAM expands from sparse landmarks to dense, semantic, dynamic,
-  lifelong, and multi-robot maps;
-- RBPFs and hybrid filters exploit conditional structure when one Gaussian or one
-  particle cloud is not enough;
-- learning-based methods are increasingly important, but they still need
-  calibration, uncertainty, and failure monitoring.
+## Exercises {#sec-advanced-slam-exercises}
 
-You are not expected to implement these systems in this course. You are expected
-to recognize the shape of the field: modern navigation is not one algorithm, but a
-set of estimation, sensing, optimization, timing, calibration, and validation
-choices made under real constraints.
+1. **Left and right Jacobians of $SO(3)$.** (a) From the definitions in
+   @eq-advanced-slam-jacobian-defs and the adjoint identity, show that
+   $\mathbf{J}_l(\boldsymbol{\phi}) = \operatorname{Exp}(\boldsymbol{\phi})\mathbf{J}_r(\boldsymbol{\phi})$
+   and $\mathbf{J}_l(\boldsymbol{\phi}) = \mathbf{J}_r(-\boldsymbol{\phi})$.
+   Use the closed form to show that also
+   $\mathbf{J}_l(\boldsymbol{\phi}) = \mathbf{J}_r(\boldsymbol{\phi})^T$.
+   (b) Show that the exact error-state reset for the book's navigation-frame
+   attitude error,
+   $\delta\boldsymbol{\theta}^+ = \operatorname{Log}(\operatorname{Exp}(\delta\boldsymbol{\theta})\operatorname{Exp}(-\delta\hat{\boldsymbol{\theta}}))$,
+   has Jacobian $\mathbf{J}_l(\delta\hat{\boldsymbol{\theta}})$ at
+   $\delta\boldsymbol{\theta} = \delta\hat{\boldsymbol{\theta}}$, and that
+   @eq-ekf-reset-jacobian is its first-order truncation. What is the
+   corresponding result for Solà's body-frame error? (c) Expand
+   @eq-advanced-slam-so3-jacobians to show
+   $\mathbf{J}_r^{-1}(\boldsymbol{\phi}) = \mathbf{I} + \tfrac{1}{2}[\boldsymbol{\phi}]_\times + \tfrac{1}{12}[\boldsymbol{\phi}]_\times^2 + O(\phi^4)$.
+   For what angle does dropping the quadratic term cause a 1% error in the
+   Jacobian?
+
+2. **Factor Jacobians on the manifold.** (a) Derive
+   @eq-advanced-slam-relpose-jacobians from @eq-advanced-slam-relpose-factor
+   for the navigation-frame perturbation, including the position row with
+   respect to $\delta\boldsymbol{\theta}_i$. (b) Redo the derivation for a
+   body-frame attitude perturbation, $\mathbf{C} \leftarrow \mathbf{C}\operatorname{Exp}(\delta\boldsymbol{\theta}^b)$,
+   with the position still perturbed additively in NED, and show that each
+   attitude column block equals the navigation-frame one multiplied on the right
+   by $\mathbf{C}_i$ or $\mathbf{C}_j$. Explain this with the adjoint.
+   (c) Verify (b) numerically by modifying `oplus` and the finite-difference
+   check. (d) Show that with a lever arm, a single GNSS factor constrains
+   attitude, and compute the size of the effect for the drone's 0.36 m lever
+   arm and 1.5 m GNSS noise. Is the lever arm what makes heading observable in
+   the orbit example?
+
+3. **The drone flies under a bridge deck.** Extend the orbit example.
+   (a) Remove the GNSS fixes for keyframes 30 to 65, as when the drone inspects
+   the underside of a bridge deck. Plot the horizontal position error and its
+   $3\sigma$ bound from $\mathbf{H}^{-1}$ along the trajectory. Where is the
+   uncertainty largest, and why there rather than at the end of the outage? (b) Add
+   Levenberg-Marquardt damping to the solver
+   (@sec-math-reference-pose-graph-optimization) and compare the cost history
+   with Gauss-Newton for initial heading errors of $40^\circ$, $90^\circ$, and
+   $150^\circ$. Which method needs fewer iterations, which never increases the
+   cost, and does either fail? Explain why a pure initial heading error is a
+   relatively benign kind of bad initialization for this problem. (c) Corrupt the
+   GNSS fix at keyframe 48 by 15 m north. Show that the final cost fails the
+   chi-square test, then identify the bad fix from its normalized residual.
+   Compare with the RAIM logic of @sec-adv-gnss-raim.
+
+4. **Marginalize, condition, and first estimates.** (a) Prove that
+   $\mathbf{P}_\text{marg} - \mathbf{P}_\text{cond}$ in the marginalization
+   example is positive semidefinite for any information matrix. (Hint: compare
+   $(\mathbf{H}^{-1})_{rr}$ with $(\mathbf{H}_{rr})^{-1}$ using the block
+   inverse.) (b) Build a 1D fixed-lag smoother for the random-walk model
+   $x_k = x_{k-1} + w_k$, $z_k = x_k + v_k$ with a window of five states,
+   marginalizing the oldest state at each step with
+   @eq-advanced-slam-marginal-prior. Show numerically that the newest state's
+   mean and variance equal the Kalman filter's at every step, and that the
+   window's estimates equal those of a batch smoother run on the data received
+   so far. (c) In the FEJ example, explain why perturbing every variable by the
+   *same* translation leaves the null space intact even without FEJ, while
+   independent perturbations do not. (d) Suppose each marginalization adds the
+   same spurious heading information. How does the claimed heading standard
+   deviation scale with the number of marginalizations $n$? Using the chapter's
+   result for an update of typical size, after how many keyframes would a
+   system without FEJ claim to know its heading to $\pm 5^\circ$ ($1\sigma$),
+   from measurements that contain no heading information at all?
+
+5. **Is the learned covariance honest?** A learned inertial odometry network
+   reports a 2D displacement every second with a predicted covariance
+   $\hat{\sigma}^2\mathbf{I}$, $\hat{\sigma} = 0.05$ m. Simulate 2000 windows
+   (seed 0): 70% are straight walking, where the true error is
+   $\mathcal{N}(\mathbf{0}, 0.05^2\mathbf{I})$, and 30% are turns, where the
+   true error is $\mathcal{N}(\mathbf{0}, 0.12^2\mathbf{I})$ but the network
+   still reports 0.05 m. (a) Compute the NIS of each window and the fraction
+   above the 95% gate for two degrees of freedom, overall and by motion type.
+   Predict the mean NIS analytically and compare. (b) Propose a correction
+   learned from a held-out calibration set (for example, a scale factor per
+   motion type) and show its effect on a separate test set. (c) A colleague
+   reports that the network's average NIS over the whole test set is 2.1 and
+   declares it calibrated. What could be hiding in that average? (d) The network
+   actually uses 2 s input windows that overlap by 1 s. What does that do to the
+   errors of consecutive outputs, and what happens to an EKF that treats them as
+   independent?
+
+6. **Designing the back end for a survey AUV.** An autonomous underwater vehicle
+   maps a harbor approach with a multibeam sonar. It carries a navigation-grade
+   INS, a Doppler velocity log, and a depth sensor. A support ship tracks it
+   acoustically (USBL) and sends a position fix every 10 s, which arrives 1 to
+   2 s late because of acoustic travel time and processing. The vehicle gets
+   GNSS only at the surface, at the start and end of each 2 h dive, and the
+   sonar front end occasionally proposes terrain-matching loop closures where
+   survey lines cross. (a) Draw the factor graph: variables, factors, and their
+   rates. (b) Decide what the vehicle's controller should receive (filter,
+   fixed-lag smoother, or full smoother) and what the survey map product should
+   be built from, and justify each with the navigation-to-control contract of
+   @sec-practical-controller-contract: latency, smoothness, and health flags. (c) Explain why a
+   factor graph handles the late USBL fixes more gracefully than a filter.
+   (d) Which states would you marginalize, when, and how would you keep the
+   marginal prior from making the system overconfident in heading? (e) What
+   would you check before trusting a terrain-matching loop closure, given what
+   @sec-loop-closure-robust-kernels showed about false ones?

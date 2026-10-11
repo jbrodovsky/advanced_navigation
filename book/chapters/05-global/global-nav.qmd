@@ -10,6 +10,10 @@ This chapter introduces global-scale navigation and the external measurements th
 
 The signal-processing and receiver-design details are important, but they are not the focus here. There is an entire branch of PNT (positioning, navigation, and timing) engineering devoted to satellite radio signal processing, and @sec-adv-gnss gives an optional tour of it. Our goal is to understand what a GNSS receiver is estimating, why it needs multiple satellites, why its errors are not simple Gaussian noise, and how its position and velocity outputs become measurements in an INS/GNSS filter.
 
+::: {.callout-note title="Where this sits in the stack"}
+Guidance and mission logic need a state that is geo-referenced, so that waypoints, charts, and other vehicles share one frame; high-rate, so that control can use it; and always available, so that the vehicle does not go blind under a bridge (@sec-gnc-autonomy-stack). GNSS supplies the first, inertial navigation the second and third, and their integration is how real vehicles deliver all three at once. Because those consumers act on the output without a human checking it, integrity matters as much as accuracy. The navigation system must say when its solution is degraded, which aids it has lost, and how long it has been coasting, and the rest of the stack must have a plan for each of those degraded modes.
+:::
+
 ## From Local Coordinates to Global Coordinates {#sec-global-nav-from-local-coordinates}
 
 The flat-Earth approximation assumes that a local navigation frame can be treated as fixed over the region of interest. For indoor robots, small drones, and many short-range experiments, this is usually acceptable. For aircraft, ships, long-range ground vehicles, and strategic navigation, it is not.

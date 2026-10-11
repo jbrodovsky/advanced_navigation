@@ -15,6 +15,18 @@ $$
 That sentence is the whole course in miniature. The hard part is deciding how
 to represent the belief and how much of the physics we can afford to model.
 
+::: {.callout-note title="Where this sits in the stack"}
+The estimator is the box in the middle of the autonomy stack
+(@sec-gnc-autonomy-stack). It takes the measurements and motion models of the
+previous part and turns them into the product everything downstream consumes: a
+state estimate with a covariance, a timestamp, and a frame. Planners use that
+covariance to size safety margins, and mission logic uses it to decide whether
+the vehicle can keep going, so it has to mean what it says. Consistency
+(@sec-kf-consistency) is the property that makes the covariance trustworthy; a
+filter that is accurate but overconfident is a liability to everything
+downstream of it.
+:::
+
 ## The Navigation State {#sec-filtering-navigation-state}
 
 The state vector collects the quantities we want to estimate. For a small
