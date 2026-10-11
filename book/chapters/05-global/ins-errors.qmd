@@ -2,15 +2,18 @@
 
 An inertial navigation system is useful because it can propagate motion without external measurements. It is dangerous for exactly the same reason. Every small IMU error is integrated into attitude, velocity, and position. Without correction, the navigation solution will drift even if the mechanization equations are written perfectly.
 
-This chapter focuses on the error models that matter for the INS/GNSS filter:
+This chapter focuses on the error models that matter for the INS/GNSS filter of @sec-ins-gnss:
 
 - deterministic IMU errors that should be calibrated;
 - stochastic IMU errors that should be modeled as noise or bias states;
+- how sensor grade translates into drift;
 - Allan deviation as a practical tool for reading IMU behavior;
 - process-noise choices for the error-state Kalman filter;
 - observability limits when GNSS is the only external correction.
 
-The goal is not to turn students into IMU test engineers. The goal is to make the filter design defensible instead of tuned by vibes and a plot that happens to look okay once.
+The goal is not to turn students into IMU test engineers. The goal is to make the filter design defensible instead of tuned by vibes and a plot that happens to look okay once. Groves [@groves] and the IEEE gyro test standard [@ieee952] are the references to keep nearby.
+
+A note on units. Accelerometer errors are quoted in milli-g and micro-g, where $g_0 = 9.80665\ \text{m/s}^2$ is *standard* gravity, a unit-conversion constant. This chapter also uses $g_0$ for the tilt-to-acceleration coupling in error budgets. Actual gravity varies from about 9.78 to 9.83 m/s² (@sec-ins-gnss-gravity), a 0.3% difference that matters to the mechanization and not at all to an error budget.
 
 ## Measurement Error Models {#sec-ins-errors-measurement-error-models}
 
@@ -36,7 +39,7 @@ $$\tilde{\boldsymbol{\omega}}_{ib}^b
 
 The terms are:
 
-- $\mathbf{M}_a,\mathbf{M}_g$: scale-factor and misalignment matrices;
+- $\mathbf{M}_a,\mathbf{M}_g$: scale-factor and misalignment matrices (identity plus small errors);
 - $\mathbf{b}_a,\mathbf{b}_g$: slowly varying accelerometer and gyro biases;
 - $\mathbf{b}(T)$: temperature-dependent bias terms;
 - $\mathbf{n}_a,\mathbf{n}_g$: stochastic sensor noise;
@@ -57,11 +60,11 @@ IMU errors fall into three broad groups.
 
 **Stochastic errors** cannot be removed once and forgotten:
 
-- white measurement noise;
+- white measurement noise (angle and velocity random walk);
 - bias instability;
-- bias random walk;
-- rate random walk;
-- quantization noise.
+- bias random walk (rate random walk for a gyro);
+- quantization noise;
+- turn-on bias: a different constant every time the sensor powers up.
 
 **Environmental errors** depend on operating conditions:
 
@@ -71,7 +74,7 @@ IMU errors fall into three broad groups.
 - acceleration-dependent gyro errors;
 - mechanical flexure between sensors.
 
-The boundary between these categories is not always clean. A bias may look constant on a lab bench and wander during a flight because temperature, vibration, and power supply conditions changed. The filter model should be simple, but not naive.
+The boundary between these categories is not always clean. A bias may look constant on a lab bench and wander during a flight because temperature, vibration, and power supply conditions changed. Turn-on bias is the classic boundary case: constant within a run, so the filter can estimate it, but random from run to run, so a factory calibration cannot remove it. The filter model should be simple, but not naive.
 
 ## Why Bias Dominates Drift {#sec-ins-errors-why-bias-dominates}
 
@@ -81,23 +84,141 @@ $$\Delta v(t) \approx b_a t,
 \qquad
 \Delta p(t) \approx \frac{1}{2}b_a t^2.$$
 
-That quadratic position growth is why even small accelerometer biases matter. A bias of $1$ milli-g is about $9.81 \times 10^{-3}\text{ m/s}^2$. Sustained for one minute, it produces roughly
+That quadratic position growth is why even small accelerometer biases matter. A bias of $1$ milli-g is $9.80665 \times 10^{-3}\text{ m/s}^2$. Sustained for one minute, it produces
 
-$$\frac{1}{2}(9.81 \times 10^{-3})(60)^2
+$$\frac{1}{2}(9.80665 \times 10^{-3})(60)^2
 \approx
 17.7 \text{ m}$$
 
-of position error. Sustained for one hour, it is no longer a small effect.
+of position error.
 
 Gyro bias is often worse because it corrupts attitude. If a gyro bias creates a small tilt error $\delta\theta$, gravity leaks into the horizontal acceleration channel:
 
-$$\Delta a_{horizontal} \approx g\,\delta\theta.$$
+$$\Delta a_{horizontal} \approx g_0\,\delta\theta.$$
 
-If the tilt error is caused by a constant gyro bias $b_g$, then
+If the tilt error is caused by a constant horizontal gyro bias $b_g$, then $\delta\theta(t) \approx b_g t$, and integrating twice more gives
 
-$$\delta\theta(t) \approx b_g t.$$
+$$\Delta p(t) \approx \frac{1}{6} g_0 b_g t^3.$$
 
-The resulting position error can grow like a cubic term in simplified cases. This is why attitude is not just an output of the INS. It is part of the acceleration model.
+A gyro bias of 10°/h, respectable for a MEMS part, produces about 17 m in a minute this way, the same as a milli-g of accelerometer bias; by two minutes the cubic term has pulled ahead. This is why attitude is not just an output of the INS. It is part of the acceleration model.
+
+White noise integrates too, but more gently, because random errors partially cancel. With velocity random walk $N_a$ (m/s/√s) and angle random walk $N_g$ (rad/√s), the one-sigma position errors grow as
+
+$$\sigma_p^{\text{VRW}}(t) = \frac{N_a\,t^{3/2}}{\sqrt{3}},
+\qquad
+\sigma_p^{\text{ARW}}(t) = \frac{g_0 N_g\,t^{5/2}}{\sqrt{20}}.$$
+
+Both follow from integrating white noise two or three times: the variance of a triple integral of white noise with spectral density $q$ is $q\,t^5/20$.
+
+These polynomials describe the first minutes of free-inertial navigation, which is exactly the regime that matters for MEMS sensors, whose errors reach hundreds of meters to kilometers within that time. Over tens of minutes to hours, the Earth-rate, transport-rate, and gravity-gradient couplings that the short-horizon error model leaves out (@sec-ins-gnss-error-state-formulation) bend these curves, and the polynomials overstate the drift of a high-grade INS. That long-horizon behavior is the business of navigation-grade systems [@groves; @tittertonWeston2004] and is beyond what this course needs.
+
+The cell builds the error budget for one horizontal axis of a smartphone-class IMU, using the data sheet worked through in @sec-ins-errors-from-imu-specs, and checks the two noise formulas by Monte Carlo.
+
+```{python}
+#| label: ins-errors-drift-budget
+#| echo: true
+
+import numpy as np
+
+G0 = 9.80665                               # standard gravity [m/s^2]
+
+# Smartphone-class data sheet (see sec-ins-errors-from-imu-specs).
+N_a = 0.06 / 60.0                          # VRW 0.06 m/s/sqrt(h) -> m/s/sqrt(s)
+N_g = np.radians(0.3) / 60.0               # ARW 0.3 deg/sqrt(h) -> rad/sqrt(s)
+b_a_turn_on = 10e-3 * G0                   # 10 milli-g turn-on bias [m/s^2]
+b_g_turn_on = np.radians(0.1)              # 0.1 deg/s = 360 deg/h turn-on bias [rad/s]
+b_a_cal = 1e-3 * G0                        # residual after a stationary calibration
+b_g_cal = np.radians(10.0 / 3600.0)        # 10 deg/h
+
+
+def drift_terms(t, b_a, b_g):
+    """One-axis horizontal position error contributions [m] at times t [s]."""
+    return {"accel bias": 0.5 * b_a * t**2,
+            "gyro bias (tilt)": G0 * b_g * t**3 / 6.0,
+            "VRW (1 sigma)": N_a * t**1.5 / np.sqrt(3.0),
+            "ARW via tilt (1 sigma)": G0 * N_g * t**2.5 / np.sqrt(20.0)}
+
+
+for label, b_a, b_g in [("turn-on biases", b_a_turn_on, b_g_turn_on),
+                        ("after calibration", b_a_cal, b_g_cal)]:
+    terms = drift_terms(60.0, b_a, b_g)
+    print(f"{label:17s} at 60 s: " + ", ".join(f"{k} {v:.2f} m" for k, v in terms.items()))
+
+# Monte Carlo check of the two noise formulas: 400 runs, 60 s at 100 Hz.
+rng = np.random.default_rng(5)
+dt, n_runs = 0.01, 400
+n = round(60.0 / dt)
+accel_noise = N_a / np.sqrt(dt) * rng.standard_normal((n_runs, n))
+p_vrw = np.cumsum(np.cumsum(accel_noise * dt, axis=1) * dt, axis=1)
+tilt = np.cumsum(N_g / np.sqrt(dt) * rng.standard_normal((n_runs, n)) * dt, axis=1)
+p_arw = np.cumsum(np.cumsum(G0 * tilt * dt, axis=1) * dt, axis=1)
+model = drift_terms(60.0, 0.0, 0.0)
+print(f"Monte Carlo / formula at 60 s: VRW {p_vrw[:, -1].std() / model['VRW (1 sigma)']:.3f}, "
+      f"ARW {p_arw[:, -1].std() / model['ARW via tilt (1 sigma)']:.3f}")
+```
+
+```{python}
+#| label: fig-ins-errors-drift-budget
+#| fig-cap: "One-axis free-inertial position error budget for a smartphone-class IMU. Solid: turn-on biases (10 milli-g, 360°/h) and white noise. Dashed: the bias terms after a stationary calibration (1 milli-g, 10°/h). Bias terms dominate after the first second or two, and the cubic gyro term takes over from the quadratic accelerometer term."
+#| code-fold: true
+
+import matplotlib.pyplot as plt
+
+t_plot = np.logspace(-1, np.log10(300.0), 200)
+fig, ax = plt.subplots(figsize=(8, 4.5))
+colors = {"accel bias": "C0", "gyro bias (tilt)": "C3", "VRW (1 sigma)": "C2",
+          "ARW via tilt (1 sigma)": "C4"}
+for name, values in drift_terms(t_plot, b_a_turn_on, b_g_turn_on).items():
+    ax.loglog(t_plot, values, color=colors[name], label=name)
+for name, values in drift_terms(t_plot, b_a_cal, b_g_cal).items():
+    if "bias" in name:
+        ax.loglog(t_plot, values, color=colors[name], linestyle="--", label=f"{name}, calibrated")
+ax.axvline(60.0, color="0.5", linewidth=1)
+ax.set_xlabel("time since last fix [s]")
+ax.set_ylabel("position error [m]")
+ax.set_ylim(1e-5, 1e5)
+ax.grid(True, which="both", alpha=0.25)
+ax.legend(loc="upper left", fontsize=8)
+fig.tight_layout()
+plt.show()
+```
+
+In @fig-ins-errors-drift-budget, with turn-on biases, the cubic gyro term owns the budget after about 17 s and reaches roughly 600 m at one minute. A stationary calibration buys an order of magnitude, but the shape of the curves does not change: within seconds, bias beats noise. That is the case for estimating biases in the filter instead of treating everything as white noise.
+
+## IMU Grades {#sec-ins-errors-imu-grades}
+
+"IMU" covers a range of performance spanning more than six orders of magnitude, and a matching range of prices. @tbl-ins-errors-imu-grades gives typical figures for the conventional grades. Treat it as orders of magnitude: vendors and textbooks draw the boundaries differently, and a single product can straddle two rows [@groves; @tittertonWeston2004].
+
+| Grade | Typical technology and use | Gyro bias stability (°/h) | ARW (°/√h) | Accel bias | Typical free-inertial drift |
+|---|---|---|---|---|---|
+| Consumer | MEMS in phones, wearables, game controllers | 10–100 in-run; turn-on 100–1000+ | 0.2–1 | 1–30 mg | ~1 km in the first minute (uncalibrated) |
+| Industrial | MEMS modules for cars, drones, robots | 1–10 | 0.1–0.3 | 0.1–1 mg | tens of m in the first minute |
+| Tactical | high-end MEMS, small FOG; UAVs, munitions | 0.1–10 | 0.02–0.1 | 50–1000 µg | meters in the first minute; useful standalone for minutes |
+| Navigation | ring-laser and fiber-optic gyros; airliners, ships | ≤ 0.01 | ≤ 0.002 | 10–100 µg | ~1 nmi (1.85 km) in the first hour |
+| Strategic | submarines, ballistic missiles | ≤ 0.001 | ≤ 0.0005 | ≤ 1–10 µg | ~1 nmi per day or better |
+
+: Typical IMU grades. "Bias stability" is the in-run bias instability from an Allan deviation (@sec-ins-errors-allan-deviation); for consumer parts the run-to-run turn-on bias is far larger and is what an uncalibrated system sees. Drift figures assume no aiding after a good alignment. {#tbl-ins-errors-imu-grades}
+
+The table explains the shape of this course. A smartphone gyro's bias is ten to a hundred times Earth rate (15°/h), so it cannot find north (@sec-ins-gnss-alignment) and its free-inertial solution is gone in a minute; it needs GNSS, a camera, wheel odometry, or a map every second or so. A navigation-grade gyro resolves Earth rate to a part in a thousand, and its INS can carry an airliner across an ocean with only occasional help. The difference is a few orders of magnitude in bias, and a few orders of magnitude in price: pocket change for the phone, roughly the price of a house for the airliner. Strategic-grade systems, which keep submarines on track for weeks submerged, are a category of their own.
+
+The cell evaluates the bias terms of @sec-ins-errors-why-bias-dominates at one minute for a representative member of each grade. It reproduces the first-minute column of the table. For navigation and strategic grades, which navigate for hours to days between fixes, the table quotes the long-horizon figures from the literature instead, because the polynomials do not apply there.
+
+```{python}
+#| label: ins-errors-grade-drift
+#| echo: true
+
+grades = {                       # (gyro bias [deg/h], accel bias [milli-g]), representative
+    "consumer (turn-on)": (360.0, 10.0),
+    "industrial": (10.0, 1.0),
+    "tactical": (1.0, 0.3),
+    "navigation": (0.01, 0.05),
+    "strategic": (0.001, 0.005),
+}
+for name, (bg_dph, ba_mg) in grades.items():
+    terms = drift_terms(60.0, ba_mg * 1e-3 * G0, np.radians(bg_dph / 3600.0))
+    print(f"{name:19s} gyro {bg_dph:7.3f} deg/h, accel {ba_mg:6.3f} mg -> after 60 s: "
+          f"{terms['accel bias'] + terms['gyro bias (tilt)']:9.2f} m")
+```
 
 ## Stochastic Bias Models {#sec-ins-errors-stochastic-bias-models}
 
@@ -109,7 +230,7 @@ The simplest model is
 
 $$\dot{\mathbf{b}} = \mathbf{w}_b,$$
 
-where $\mathbf{w}_b$ is zero-mean white noise. In discrete time,
+where $\mathbf{w}_b$ is zero-mean white noise with spectral density $q_b$. In discrete time,
 
 $$\mathbf{b}_{k+1}
 =
@@ -118,9 +239,9 @@ $$\mathbf{b}_{k+1}
 \qquad
 \mathbf{w}_{b,k}
 \sim
-\mathcal{N}(\mathbf{0},\mathbf{Q}_{b,k}).$$
+\mathcal{N}(\mathbf{0},\ q_b\Delta t\,\mathbf{I}).$$
 
-This model says the bias can wander indefinitely. It is often adequate over short to moderate durations and is easy to implement.
+This model says the bias can wander indefinitely, with a standard deviation that grows as $\sqrt{q_b t}$. It is often adequate over short to moderate durations and is easy to implement. It is the model used in @sec-ins-gnss and Project 3.
 
 ### First-Order Gauss-Markov Bias
 
@@ -128,30 +249,28 @@ A first-order Gauss-Markov (FOGM) model pulls the bias back toward zero:
 
 $$\dot{\mathbf{b}}
 =
--\frac{1}{\tau}\mathbf{b}
+-\frac{1}{T_c}\mathbf{b}
 + \mathbf{w}_b,$$
 
-where $\tau$ is the correlation time. The discrete propagation is
+where $T_c$ is the correlation time. The discrete propagation is
 
 $$\mathbf{b}_{k+1}
 =
-e^{-\Delta t/\tau}\mathbf{b}_k
+e^{-\Delta t/T_c}\mathbf{b}_k
 + \mathbf{w}_{b,k}.$$
 
-If the steady-state bias standard deviation is $\sigma_b$, the discrete process noise variance for one scalar bias state is
+If the steady-state bias standard deviation is $\sigma_b$, the driving-noise spectral density is $q_b = 2\sigma_b^2/T_c$, and the discrete process noise variance for one scalar bias state is
 
 $$Q_b
 =
 \sigma_b^2
-\left(1-e^{-2\Delta t/\tau}\right).$$
+\left(1-e^{-2\Delta t/T_c}\right).$$
 
-FOGM is useful when the bias is known to remain bounded around a nominal value. Random walk is more conservative when you do not trust that assumption.
+FOGM is useful when the bias is known to remain bounded around a nominal value. Random walk is more conservative when you do not trust that assumption. Over times much shorter than $T_c$ the two are indistinguishable.
 
 ## Allan Deviation {#sec-ins-errors-allan-deviation}
 
-Allan deviation is a standard way to characterize sensor noise over averaging time. It answers a practical question: if we average this sensor for $\tau$ seconds, how does the apparent error change?
-
-For cluster averages $\bar{y}_i(\tau)$, Allan variance is
+Allan deviation is the standard way to characterize sensor noise over averaging time [@ieee952]. It answers a practical question: if we average this sensor for $\tau$ seconds, how much does one average differ from the next? Record the sensor sitting perfectly still, chop the record into clusters of length $\tau$, and average each cluster. For cluster averages $\bar{y}_i(\tau)$, the Allan variance is
 
 $$\sigma_A^2(\tau)
 =
@@ -163,54 +282,120 @@ $$\sigma_A^2(\tau)
 \right)^2
 \right].$$
 
-On a log-log Allan deviation plot, common slope regions are:
+Different error processes make $\sigma_A$ depend on $\tau$ with different slopes, so on a log-log plot the curve is a sequence of straight segments, and each segment's height gives one noise coefficient (@tbl-ins-errors-allan-slopes). For a gyro (the accelerometer table is the same with velocity in place of angle):
 
-|  Slope | Error type                          | Practical meaning         |
-|-------:|-------------------------------------|---------------------------|
-| $-1/2$ | white noise                         | averaging helps           |
-|    $0$ | bias instability                    | averaging stops helping   |
-| $+1/2$ | rate random walk / bias random walk | bias itself is wandering  |
-|   $+1$ | rate ramp                           | deterministic drift trend |
+| Slope | Noise term | $\sigma_A(\tau)$ | Read the coefficient |
+|---:|---|---|---|
+| $-1$ | quantization noise | $\sqrt{3}\,Q/\tau$ | $Q$: value of the line at $\tau = \sqrt{3}$ s |
+| $-1/2$ | angle random walk (accel: velocity random walk) | $N/\sqrt{\tau}$ | $N$: value of the line at $\tau = 1$ s |
+| $0$ | bias instability | $\approx 0.664\,B$ at the flat bottom | $B = \sigma_{\min}/0.664$ |
+| $+1/2$ | rate random walk (accel: acceleration random walk) | $K\sqrt{\tau/3}$ | $K$: value of the line at $\tau = 3$ s |
+| $+1$ | rate ramp | $R\,\tau/\sqrt{2}$ | $R$: value of the line at $\tau = \sqrt{2}$ s |
 
-Allan deviation does not magically identify every parameter for you. It gives a structured way to read the time scales that matter and to choose a defensible process-noise model.
+: Allan deviation slopes and how to read coefficients from them [@ieee952]. {#tbl-ins-errors-allan-slopes}
+
+The names describe what each process does to the integrated output. White rate noise integrates to an angle that random-walks, so its coefficient is the **angle random walk** $N$, in rad/√s or °/√h; the accelerometer equivalent integrates to a random-walking velocity and is the **velocity random walk**, in m/s/√s or m/s/√h. The −1/2 line evaluated at $\tau = 1$ s is the noise density itself, which is why data sheets quote either one. A bias that itself random-walks produces the +1/2 slope, with coefficient $K$, the **rate random walk** (for accelerometers, the acceleration random walk). **Bias instability** is flicker noise, the flat bottom of the curve where averaging longer stops helping; its coefficient $B$ is the floor divided by $\sqrt{2\ln 2/\pi} \approx 0.664$. **Quantization noise**, slope −1, is the signature of sensors that output quantized angle increments, such as ring-laser gyros that count fringes; it is rarely visible in the rate outputs of MEMS parts.
+
+The recipe is mechanical. Draw a line of the right slope through the region where each term dominates, then read the line (not the curve) at the specified $\tau$. Reading the curve itself at $\tau = 1$ s gives the wrong $N$ whenever another term still contributes there. And remember that the right end of the plot rests on very few independent clusters: with $M$ non-overlapping clusters, the Allan deviation estimate has a relative uncertainty of about $1/\sqrt{2(M - 1)}$, so even a four-hour record leaves roughly 20% uncertainty at $\tau = 20$ minutes.
 
 ```{python}
 #| label: allan-deviation-helper
 #| echo: true
-#| eval: false
-import numpy as np
-
 
 def overlapping_allan_deviation(samples, dt, cluster_sizes=None):
-    """Compute overlapping Allan deviation for one scalar sensor channel."""
+    """Overlapping Allan deviation of one sensor channel sampled every dt seconds.
+
+    Returns (taus, adev). Cluster sizes default to about 60 log-spaced values up to
+    a tenth of the record length.
+    """
     samples = np.asarray(samples, dtype=float)
     n = samples.size
-
     if cluster_sizes is None:
         max_m = max(2, n // 10)
-        cluster_sizes = np.unique(
-            np.logspace(0, np.log10(max_m), num=40).astype(int)
-        )
+        cluster_sizes = np.unique(np.logspace(0, np.log10(max_m), num=60).astype(int))
 
-    taus = []
-    deviations = []
+    taus, deviations = [], []
     cumulative = np.concatenate([[0.0], np.cumsum(samples)])
-
     for m in cluster_sizes:
         if 2 * m >= n:
             continue
-
-        averages = (cumulative[m:] - cumulative[:-m]) / m
-        differences = averages[m:] - averages[:-m]
-        allan_var = 0.5 * np.mean(differences**2)
-
+        averages = (cumulative[m:] - cumulative[:-m]) / m       # every window of m samples
+        differences = averages[m:] - averages[:-m]              # adjacent, non-overlapping pairs
         taus.append(m * dt)
-        deviations.append(np.sqrt(allan_var))
-
+        deviations.append(np.sqrt(0.5 * np.mean(differences**2)))
     return np.asarray(taus), np.asarray(deviations)
 ```
 
-In a lab workflow, record stationary IMU data for as long as practical, compute Allan deviation for each axis, and compare the slope regions to the sensor data sheet. In a course project, the same idea is useful even when the data are simulated: it forces you to separate white measurement noise from bias drift.
+To see the recipe work, simulate four hours of a stationary gyro at 100 Hz with known noise: angle random walk $N = 0.3$°/√h, rate random walk $K = 30$°/h/√h, and a gyro that reports its integrated angle quantized to $3 \times 10^{-5}$ rad (about 6 arcseconds), so quantization shows up at the shortest averaging times. Then fit the −1/2 and +1/2 lines and read off $N$ and $K$.
+
+```{python}
+#| label: ins-errors-allan-synthetic
+#| echo: true
+
+rng = np.random.default_rng(952)
+fs, hours = 100.0, 4.0
+dt_allan = 1.0 / fs
+n_allan = round(hours * 3600.0 * fs)
+N_true = np.radians(0.3) / 60.0               # 0.3 deg/sqrt(h)    -> rad/sqrt(s)
+K_true = np.radians(30.0 / 3600.0) / 60.0     # 30 deg/h/sqrt(h)   -> rad/s/sqrt(s)
+quantum = 3e-5                                # angle quantum [rad], Q = quantum / sqrt(12)
+
+rate = (N_true / np.sqrt(dt_allan) * rng.standard_normal(n_allan)         # white rate noise
+        + np.cumsum(K_true * np.sqrt(dt_allan) * rng.standard_normal(n_allan)))  # random-walk bias
+angle_out = np.floor(np.cumsum(rate) * dt_allan / quantum) * quantum      # quantized increments
+rate_out = np.diff(angle_out, prepend=0.0) / dt_allan
+
+taus, adev = overlapping_allan_deviation(rate_out, dt_allan)
+tau_cross = np.sqrt(3.0) * N_true / K_true    # where the -1/2 and +1/2 lines meet
+
+# Fit lines of fixed slope where each term dominates, then read them at tau = 1 and 3 s.
+in_arw = (taus >= 1.0) & (taus <= tau_cross / 10.0)
+in_rrw = taus >= 4.0 * tau_cross
+N_hat = np.exp(np.mean(np.log(adev[in_arw]) + 0.5 * np.log(taus[in_arw])))
+K_hat = np.exp(np.mean(np.log(adev[in_rrw]) - 0.5 * np.log(taus[in_rrw] / 3.0)))
+
+to_dph = np.degrees(1.0) * 3600.0             # rad/s -> deg/h
+print(f"ARW: injected {np.degrees(N_true) * 60:.3f} deg/sqrt(h), "
+      f"recovered {np.degrees(N_hat) * 60:.3f} deg/sqrt(h)")
+print(f"RRW: injected {K_true * to_dph * 60:.1f} deg/h/sqrt(h), "
+      f"recovered {K_hat * to_dph * 60:.1f} deg/h/sqrt(h) "
+      f"(from {in_rrw.sum()} points with tau >= {4 * tau_cross:.0f} s)")
+print(f"curve minimum {adev.min() * to_dph:.2f} deg/h at tau = {taus[np.argmin(adev)]:.0f} s")
+```
+
+```{python}
+#| label: fig-ins-errors-allan
+#| fig-cap: "Allan deviation of four hours of a simulated stationary gyro. The fitted −1/2 line read at τ = 1 s gives the angle random walk N; the fitted +1/2 line read at τ = 3 s gives the rate random walk K. Quantization steepens the curve toward slope −1 at the shortest averaging times. The shaded band is the approximate one-sigma uncertainty of the estimate, which widens at long τ where few independent clusters remain."
+#| code-fold: true
+
+M_clusters = n_allan * dt_allan / taus
+rel_unc = 1.0 / np.sqrt(2.0 * (M_clusters - 1.0))
+fig, ax = plt.subplots(figsize=(8, 4.8))
+ax.loglog(taus, adev * to_dph, "C0", linewidth=2, label="Allan deviation")
+ax.fill_between(taus, adev * to_dph * (1 - rel_unc), adev * to_dph * (1 + rel_unc),
+                color="C0", alpha=0.2)
+tau_line = np.logspace(-2, 4, 100)
+ax.loglog(tau_line, N_hat / np.sqrt(tau_line) * to_dph, "C1--", label=r"fitted $N/\sqrt{\tau}$")
+ax.loglog(tau_line, K_hat * np.sqrt(tau_line / 3.0) * to_dph, "C3--", label=r"fitted $K\sqrt{\tau/3}$")
+ax.loglog(tau_line, np.sqrt(3.0) * quantum / np.sqrt(12.0) / tau_line * to_dph, "0.5", linestyle=":",
+          label=r"quantization $\sqrt{3}Q/\tau$")
+ax.plot([1.0], [N_hat * to_dph], "o", color="C1")
+ax.plot([3.0], [K_hat * to_dph], "o", color="C3")
+ax.annotate("N at τ = 1 s", (1.0, N_hat * to_dph), textcoords="offset points", xytext=(8, 8))
+ax.annotate("K at τ = 3 s", (3.0, K_hat * to_dph), textcoords="offset points", xytext=(8, -14))
+ax.set_xlim(1e-2, 2e3)
+ax.set_ylim(0.1, 5e3)
+ax.set_xlabel(r"averaging time $\tau$ [s]")
+ax.set_ylabel(r"$\sigma_A(\tau)$ [deg/h]")
+ax.grid(True, which="both", alpha=0.25)
+ax.legend(loc="upper right", fontsize=8)
+fig.tight_layout()
+plt.show()
+```
+
+The recovered coefficients in @fig-ins-errors-allan match what went in. Do not read too much into how well $K$ matches, though: rerun the cell with other seeds and $N$ stays within a couple of percent while $K$ wanders by 20% or more, because it rests on the few independent clusters at the right end of the plot. Data-sheet values of rate random walk deserve the same skepticism. Notice what the curve does *not* show: a flat bottom. This synthetic gyro has no flicker noise, so its minimum is just where the −1/2 and +1/2 lines cross, and dividing that minimum by 0.664 would invent a bias instability that is not there. On a real sensor the floor is usually flat for a decade or more, and its height is the bias instability on the data sheet.
+
+In a lab workflow, record stationary IMU data for as long as practical (hours, not minutes), at constant temperature, compute Allan deviation for each axis, and compare the slope regions with the sensor data sheet. In a course project, the same idea is useful even when the records are short: it forces you to separate white measurement noise from bias drift.
 
 ## Temperature and Vibration {#sec-ins-errors-temperature-vibration}
 
@@ -224,13 +409,13 @@ b_0
 
 If the IMU reports temperature, store it. If the platform has warm-up behavior, test it. A bias estimate found during the first ten seconds after power-on may not represent the bias after the electronics have reached thermal equilibrium.
 
-Vibration is harder. High-frequency vibration can excite nonlinearities and produce low-frequency apparent bias. This is one reason an IMU that behaves well on a desk may perform poorly on a vehicle. Mechanical isolation, sensor placement, and appropriate filtering matter. So does skepticism toward data sheets measured under conditions unlike your application.
+Vibration is harder. High-frequency vibration can excite nonlinearities and produce low-frequency apparent bias. Coning and sculling (@sec-ins-gnss-coning-sculling) are the purely kinematic version of the same problem. This is one reason an IMU that behaves well on a desk may perform poorly on a vehicle. Mechanical isolation, sensor placement, and appropriate filtering matter. So does skepticism toward data sheets measured under conditions unlike your application.
 
 ## Calibration Workflow {#sec-ins-errors-calibration-workflow}
 
 A practical calibration workflow starts simple:
 
-1.  **Zero-rate gyro test**: keep the IMU stationary and average gyro output to estimate initial gyro bias.
+1.  **Zero-rate gyro test**: keep the IMU stationary and average gyro output to estimate initial gyro bias. (The average includes Earth rate, about 15°/h; for a MEMS gyro that is below the noise of the estimate, for a tactical gyro it is not.)
 2.  **Six-position accelerometer test**: place each accelerometer axis along positive and negative gravity to estimate accelerometer bias and scale factor.
 3.  **Temperature sweep**: repeat static tests across the expected operating temperature range when possible.
 4.  **Dynamic validation**: compare the propagated navigation solution against external references such as GNSS, motion capture, visual odometry, or a known trajectory.
@@ -239,7 +424,7 @@ Static calibration finds initial parameters. Dynamic filtering estimates residua
 
 ## From IMU Specs to Process Noise {#sec-ins-errors-from-imu-specs}
 
-The process-noise matrix $\mathbf{Q}$ is where sensor characterization enters the error-state filter. A common 15-state ordering is
+The process-noise matrix is where sensor characterization enters the error-state filter. The 15-state model of @sec-ins-gnss-error-state-formulation orders the error state as
 
 $$\delta \mathbf{x}
 =
@@ -249,50 +434,41 @@ $$\delta \mathbf{x}
 \delta \boldsymbol{\theta},
 \delta \mathbf{b}_a,
 \delta \mathbf{b}_g
-\right]^T.$$
+\right]^T,$$
 
-The continuous noise inputs often include:
+driven by four white-noise inputs: accelerometer noise $\mathbf{w}_a$, gyro noise $\mathbf{w}_g$, and the bias driving noises $\mathbf{w}_{ba}$ and $\mathbf{w}_{bg}$. Their spectral densities form
 
-- accelerometer white noise;
-- gyro white noise;
-- accelerometer bias driving noise;
-- gyro bias driving noise.
-
-If an accelerometer noise density is reported as $N_a$ in $\text{m/s}^2/\sqrt{\text{Hz}}$, its continuous white-noise power spectral density is approximately $N_a^2$. If a gyro noise density is reported as $N_g$ in $\text{rad/s}/\sqrt{\text{Hz}}$, its spectral density is $N_g^2$.
-
-Data sheets are not always in convenient units. Common conversions include:
-
-$$1\text{ milli-g}
+$$\mathbf{Q}_c
 =
-9.80665 \times 10^{-3}\text{ m/s}^2,$$
+\operatorname{blkdiag}\!\left(N_a^2\mathbf{I},\ N_g^2\mathbf{I},\ q_{ba}\mathbf{I},\ q_{bg}\mathbf{I}\right),$$
 
-$$1\text{ deg/hr}
-=
-\frac{\pi}{180 \cdot 3600}\text{ rad/s}.$$
+and the error-state model of @sec-ins-gnss maps them into the state through $\mathbf{G}$. The job is to get four numbers, in SI units, out of a data sheet. Here is a worked example for a representative smartphone-class IMU. (The values are typical of the class; check your own part.)
 
-For a simple discrete model, use conservative diagonal blocks first:
+| Data-sheet entry | Gyroscope | Accelerometer |
+|---|---|---|
+| Noise | ARW 0.3 °/√h | VRW 0.06 m/s/√h |
+| Bias instability | 10 °/h | 0.1 mg |
+| Turn-on bias (1σ, run to run) | 0.1 °/s | 10 mg |
 
-$$\mathbf{Q}_d
-=
-\operatorname{diag}
-\left(
-\mathbf{Q}_{p},
-\mathbf{Q}_{v},
-\mathbf{Q}_{\theta},
-\mathbf{Q}_{ba},
-\mathbf{Q}_{bg}
-\right).$$
+: Representative smartphone-class IMU specifications for the worked example. {#tbl-ins-errors-datasheet}
 
-Then tune against innovation statistics. If the GNSS innovations are consistently larger than predicted, either the process noise is too small, the measurement noise is too small, or the model is missing a real error source. Increasing random numbers until the plot looks better is not tuning. It is surrender with extra steps.
+**White noise.** Angle random walk in °/√h converts to rad/√s by multiplying by $\pi/180$ (degrees to radians) and dividing by 60 (one $\sqrt{\text{h}}$ is $\sqrt{3600\ \text{s}} = 60\ \sqrt{\text{s}}$):
+
+$$N_g = 0.3 \times \frac{\pi}{180} \times \frac{1}{60} = 8.7 \times 10^{-5}\ \text{rad}/\sqrt{\text{s}}.$$
+
+Velocity random walk in m/s/√h divides by 60: $N_a = 0.06/60 = 1.0 \times 10^{-3}$ m/s/√s. A rad/√s is the same unit as (rad/s)/√Hz and m/s/√s is the same as (m/s²)/√Hz, so a data sheet that quotes noise density instead needs only a degrees-to-radians or micro-g-to-m/s² conversion: $1.0 \times 10^{-3}$ m/s²/√Hz is about 100 µg/√Hz. The density is the PSD's square root, so $N_a^2$ and $N_g^2$ go into $\mathbf{Q}_c$ directly. Never use the density as a per-sample standard deviation; the per-sample value is $N/\sqrt{\Delta t}$ (@sec-motion-models-imu-noise-densities).
+
+**Bias instability.** The bias states need a driving-noise density, and the data sheet gives a bias instability $B$ instead. Two reasonable translations exist. A first-order Gauss-Markov bias with steady-state standard deviation $B$ and correlation time $T_c$ has $q_b = 2B^2/T_c$ (@sec-ins-errors-stochastic-bias-models). A random-walk bias, as in our filter, can be given the density that lets it wander by about $B$ over $T_c$: $q_b = B^2/T_c$. Either way you need $T_c$, which the data sheet rarely gives; the averaging time at the bottom of the Allan curve is a sensible choice, typically tens to hundreds of seconds for MEMS. We take $T_c = 100$ s. If the data sheet gives a rate random walk $K$ instead, $q_b = K^2$ directly.
+
+**Turn-on bias does not go in $\mathbf{Q}$.** It is a constant for the run, unknown at start-up, so it belongs in the initial covariance: $\mathbf{P}_0$ gets $(10\ \text{mg})^2$ and $(0.1\ \text{°/s})^2$ on the bias diagonals, unless a stationary calibration at start-up has already removed most of it. Putting turn-on bias into $\mathbf{Q}$ claims the bias jumps around by that much every second, which is wrong: the bias estimates chase every innovation, and during a GNSS outage the covariance balloons far beyond the real drift.
+
+The cell does the conversions, discretizes with the first-order formula and with Van Loan's method (@sec-kf-van-loan) at the IMU rate, and then propagates the covariance through 60 s of free-inertial navigation three ways.
 
 ```{python}
 #| label: imu-unit-conversions
 #| echo: true
-#| eval: false
-import numpy as np
 
-
-G0 = 9.80665
+from scipy.linalg import expm
 
 
 def milli_g_to_mps2(value_mg):
@@ -303,23 +479,174 @@ def deg_per_hour_to_rad_per_second(value_deg_hr):
     return value_deg_hr * np.pi / (180.0 * 3600.0)
 
 
-def fogm_discrete_variance(sigma_bias, dt, tau):
-    """Discrete variance for a scalar bounded first-order Markov bias."""
-    return sigma_bias**2 * (1.0 - np.exp(-2.0 * dt / tau))
+def arw_to_rad_per_sqrt_s(arw_deg_per_sqrt_hr):
+    return arw_deg_per_sqrt_hr * np.pi / 180.0 / 60.0
+
+
+def vrw_to_m_per_s_per_sqrt_s(vrw_m_per_s_per_sqrt_hr):
+    return vrw_m_per_s_per_sqrt_hr / 60.0
+
+
+def fogm_discrete_variance(sigma_bias, dt, T_c):
+    """Discrete variance for a scalar bounded first-order Gauss-Markov bias."""
+    return sigma_bias**2 * (1.0 - np.exp(-2.0 * dt / T_c))
+
+
+def skew(a):
+    return np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
+
+
+def error_state_model(C_bn, f_b):
+    """F and G of the 15-state short-horizon model (sec-ins-gnss-error-state-formulation)."""
+    F = np.zeros((15, 15))
+    F[0:3, 3:6] = np.eye(3)
+    F[3:6, 6:9] = -skew(C_bn @ f_b)
+    F[3:6, 9:12] = -C_bn
+    F[6:9, 12:15] = -C_bn
+    G = np.zeros((15, 12))
+    G[3:6, 0:3], G[6:9, 3:6] = C_bn, C_bn
+    G[9:12, 6:9], G[12:15, 9:12] = np.eye(3), np.eye(3)
+    return F, G
+
+
+def van_loan(A, G, Qc, dt):
+    """Exact discretization of (A, G, Qc) over dt (sec-kf-van-loan). Returns Phi, Q_d."""
+    n = A.shape[0]
+    M = np.zeros((2 * n, 2 * n))
+    M[:n, :n], M[:n, n:], M[n:, n:] = -A, G @ Qc @ G.T, A.T
+    E = expm(M * dt)
+    Phi = E[n:, n:].T
+    Q_d = Phi @ E[:n, n:]
+    return Phi, 0.5 * (Q_d + Q_d.T)
+
+
+# Data sheet -> continuous-time spectral densities (SI units).
+N_g = arw_to_rad_per_sqrt_s(0.3)                     # rad/sqrt(s)
+N_a = vrw_to_m_per_s_per_sqrt_s(0.06)                # m/s/sqrt(s)
+T_c = 100.0                                          # bias correlation time [s]
+q_bg = deg_per_hour_to_rad_per_second(10.0) ** 2 / T_c   # random walk wandering ~B over T_c
+q_ba = milli_g_to_mps2(0.1) ** 2 / T_c
+Q_c = np.diag(np.concatenate([[N_a**2] * 3, [N_g**2] * 3, [q_ba] * 3, [q_bg] * 3]))
+print(f"N_a = {N_a:.2e} m/s/sqrt(s)  N_g = {N_g:.2e} rad/sqrt(s)  "
+      f"sqrt(q_ba) = {np.sqrt(q_ba):.2e} m/s^2/sqrt(s)  sqrt(q_bg) = {np.sqrt(q_bg):.2e} rad/s/sqrt(s)")
+
+# Discretize at the IMU rate for a level, stationary IMU heading north-east.
+C_level = np.array([[np.cos(0.8), -np.sin(0.8), 0.0], [np.sin(0.8), np.cos(0.8), 0.0], [0.0, 0.0, 1.0]])
+F, G = error_state_model(C_level, C_level.T @ np.array([0.0, 0.0, -G0]))
+tau = 0.01
+Q_first = G @ Q_c @ G.T * tau
+Phi_vl, Q_vl = van_loan(F, G, Q_c, tau)
+print("per-step sigma, first order (v, theta, b_a, b_g):",
+      np.array2string(np.sqrt(np.diag(Q_first))[[3, 6, 9, 12]], precision=2))
+print(f"Van Loan vs first order, largest relative difference on the diagonal: "
+      f"{np.max(np.abs(np.diag(Q_vl)[3:] - np.diag(Q_first)[3:]) / np.diag(Q_first)[3:]):.1e}")
+
+# Free-inertial covariance growth over 60 s, noise only (P0 = 0).
+P_fine = np.zeros((15, 15))
+F_d = np.eye(15) + F * tau
+for _ in range(round(60.0 / tau)):
+    P_fine = F_d @ P_fine @ F_d.T + Q_first
+Phi_1s, Q_1s = van_loan(F, G, Q_c, 1.0)
+P_vl, P_coarse = np.zeros((15, 15)), np.zeros((15, 15))
+for _ in range(60):
+    P_vl = Phi_1s @ P_vl @ Phi_1s.T + Q_1s
+    P_coarse = (np.eye(15) + F) @ P_coarse @ (np.eye(15) + F).T + G @ Q_c @ G.T * 1.0
+for name, P_60 in [("first order at 100 Hz", P_fine), ("Van Loan at 1 Hz", P_vl),
+                   ("first order at 1 Hz (wrong)", P_coarse)]:
+    print(f"{name:28s} north position sigma after 60 s: {np.sqrt(P_60[0, 0]):6.2f} m")
+
+# The same propagation with the turn-on biases in P0.
+P_turn_on = np.zeros((15, 15))
+P_turn_on[9:12, 9:12] = milli_g_to_mps2(10.0) ** 2 * np.eye(3)
+P_turn_on[12:15, 12:15] = np.radians(0.1) ** 2 * np.eye(3)
+Phi_60 = np.linalg.matrix_power(Phi_vl, round(60.0 / tau))
+print(f"with turn-on biases in P0, north sigma after 60 s: "
+      f"{np.sqrt((Phi_60 @ P_turn_on @ Phi_60.T + P_fine)[0, 0]):.0f} m")
 ```
+
+At 100 Hz the first-order $\mathbf{Q}_d$ and the exact one agree to a fraction of a percent, so the cheap formula is fine when the covariance is propagated at the IMU rate. If you propagate the covariance less often, for instance once per GNSS epoch to save computation, use Van Loan: it gives the same answer at 1 Hz as the first-order formula gives at 100 Hz, while the first-order formula at 1 Hz comes out several percent optimistic, an error that grows with the step and with how hard the vehicle maneuvers. And the last line repeats the lesson of @sec-ins-errors-why-bias-dominates in covariance form: with the white noise and bias instability alone, a minute of free-inertial navigation costs a few meters; with the turn-on biases unknown, hundreds of meters. Estimating the biases is the whole game.
+
+Then tune against innovation statistics (@sec-kf-consistency). If the GNSS innovations are consistently larger than predicted, either the process noise is too small, the measurement noise is too small, or the model is missing a real error source. The data sheet is a starting point, measured on a quiet bench; on a vibrating vehicle the effective noise is often several times larger. Increasing random numbers until the plot looks better is not tuning. It is surrender with extra steps.
 
 ## Observability in Loose INS/GNSS {#sec-ins-errors-observability-loose-ins}
 
-GNSS position and velocity measurements directly observe position and velocity errors. They do not directly measure accelerometer bias, gyro bias, or attitude error. Those states become observable through dynamics and covariance coupling.
+GNSS position and velocity measurements directly observe position and velocity errors. They do not directly measure accelerometer bias, gyro bias, or attitude error. Those states become observable only through the dynamics, and only when the motion excites them (@sec-kf-observability).
+
+The velocity row of the error model, $\delta\dot{\mathbf{v}} = -[\hat{\mathbf{f}}^n]_\times\delta\boldsymbol{\theta} - \hat{\mathbf{C}}_b^n\delta\mathbf{b}_a$, says almost everything. In straight, level, constant-speed motion the specific force is just the reaction to gravity, $\hat{\mathbf{f}}^n = [0, 0, -g]^T$, and
+
+$$-[\hat{\mathbf{f}}^n]_\times\delta\boldsymbol{\theta}
+=
+\begin{bmatrix}
+-g\,\delta\theta_E \\
+g\,\delta\theta_N \\
+0
+\end{bmatrix}.$$
+
+The yaw component $\delta\theta_D$ has dropped out entirely. A heading error produces no velocity error, so no position error, so no innovation: in straight, constant-speed motion heading is **unobservable**, not merely weakly observable, and its covariance can only grow. Horizontal specific force brings it in, through terms $f_N\delta\theta_D$ and $f_E\delta\theta_D$, but only *changes* in specific force or heading let the filter tell a heading error apart from a constant accelerometer bias, which enters the same equation.
 
 Examples:
 
-- A horizontal accelerometer bias creates velocity error, then position error. GNSS can observe the resulting motion error and the filter can infer the bias.
-- A roll or pitch error leaks gravity into horizontal acceleration. GNSS can infer the attitude error only after it creates velocity and position residuals.
-- Heading error is weakly observable in straight, constant-speed motion. Turns and accelerations make it easier to estimate.
+- A horizontal accelerometer bias creates velocity error, then position error. But in steady motion so does a tilt, through $g\,\delta\theta_N$ and $g\,\delta\theta_E$, and the two are indistinguishable; that is the leveling ambiguity of @sec-ins-gnss-alignment. A turn rotates the body-fixed bias relative to the tilt and separates them.
+- Heading and the vertical gyro bias, which drives heading, are unobservable until the vehicle accelerates, brakes, or turns.
 - Vertical accelerometer bias and height error are strongly coupled with gravity modeling and GNSS vertical quality, which is often worse than horizontal quality.
 
-This is why trajectory design matters. If the vehicle never accelerates, turns, or changes attitude, some error states are hard or impossible to estimate. A filter cannot learn information the motion never reveals.
+The cell checks these claims with the observability matrix of the 15-state model, stacked over 30 s of one-per-second GNSS position fixes for four maneuvers.
+
+```{python}
+#| label: ins-errors-observability
+#| echo: true
+
+from scipy.spatial.transform import Rotation
+
+STATE_NAMES = ["dpN", "dpE", "dpD", "dvN", "dvE", "dvD", "dthN", "dthE", "dthD",
+               "dbax", "dbay", "dbaz", "dbgx", "dbgy", "dbgz"]
+H_pos = np.hstack([np.eye(3), np.zeros((3, 12))])
+
+
+def stacked_observability(segments, fix_interval=1.0):
+    """Rows H Phi(t_k, 0) for GNSS position fixes during piecewise-constant segments.
+
+    segments: list of (heading [rad], f^n [m/s^2], duration [s]) for a level vehicle.
+    """
+    rows, Phi_total = [], np.eye(15)
+    for heading, f_n, duration in segments:
+        C = Rotation.from_euler("z", heading).as_matrix()
+        F, _ = error_state_model(C, C.T @ np.asarray(f_n))
+        Phi = expm(F * fix_interval)
+        for _ in range(round(duration / fix_interval)):
+            Phi_total = Phi @ Phi_total
+            rows.append(H_pos @ Phi_total)
+    return np.vstack(rows)
+
+
+def report(name, O):
+    U, s, Vt = np.linalg.svd(O)
+    rank = int(np.sum(s > 1e-9 * s[0]))
+    yaw_hidden = np.linalg.norm(Vt[rank:, 8])      # part of the yaw direction in the null space
+    print(f"{name:34s} rank {rank:2d}/15, yaw in null space: {yaw_hidden:.2f}")
+    return Vt[rank:]
+
+
+cruise = [0.0, 0.0, -G0]
+accel = [1.5 * np.cos(0.3), 1.5 * np.sin(0.3), -G0]
+turn = [(0.3 + np.radians(9.0) * (k + 0.5),
+         2.4 * np.array([-np.sin(0.3 + np.radians(9.0) * (k + 0.5)),
+                         np.cos(0.3 + np.radians(9.0) * (k + 0.5)), 0.0]) + cruise, 1.0)
+        for k in range(10)]                           # 90 deg right turn at 15 m/s
+
+null = report("straight, constant speed", stacked_observability([(0.3, cruise, 30.0)]))
+report("constant acceleration", stacked_observability([(0.3, accel, 30.0)]))
+report("cruise, then accelerate", stacked_observability([(0.3, cruise, 15.0), (0.3, accel, 15.0)]))
+report("cruise, 90 deg turn, cruise",
+       stacked_observability([(0.3, cruise, 10.0), *turn, (0.3 + np.pi / 2, cruise, 10.0)]))
+print("unobservable directions when cruising:")
+for v in null:
+    print("   " + " ".join(f"{c:+.2f} {STATE_NAMES[i]}" for i, c in enumerate(v) if abs(c) > 0.05))
+```
+
+Straight, constant-speed driving leaves four of the fifteen error directions invisible: yaw, the vertical gyro bias, and two combinations of tilt and horizontal accelerometer bias. Holding a constant acceleration does not help, because a constant horizontal specific force times a heading error looks just like a constant accelerometer bias. Starting or stopping an acceleration makes heading observable, and a real turn, with its centripetal acceleration and its rotation of the body-fixed biases, makes everything observable. The simulated drive of @sec-ins-gnss-simulated-drive shows the same story in the covariance: heading uncertainty stays put while parked and falls only once the car starts moving and turning.
+
+This is why trajectory design matters. If the vehicle never accelerates, turns, or changes attitude, some error states are hard or impossible to estimate. A filter cannot learn information the motion never reveals. When a vehicle must drive straight for long periods, a pipeline vessel or a highway truck, heading has to come from another sensor: a magnetometer, dual GNSS antennas, or a camera.
 
 ## State Selection {#sec-ins-errors-state-selection}
 
@@ -348,22 +675,35 @@ Possible advanced states include scale-factor errors, axis misalignment, GNSS le
 When building the INS/GNSS filter:
 
 - Use stationary data to initialize gyro and accelerometer biases.
-- Convert all data-sheet units before placing values in $\mathbf{Q}$.
+- Convert all data-sheet units before placing values in $\mathbf{Q}$, and put turn-on bias in $\mathbf{P}_0$, not in $\mathbf{Q}$.
 - Make $\mathbf{Q}$ large enough for the filter to admit that the INS can drift.
 - Use GNSS innovation statistics to check whether $\mathbf{Q}$ and $\mathbf{R}_{GNSS}$ are plausible.
 - Do not estimate scale factors or misalignment unless the trajectory can excite them.
+- Expect heading to be uncertain until the vehicle accelerates or turns, and do not trust a heading covariance that shrinks while the vehicle drives straight.
 - Treat warm-up and temperature shifts as real operating conditions, not annoying lab details.
 - During GNSS outages, expect covariance to grow. If it does not, the process model is overconfident.
 
 ## Summary {#sec-ins-errors-summary}
 
-IMU error modeling turns sensor behavior into filter behavior. Accelerometer bias drives velocity and position error. Gyro bias drives attitude error, which then corrupts acceleration through gravity projection. White noise, bias instability, and random walk dominate at different time scales.
+IMU error modeling turns sensor behavior into filter behavior. Accelerometer bias drives velocity and position error that grows with $t^2$. Gyro bias drives attitude error, which then corrupts acceleration through gravity projection and grows position error with $t^3$ over the minutes that matter for MEMS sensors. White noise, bias instability, and random walk dominate at different averaging times, and the Allan deviation reads each one off its own slope. Sensor grade spans six orders of magnitude, from smartphone parts that drift a kilometer in a minute to strategic systems that drift a nautical mile in a day.
 
 For this course, the practical recipe is:
 
 1.  Calibrate simple deterministic errors.
 2.  Estimate residual accelerometer and gyro biases.
-3.  Use Allan deviation and data-sheet specs to choose reasonable process noise.
-4.  Validate the choices with GNSS innovations and outage behavior.
+3.  Use Allan deviation and data-sheet specs to choose reasonable process noise, with turn-on bias in the initial covariance.
+4.  Validate the choices with GNSS innovations and outage behavior, and remember that what the trajectory does not excite, the filter cannot learn.
 
 That is enough to build a useful loosely coupled INS/GNSS system without pretending that every sensor imperfection deserves its own state.
+
+## Exercises {#sec-ins-errors-exercises}
+
+1. **Noise growth laws.** Derive $\sigma_p^{\text{VRW}}(t) = N_a t^{3/2}/\sqrt{3}$ and $\sigma_p^{\text{ARW}}(t) = g_0 N_g t^{5/2}/\sqrt{20}$ by writing position as a repeated integral of white noise and computing its variance. For the data sheet of @tbl-ins-errors-datasheet, find the time at which the ARW term overtakes the VRW term, and the time at which the calibrated gyro-bias term (10°/h) overtakes the calibrated accelerometer-bias term (1 mg).
+
+2. **Read a bias instability.** Add flicker noise to the synthetic gyro of @sec-ins-errors-allan-deviation, approximated by the sum of five first-order Gauss-Markov processes with correlation times of 1, 10, 100, 1000, and 10000 s and equal standard deviations (a standard approximation of $1/f$ noise), and reduce the rate random walk to 3°/h/√h so it does not hide the floor. Choose the common standard deviation so that the bottom of the Allan curve sits near 3°/h. Read $B$ from your plot with the 0.664 rule, then reread $N$ and $K$. Which of the three readings is least reliable, and why?
+
+3. **Stop-and-go observability.** A delivery robot drives a straight sidewalk, stopping and starting every 20 s, and never turns. Use `stacked_observability` to find which error directions remain unobservable after two minutes of GNSS fixes. Then add a single 90° turn at the end. Explain both results from the structure of $-[\hat{\mathbf{f}}^n]_\times\delta\boldsymbol{\theta} - \hat{\mathbf{C}}_b^n\delta\mathbf{b}_a$.
+
+4. **A tactical data sheet.** A tactical-grade IMU specifies ARW 0.05°/√h, VRW 0.03 m/s/√h, gyro bias instability 0.5°/h, accelerometer bias instability 50 µg, and turn-on biases of 1°/h and 0.3 mg. Build $\mathbf{Q}_c$ and $\mathbf{Q}_d$ at 200 Hz, then propagate the free-inertial covariance for 60 s from a $\mathbf{P}_0$ containing only the turn-on biases. Compare the north position sigma with the smartphone example. Which single specification would you pay to improve first, and why?
+
+5. **Urban canyon outage.** A delivery van with an industrial-grade MEMS IMU (gyro bias 10°/h, accelerometer bias 1 mg after a calibration drive) loses GNSS for 30 s between tall buildings. Using the error budget of @sec-ins-errors-why-bias-dominates, estimate the position error at the end of the outage. The dispatch software needs the van located to within 5 m to choose the right side of the street. Is the IMU alone enough? How much better would the gyro need to be, and what other sensor would you add instead?

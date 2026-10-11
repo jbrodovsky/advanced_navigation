@@ -154,7 +154,7 @@ While programming is not the primary concern of this course, it is nonetheless a
 #### Version Control and Submission
 
 -   Use a version control system (e.g., Git) to track changes and manage your codebase.
--   Use a public repo database (e.g. GitHub) to store and build a code-based portfolio.
+-   Keep your work in a private repository (e.g. on GitHub) and build your code-based portfolio from your own solutions; do not republish the course materials.
 -   Submit your assignments through the designated submission channel on Canvas.
 -   Submit each file individually (e.g., Python scripts, report pdf, Jupyter notebooks, etc.) and do not compress them into a single archive.
 

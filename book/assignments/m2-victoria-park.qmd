@@ -31,7 +31,7 @@ You will implement **FastSLAM 1.0** for the Victoria Park dataset: vehicle poses
 
 **Pace and deadline.** The recommended pace is weeks 10-11, alongside the mapping, data-association, and FastSLAM chapters (@sec-mapping, @sec-slam-association, @sec-slam). That is a recommendation, not a deadline: everything is due by the **end of week 16** (@sec-syllabus-course-policies). Early submissions for feedback are welcome.
 
-**Submission.** Submit Project 2 once, on Canvas, as two files: a single-column **report PDF** (structure and expectations in @sec-intro-project-guidance) and a **code archive** (`.zip`) with your `victoria_park_slam` package, any scripts or notebooks you used, and a short `README` listing the exact commands that regenerate every figure and table in the report.
+**Submission.** Submit Project 2 once, on Canvas: a single-column **report PDF** (structure and expectations in @sec-intro-project-guidance), the **source files** of your `victoria_park_slam` package that you implemented or changed plus any scripts or notebooks you used, and a short `README` listing the exact commands that regenerate every figure and table in the report. Following the course policy (@sec-intro-code-style-guide), upload each file individually rather than as a compressed archive.
 
 **Environment.** From the repository root:
 
@@ -347,7 +347,7 @@ For orientation: over the first 2000 scans, dead reckoning with both corrections
 
 Submit (@sec-project2-logistics):
 
-1.  The code archive: your `victoria_park_slam` package with the deliverables implemented, any scripts or notebooks, and a `README` with the commands that regenerate every figure and table.
+1.  The code: the source files of your `victoria_park_slam` package with the deliverables implemented, any scripts or notebooks, and a `README` with the commands that regenerate every figure and table.
 2.  Tests or validation scripts for the parts you added beyond the provided tests (for example a test of your extractor on a hand-made scan, or of any Jacobian you derived).
 3.  The report PDF, with: the dataset conventions you verified and how; the vehicle, lever-arm, and timing model with parameter values; the observation model and the landmark EKF; the front end and its characterization; the association and landmark-management design; the FastSLAM implementation and all tuning values ($\mathbf{Q}_u$, $\mathbf{R}$, gates, $p_0$, particle count, resampling threshold, seeds); the evaluation of @sec-project2-evaluation-protocol with the required figures and sweeps; the method comparison; and a failure-mode discussion.
 
