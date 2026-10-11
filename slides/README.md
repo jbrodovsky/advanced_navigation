@@ -1,6 +1,6 @@
 # Advanced Robot Navigation lecture slides
 
-`advanced-autonomous-navigation-lecture-slides.pptx` is a lightweight, editable course deck derived from `book/`. It contains a title slide, a short usage slide, section dividers, and one prompt-oriented slide for each of the 31 teaching chapters.
+`advanced-autonomous-navigation-lecture-slides.pptx` is a lightweight, editable course deck derived from `book/`. It contains a title slide, a short usage slide, section dividers, and one prompt-oriented slide for each of the 30 teaching chapters.
 
 The detailed book chapters remain the presenter script. Each slide has speaker notes naming its corresponding book source.
 

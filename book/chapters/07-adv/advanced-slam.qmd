@@ -1094,13 +1094,18 @@ step, and Exercise 3 asks you to add it. After the first few iterations the
 convergence is linear rather than quadratic, as expected for a problem whose
 residuals do not vanish at the solution.
 
-The answer is also *consistent*. The attitude errors stay inside their
-$3\sigma$ bounds, the average NEES values are a little below three (the safe
-side), and the final cost of 44 is well inside the chi-square interval for its
-39 degrees of freedom. That last test is the
-smoother's version of RAIM (@sec-adv-gnss-raim): if one GNSS fix were bad, the
-cost would land far outside the interval, and the normalized residuals would
-point at the culprit. Panel (c) also shows the anatomy of observability. Heading
+The answer also passes a sanity check. The attitude errors stay inside their
+$3\sigma$ bounds and the average NEES values are a little below three. That makes
+this realization plausible, but it does not establish that the estimator is
+consistent: the per-keyframe errors are strongly correlated and all come from one
+simulated run. Consistency needs NEES averaged over many independent Monte Carlo
+runs, compared with its chi-square bounds (@sec-kf-consistency); Exercise 3 can
+be extended to do exactly that. The final cost of 44, well inside the
+chi-square interval for its 39 degrees of freedom, is a different and legitimate
+single-run test: it checks the residuals of this solve. It is the smoother's
+version of RAIM (@sec-adv-gnss-raim): if one GNSS fix were bad, the cost would
+land far outside the interval, and the normalized residuals would point at the
+culprit. Panel (c) also shows the anatomy of observability. Heading
 is pinned to about a degree ($1\sigma$), because GNSS displacements over the
 orbit fix the direction the drone is flying. The tilt about north and east is
 about twice as uncertain, because a GNSS displacement along the body's forward

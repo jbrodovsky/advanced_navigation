@@ -317,10 +317,11 @@ readings agree. Pose-twist cross-covariances have nowhere to go and are lost.
 
 **`sensor_msgs/Imu`** carries an orientation, an angular velocity, and a linear
 acceleration, each with a 3×3 covariance, in the IMU's FLU frame. The
-acceleration is specific force, gravity included, so a level IMU at rest reports
-about +9.81 m/s² on z (the ROS IMU-driver conventions in REP-145 spell this
-out); the book's FRD accelerometer reports −9.81 m/s² on its down axis, which is
-the same physics. Setting the first element of a covariance to −1 means "this
+acceleration is specific force, the non-gravitational force per unit mass, so a
+level IMU at rest reports about +9.81 m/s² on z: that is the ground's support
+force pushing up, not gravity being "included" in the reading (the ROS
+IMU-driver conventions in REP-145 spell this out). The book's FRD accelerometer
+reports −9.81 m/s² on its down axis, which is the same physics. Setting the first element of a covariance to −1 means "this
 field is not provided," and an all-zero covariance means "unknown," not "perfect."
 A consumer that reads zeros as perfect certainty will trust that field
 completely, which is the opposite of what the publisher meant.
@@ -374,7 +375,22 @@ $$
 $$ {#eq-practical-twist-error}
 
 so a heading uncertainty leaks into the sideways body velocity in proportion to
-speed. Rotating only the velocity block misses that term. Stacking these maps
+speed. Rotating only the velocity block misses that term. The published angular
+rate is the gyro sample minus the estimated bias (minus the tiny Earth and
+transport rates), so its error has two parts, the bias error and the sample's
+own noise:
+
+$$
+\delta\boldsymbol{\omega}^{\text{FLU}} \approx
+\mathbf{C}_{\text{FRD}}^{\text{FLU}}
+\left(-\delta\mathbf{b}_g + \mathbf{n}_g\right),
+\qquad
+\mathbf{n}_g \sim \mathcal{N}(\mathbf{0}, \boldsymbol{\Sigma}_g).
+$$
+
+The bias part comes out of the filter covariance. The noise part does not: the
+ESKF never carries it as a state, so it has to be added explicitly, or the
+published rate covariance is nearly zero for a value that is visibly noisy. Stacking these maps
 into a matrix $\mathbf{J}$ from the 15-state ESKF error of
 @sec-ins-gnss-error-state-formulation gives each ROS covariance as
 $\mathbf{J}\mathbf{P}\mathbf{J}^T$. The cell below does the conversion and then
@@ -407,13 +423,15 @@ def wxyz_to_matrix(q_wxyz):
     return Rotation.from_quat([x, y, z, w]).as_matrix()   # SciPy is scalar-last
 
 
-def to_ros_odometry(p_ned, v_ned, q_bn_wxyz, omega_nb_frd, P15):
+def to_ros_odometry(p_ned, v_ned, q_bn_wxyz, omega_nb_frd, P15, gyro_cov_frd):
     """Convert the book's NED/FRD ESKF output to nav_msgs/Odometry conventions.
 
     P15 is the ESKF error covariance ordered [dp, dv, dtheta, dba, dbg], with dp and
     dv in NED meters and m/s and dtheta resolved in NED (errors are true minus
-    estimate). Returns the ENU position, the scalar-LAST quaternion of FLU relative
-    to ENU, the FLU twist, and both 6x6 covariances flattened row-major.
+    estimate). gyro_cov_frd is the 3x3 noise covariance of the gyro sample behind
+    omega_nb_frd (rad^2/s^2); the filter does not carry it, so it is added here.
+    Returns the ENU position, the scalar-LAST quaternion of FLU relative to ENU, the
+    FLU twist, and both 6x6 covariances flattened row-major.
     """
     T, B = C_NED_TO_ENU, C_FRD_TO_FLU
     C_bn = wxyz_to_matrix(q_bn_wxyz)
@@ -429,13 +447,15 @@ def to_ros_odometry(p_ned, v_ned, q_bn_wxyz, omega_nb_frd, P15):
     J_twist[0:3, 6:9] = B @ C_nb @ skew(v_ned)   # attitude error leaks into body velocity
     J_twist[3:6, 12:15] = -B                     # rate error is minus the gyro-bias error
 
+    twist_cov = J_twist @ P15 @ J_twist.T
+    twist_cov[3:6, 3:6] += B @ np.asarray(gyro_cov_frd) @ B.T   # the sample's own noise
     return {
         "position": T @ p_ned,
         "orientation_xyzw": Rotation.from_matrix(C_flu_enu).as_quat(),
         "linear": B @ C_nb @ v_ned,              # twist is in child_frame_id (the body)
         "angular": B @ omega_nb_frd,
         "pose_covariance": (J_pose @ P15 @ J_pose.T).reshape(36).tolist(),    # row-major
-        "twist_covariance": (J_twist @ P15 @ J_twist.T).reshape(36).tolist(),
+        "twist_covariance": twist_cov.reshape(36).tolist(),
     }
 
 
@@ -459,7 +479,10 @@ corr = G @ G.T
 corr /= np.sqrt(np.outer(np.diag(corr), np.diag(corr)))
 P15 = sigmas[:, None] * corr * sigmas[None, :]
 
-ros = to_ros_odometry(p_ned, v_ned, q_bn, omega_nb, P15)
+# Per-sample gyro noise: a MEMS gyro at 100 Hz, about 0.2 deg/s per axis.
+gyro_cov = np.diag(np.full(3, np.deg2rad(0.2) ** 2))
+
+ros = to_ros_odometry(p_ned, v_ned, q_bn, omega_nb, P15, gyro_cov)
 
 # Check 1, geometry: ROS yaw is counterclockwise from east, nose-up pitch is negative.
 ypr = Rotation.from_quat(ros["orientation_xyzw"]).as_euler("ZYX", degrees=True)
@@ -479,7 +502,8 @@ C_est_ros = Rotation.from_quat(ros["orientation_xyzw"])
 err_pose = np.hstack([dx[:, 0:3] @ C_NED_TO_ENU.T,
                       (C_true_ros * C_est_ros.inv()).as_rotvec()])
 v_true_flu = C_true.inv().apply(v_ned + dx[:, 3:6]) @ C_FRD_TO_FLU.T
-err_twist = np.hstack([v_true_flu - ros["linear"], -dx[:, 12:15] @ C_FRD_TO_FLU.T])
+gyro_noise = rng.standard_normal((n_mc, 3)) @ np.linalg.cholesky(gyro_cov).T
+err_twist = np.hstack([v_true_flu - ros["linear"], (-dx[:, 12:15] + gyro_noise) @ C_FRD_TO_FLU.T])
 
 for name, err in [("pose", err_pose), ("twist", err_twist)]:
     cov = np.array(ros[f"{name}_covariance"]).reshape(6, 6)
@@ -591,6 +615,9 @@ class NavNode(Node):
         super().__init__("nav_eskf")
         calibration = self.declare_parameter("calibration_file", "").value
         self.publish_every = self.declare_parameter("publish_every_n_imu", 4).value
+        # Used when a driver reports COVARIANCE_TYPE_UNKNOWN (an all-zero covariance).
+        fallback_sigma = self.declare_parameter("gnss_fallback_sigma_m", [3.0, 3.0, 6.0]).value
+        self.gnss_fallback_cov_ned = np.diag(np.square(fallback_sigma))
         self.core = EskfCore.from_calibration(calibration)   # same file replay uses
         self.create_subscription(Imu, "imu/data_raw", self.on_imu, qos_profile_sensor_data)
         self.create_subscription(NavSatFix, "gnss/fix", self.on_fix, qos_profile_sensor_data)
@@ -611,13 +638,17 @@ class NavNode(Node):
         if msg.status.status < 0:                   # STATUS_NO_FIX
             return
         lat, lon = np.deg2rad([msg.latitude, msg.longitude])     # degrees on the wire
-        cov_enu = np.array(msg.position_covariance).reshape(3, 3)
-        cov_ned = C_NED_TO_ENU @ cov_enu @ C_NED_TO_ENU.T         # same matrix both ways
+        if msg.position_covariance_type == NavSatFix.COVARIANCE_TYPE_UNKNOWN:
+            # Zeros here mean "unknown", not "perfect": never fuse them as certainty.
+            cov_ned = self.gnss_fallback_cov_ned
+        else:
+            cov_enu = np.array(msg.position_covariance).reshape(3, 3)
+            cov_ned = C_NED_TO_ENU @ cov_enu @ C_NED_TO_ENU.T     # same matrix both ways
         # Queued and applied at its own stamp via the rewind buffer, not "now".
         self.core.enqueue_gnss(stamp_s(msg), lat, lon, msg.altitude, cov_ned)
 
     def publish(self, out):
-        ros = to_ros_odometry(out.p_ned, out.v_ned, out.q_bn, out.omega_nb, out.P)
+        ros = to_ros_odometry(out.p_ned, out.v_ned, out.q_bn, out.omega_nb, out.P, out.gyro_cov)
         msg = Odometry()
         msg.header.stamp = Time(nanoseconds=round(out.time_s * 1e9)).to_msg()  # validity
         msg.header.frame_id, msg.child_frame_id = "odom", "base_link"
@@ -832,12 +863,19 @@ def estimate_offset(t_ref, x_ref, t_sig, x_sig, max_lag_s=0.2, step_s=0.001):
 
     Evaluates the correlation coefficient on a grid of lags (interpolating the
     high-rate reference at the shifted times), then fits a parabola through the
-    peak and its neighbors to resolve the lag below the grid step.
+    peak and its neighbors to resolve the lag below the grid step. A peak on the
+    edge of the grid means the true offset may lie outside it, so that raises
+    instead of returning a misleading answer.
     """
     lags = np.arange(-max_lag_s, max_lag_s + step_s / 2, step_s)
     rho = np.array([np.corrcoef(x_sig, np.interp(t_sig - lag, t_ref, x_ref))[0, 1]
                     for lag in lags])
     k = int(np.argmax(rho))
+    if k == 0 or k == lags.size - 1:
+        raise ValueError(
+            f"correlation peaks at the edge of the search ({lags[k] * 1e3:+.0f} ms); "
+            f"widen max_lag_s beyond {max_lag_s} s"
+        )
     y0, y1, y2 = rho[k - 1], rho[k], rho[k + 1]
     tau_hat = lags[k] + 0.5 * step_s * (y0 - y2) / (y0 - 2.0 * y1 + y2)
     return tau_hat, lags, rho
@@ -846,6 +884,12 @@ def estimate_offset(t_ref, x_ref, t_sig, x_sig, max_lag_s=0.2, step_s=0.001):
 tau_hat, lags, rho = estimate_offset(t_gyro, gyro, t_cam, cam)
 print(f"true offset {true_offset_s * 1e3:.1f} ms, estimated {tau_hat * 1e3:.1f} ms")
 assert abs(tau_hat - true_offset_s) < 0.003
+
+# A search window narrower than the offset is caught instead of silently clipped.
+try:
+    estimate_offset(t_gyro, gyro, t_cam, cam, max_lag_s=0.02)
+except ValueError as error:
+    print("too narrow a window:", error)
 ```
 
 ```{python}
@@ -1545,7 +1589,7 @@ def test_ros_conversion_round_trips(yaw_deg, pitch_deg):
     x, y, z, w = Rotation.from_euler("ZYX", [yaw_deg, pitch_deg, 3.0], degrees=True).as_quat()
     q_bn = np.array([w, x, y, z])
     p_ned, v_ned = np.array([10.0, -4.0, 2.0]), np.array([1.0, 2.0, -0.5])
-    ros = to_ros_odometry(p_ned, v_ned, q_bn, np.zeros(3), np.eye(15))
+    ros = to_ros_odometry(p_ned, v_ned, q_bn, np.zeros(3), np.eye(15), 1e-4 * np.eye(3))
     p_back, v_back, q_back = from_ros_odometry(ros)
     np.testing.assert_allclose(p_back, p_ned, atol=1e-12)
     np.testing.assert_allclose(v_back, v_ned, atol=1e-12)
@@ -1800,10 +1844,15 @@ Timing here is forgiving in one way and unforgiving in another. At 2 m/s, a 1 ms
 timing error is 2 mm of position, and at a 3°/s turn rate it is 0.003° of heading,
 so millisecond-level synchronization is ample on the AUV. The hard problems are
 the multi-second latency of the USBL fix and the 100 ms-class latency of the DVL.
-The plan is as follows. Every computer runs on GPS time internally, with UTC used
-only in human-readable logs. On deck and at the surface, the navigation computer
-disciplines its clock to the GNSS receiver's PPS and time messages through
-`chrony`; the INS stamps its IMU samples with its own PPS-disciplined counter.
+The plan is as follows. Two time domains are kept deliberately separate. The
+operating-system clock on every computer runs on UTC, as Linux and ROS expect: on
+deck and at the surface, `chrony` disciplines it to the GNSS receiver's PPS and
+labeled time messages. The estimator does not use that clock for its own
+timestamps. Measurements carry stamps in a continuous GPS-time domain (no leap
+seconds), converted from UTC once, at the driver boundary, with the current
+leap-second offset (18 s), and back to UTC only for logs and for publishing ROS
+message stamps. The INS stamps its IMU samples with its own PPS-disciplined
+counter in that same GPS-time domain.
 Submerged, the computer clock free-runs on an oven-controlled oscillator whose
 drift over a day-long dive is around a millisecond, which the budget above absorbs
 (an ordinary 20 ppm crystal would drift by more than a second). Where a DVL's

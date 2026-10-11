@@ -115,7 +115,7 @@ for trial in range(2000):
     x, y, z, w = Rotation.from_euler("ZYX", ypr, degrees=True).as_quat()
     q = np.array([w, x, y, z])
     p, v, om = rng.normal(0, 100, 3), rng.normal(0, 5, 3), rng.normal(0, 0.5, 3)
-    back = from_ros_odometry(to_ros_odometry(p, v, q, om, np.eye(15)))
+    back = from_ros_odometry(to_ros_odometry(p, v, q, om, np.eye(15), 1e-4 * np.eye(3)))
     worst = max(worst, np.max(np.abs(back[0] - p)), np.max(np.abs(back[1] - v)),
                 abs(abs(back[2] @ q) - 1.0), np.max(np.abs(back[3] - om)))
 print(f"worst round-trip error over 2000 random states: {worst:.2e}")   # 1.1e-14

@@ -188,13 +188,7 @@ const chapters = [
     source: "book/chapters/07-adv/adv-gnss.qmd",
   },
   {
-    part: "Advanced Topics", number: "30", title: "Navigation System Integration Case Study",
-    prompt: "What must a deployed estimator promise?",
-    bullets: ["Separate transport, calibration, estimation, health, and logging", "Update at measurement time, not arrival time", "Publish state with uncertainty, validity time, and mode"],
-    source: "book/chapters/06-practical/practical-implementation-guide.qmd",
-  },
-  {
-    part: "Technical Reference", number: "31", title: "Mathematical Reference and Derivations",
+    part: "Technical Reference", number: "30", title: "Mathematical Reference and Derivations",
     prompt: "Where do we go when the short version is not enough?",
     bullets: ["Kalman, EKF, quaternion, and optimization derivations", "Numerical stability guidance", "A reference chapter: consult it when implementation needs proof"],
     source: "book/chapters/01-foundations/mathematical-reference.qmd",
