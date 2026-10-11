@@ -6,12 +6,15 @@ also requires Jacobians, and Jacobians are a fine place to hide mistakes.
 
 The Unscented Kalman Filter (UKF) takes a different approach. Instead of
 linearizing the function, it approximates how the distribution moves through
-the nonlinear function. It does this with carefully chosen deterministic sample
-points called **sigma points**.
+the nonlinear function. It does this with a small set of carefully chosen,
+deterministic sample points called **sigma points** [@julierUhlmann2004;
+@wanVanDerMerwe2000].
 
 The UKF still represents the belief with a mean and covariance. It is not a
 particle filter. It is a Gaussian filter that uses smarter bookkeeping for
-nonlinear transformations.
+nonlinear transformations. In Project 1 Part C (@sec-project1c) you will run
+one beside an EKF on the same drone data and decide whether that bookkeeping
+earned its keep.
 
 ## The Problem with Transforming a Gaussian {#sec-ukf-problem-transforming-gaussian}
 
@@ -31,87 +34,102 @@ then $\mathbf{y}$ is generally not Gaussian when $f$ is nonlinear. The EKF
 approximates $f$ with a tangent plane and then transforms the Gaussian through
 that plane. The UKF chooses points that capture the mean and covariance of
 $\mathbf{x}$, sends those points through the true nonlinear function, and
-reconstructs an approximate mean and covariance from the transformed points.
+reconstructs an approximate mean and covariance from the transformed points
+(@fig-ukf-ut-schematic).
 
-This is the unscented transform.
+This is the **unscented transform**. Julier and Uhlmann's motivating slogan is
+that it is easier to approximate a probability distribution than an arbitrary
+nonlinear function [@julierUhlmann2004].
+
+![The unscented transform in one picture. A handful of points that encode the input mean and covariance (left) are pushed through the nonlinear function one at a time; a new mean and covariance are fit to where they land (right). No derivative of the function is ever taken.](../../images/unscented_transformation.png){#fig-ukf-ut-schematic width=75%}
 
 ## Sigma Points {#sec-ukf-sigma-points}
 
-For an $n$-dimensional state, the common UKF construction uses $2n + 1$ sigma
-points. Define
+For an $n$-dimensional state, the standard construction uses $2n + 1$ sigma
+points. Define the scaling parameter
 
 $$
-\lambda = \alpha^2(n + \kappa) - n.
+\lambda = \alpha^2(n + \kappa) - n
 $$
 
-The sigma points are
+and the **spread**
 
 $$
-\mathcal{X}_0 = \boldsymbol{\mu},
-$$
+s = \sqrt{n + \lambda} = \alpha\sqrt{n + \kappa}.
+$$ {#eq-ukf-spread}
+
+Let $\mathbf{L}$ be the lower Cholesky factor of the covariance,
+$\mathbf{L}\mathbf{L}^T = \mathbf{P}$, with columns $\boldsymbol{\ell}_i$. The
+sigma points are
 
 $$
-\mathcal{X}_i
-=
-\boldsymbol{\mu}
-+
-\left[\sqrt{(n+\lambda)\mathbf{P}}\right]_i,
+\mathcal{X}^{(0)} = \boldsymbol{\mu},
 \qquad
-i = 1, \ldots, n,
-$$
-
-$$
-\mathcal{X}_{i+n}
-=
-\boldsymbol{\mu}
--
-\left[\sqrt{(n+\lambda)\mathbf{P}}\right]_i,
+\mathcal{X}^{(i)} = \boldsymbol{\mu} + s\,\boldsymbol{\ell}_i,
+\qquad
+\mathcal{X}^{(i+n)} = \boldsymbol{\mu} - s\,\boldsymbol{\ell}_i,
 \qquad
 i = 1, \ldots, n.
-$$
+$$ {#eq-ukf-sigma-points}
 
-The square root is usually computed with a Cholesky factor. The notation
-$[\cdot]_i$ means the $i$th column of that matrix square root.
+You will often see this written with $\left[\sqrt{(n+\lambda)\mathbf{P}}\right]_i$,
+the $i$th column of a matrix square root of $(n+\lambda)\mathbf{P}$; that is
+the same thing as $s\,\boldsymbol{\ell}_i$. The spread $s$ has a direct
+meaning: each non-central sigma point sits $s$ standard deviations from the
+mean along its Cholesky direction (its Mahalanobis distance from the mean is
+exactly $s$).
 
-The parameters have practical meaning:
+The three parameters are $\alpha$, which scales the spread; $\kappa$, a
+secondary scaling parameter; and $\beta$, which (as we will see) only affects
+the covariance and encodes prior knowledge about the shape of the
+distribution. How to choose them is important enough to get its own section
+below.
 
-- $\alpha$ controls the spread of the sigma points.
-- $\kappa$ is a secondary scaling parameter.
-- $\beta$ encodes prior knowledge about the distribution; $\beta=2$ is common
-  for Gaussian beliefs.
+```{python}
+#| label: ukf-sigma-point-code
 
-Typical starting values are $\alpha=10^{-3}$, $\beta=2$, and $\kappa=0$, though
-the best values depend on the problem.
+import numpy as np
+
+
+def merwe_weights(n: int, alpha: float = 1.0, beta: float = 2.0, kappa: float = 0.0):
+    """Scaled-UT weights for 2n + 1 sigma points.
+
+    Returns (wm, wc, spread), where spread = sqrt(n + lambda) = alpha * sqrt(n + kappa).
+    """
+    spread_sq = alpha**2 * (n + kappa)  # this is n + lambda
+    lam = spread_sq - n
+    wm = np.full(2 * n + 1, 1.0 / (2.0 * spread_sq))
+    wc = wm.copy()
+    wm[0] = lam / spread_sq
+    wc[0] = wm[0] + 1.0 - alpha**2 + beta
+    return wm, wc, np.sqrt(spread_sq)
+
+
+def sigma_points(mean, P, alpha=1.0, beta=2.0, kappa=0.0, add_fn=None):
+    """Return (points, wm, wc) for the Gaussian N(mean, P).
+
+    points has one sigma point per row. The dimension n comes from P, not
+    from mean, so the same function works when the state lives on a manifold
+    (a quaternion has four numbers but three degrees of freedom). add_fn(x, dx)
+    applies a perturbation dx to x; the default is ordinary addition.
+    """
+    n = P.shape[0]
+    wm, wc, spread = merwe_weights(n, alpha, beta, kappa)
+    L = np.linalg.cholesky(P)                                  # P = L @ L.T
+    offsets = spread * np.vstack([np.zeros(n), L.T, -L.T])     # (2n+1, n)
+    if add_fn is None:
+        points = mean + offsets
+    else:
+        points = np.array([add_fn(mean, d) for d in offsets])
+    return points, wm, wc
+```
 
 ```{python}
 #| label: fig-ukf-sigma-points
-#| fig-cap: "Sigma points for a 2D Gaussian belief. The points are deterministic, not random samples, and are chosen to reproduce the mean and covariance."
+#| fig-cap: "Sigma points for a 2D Gaussian belief with the chapter's default parameters ($\\alpha=1$, $\\kappa=0$, so $s=\\sqrt{2}$). The points are deterministic, not random samples: one at the mean and one pair along each Cholesky direction."
 #| code-fold: true
 
-import numpy as np
 import matplotlib.pyplot as plt
-
-
-def sigma_points(mean, covariance, alpha=0.7, beta=2.0, kappa=0.0):
-    n = mean.size
-    lam = alpha**2 * (n + kappa) - n
-    scale = n + lam
-    root = np.linalg.cholesky(scale * covariance)
-
-    points = [mean]
-    for i in range(n):
-        points.append(mean + root[:, i])
-    for i in range(n):
-        points.append(mean - root[:, i])
-
-    points = np.array(points)
-
-    wm = np.full(2 * n + 1, 1.0 / (2.0 * scale))
-    wc = np.full(2 * n + 1, 1.0 / (2.0 * scale))
-    wm[0] = lam / scale
-    wc[0] = lam / scale + (1.0 - alpha**2 + beta)
-    return points, wm, wc
-
 
 mean = np.array([2.0, 1.0])
 P = np.array([[1.0, 0.55], [0.55, 0.6]])
@@ -141,132 +159,320 @@ plt.show()
 Each sigma point has a mean weight and a covariance weight:
 
 $$
-W_0^{(m)}
-=
-\frac{\lambda}{n+\lambda},
-$$
-
-$$
-W_0^{(c)}
-=
-\frac{\lambda}{n+\lambda}
-+
-1 - \alpha^2 + \beta,
-$$
-
-$$
-W_i^{(m)}
-=
-W_i^{(c)}
-=
-\frac{1}{2(n+\lambda)},
+W_0^{(m)} = \frac{\lambda}{n+\lambda} = 1 - \frac{n}{s^2},
 \qquad
-i=1,\ldots,2n.
+W_0^{(c)} = W_0^{(m)} + 1 - \alpha^2 + \beta,
+$$ {#eq-ukf-center-weights}
+
+$$
+W_i^{(m)} = W_i^{(c)} = \frac{1}{2(n+\lambda)} = \frac{1}{2s^2},
+\qquad
+i = 1, \ldots, 2n.
 $$
 
-The first point is the mean. The remaining points are paired around the mean.
-The weights allow the sigma point set to reconstruct the original mean and
-covariance before any nonlinear transformation is applied.
+The mean weights sum to one. Before any nonlinear function is applied, the
+weighted points reproduce the input exactly: the pairs cancel in the mean, and
+the covariance sum is
+$\frac{1}{2s^2}\sum_i 2 s^2 \boldsymbol{\ell}_i\boldsymbol{\ell}_i^T = \mathbf{L}\mathbf{L}^T = \mathbf{P}$
+(the central point contributes nothing because it sits on the mean).
+
+## Choosing the Scaling Parameters {#sec-ukf-scaling-parameters}
+
+Everything $\alpha$ and $\kappa$ do funnels through the spread $s$ of
+@eq-ukf-spread, and @eq-ukf-center-weights shows the price of a small spread:
+$W_0^{(m)} = 1 - n/s^2$ goes hugely negative.
+
+The value $\alpha = 10^{-3}$ is widely quoted as a default [@wanVanDerMerwe2000],
+and it deserves a warning label. For $n = 2$ and $\kappa = 0$ it gives
+$s \approx 0.0014$, a central weight $W_0^{(m)} \approx -10^6$, and four outer
+weights of $+2.5 \times 10^5$. The weighted mean is then a difference of
+numbers a million times larger than the answer, so any rounding error in the
+sigma points or the weights is amplified about a million-fold. The covariance
+weight $W_0^{(c)}$ is also about $-10^6$, so the covariance is no longer a
+positively weighted sum of outer products. It is assembled by subtracting one
+enormous rank-one term from a sum of enormous positive ones.
+
+Two different things could go wrong, and it is worth being precise about which
+one actually does. The first is definiteness. Write
+$\mathbf{d}_i = \mathcal{Y}^{(i)} - \mathcal{Y}^{(0)}$ for each transformed
+point's offset from the transformed central point, and
+$\bar{\mathbf{m}} = \boldsymbol{\mu}_y - \mathcal{Y}^{(0)}$ for how far the
+nonlinearity moved the mean away from it. A few lines of algebra
+(@sec-ukf-exercises, Exercise 1) collapse the covariance sum to
+
+$$
+\mathbf{P}_y
+=
+\frac{1}{2s^2}\sum_{i=1}^{2n}\mathbf{d}_i\mathbf{d}_i^T
++
+(\beta - \alpha^2)\,\bar{\mathbf{m}}\bar{\mathbf{m}}^T.
+$$ {#eq-ukf-psd-identity}
+
+Both terms are positive semidefinite whenever $\beta \ge \alpha^2$, so the
+scaled transform cannot produce an indefinite covariance, even with a large
+negative $W_0^{(c)}$. Because the standard sum takes residuals about the
+computed mean, its cancellation is benign in double precision. The original,
+unscaled transform is a different story: it effectively has $\alpha = 1$ and
+$\beta = 0$, so with $\kappa < 0$ (as $\kappa = 3 - n$ gives for $n > 3$) the
+second term is negative and the covariance really can lose definiteness. That
+is one reason the scaled form exists [@julierUhlmann2004]. If you want a
+covariance that is positive semidefinite by construction whatever the weights,
+@eq-ukf-psd-identity is itself a perfectly good way to compute it.
+
+The second is precision, and here a small $\alpha$ really does bite. The cell
+below prints the weights, then pushes a position carried as a UTM northing and
+easting with a 1 m standard deviation through the *identity* function, which
+any transform should return unchanged, first in double and then in single
+precision.
+
+```{python}
+#| label: ukf-weights-table
+
+print(" n   alpha   spread s     W0_m          W0_c          W_i")
+for n in (2, 15):
+    for alpha in (1e-3, 1e-2, 0.1, 0.5, 1.0):
+        wm, wc, s = merwe_weights(n, alpha=alpha, beta=2.0, kappa=0.0)
+        print(f"{n:2d}   {alpha:5.0e}   {s:8.4f}   {wm[0]:12.4g}  {wc[0]:12.4g}  {wm[1]:11.4g}")
+
+
+def identity_transform_check(mean, P, alpha, dtype):
+    """Return (mean error [m], recovered variance of the first component)."""
+    X, wm, wc = sigma_points(mean, P, alpha=alpha)
+    X, wm, wc = X.astype(dtype), wm.astype(dtype), wc.astype(dtype)
+    m = wm @ X
+    r = X - m
+    C = (wc[:, None] * r).T @ r
+    return np.abs(m.astype(np.float64) - mean).max(), float(C[0, 0])
+
+
+utm = np.array([4.6e6, 5.0e5])          # northing, easting [m]
+P_utm = np.eye(2)                       # true variance: 1 m^2
+print("\nidentity transform of a UTM position (true variance 1.0 m^2)")
+print("alpha    float64: mean err   variance   float32: mean err    variance")
+for alpha in (1e-3, 1e-2, 0.1, 1.0):
+    e64, v64 = identity_transform_check(utm, P_utm, alpha, np.float64)
+    e32, v32 = identity_transform_check(utm, P_utm, alpha, np.float32)
+    print(f"{alpha:5.0e}   {e64:15.2e} m  {v64:9.4f}   {e32:14.2e} m  {v32:10.3g}")
+e32, v32 = identity_transform_check(np.zeros(2), P_utm, 1e-3, np.float32)
+print(f"local frame, alpha = 1e-03, float32: mean err {e32:.1e} m, variance {v32:.4f}")
+```
+
+In double precision the damage at $\alpha = 10^{-3}$ is about a hundredth of
+a millimeter: three orders of magnitude worse than at larger $\alpha$, but easy
+to ignore. In single precision, which many embedded flight computers use, the
+same transform misplaces the mean by more than a hundred kilometers and reports
+a variance in the billions. At $\alpha = 0.1$ the sigma points round onto the
+mean and the variance comes out as exactly zero, and even $\alpha = 1$ gets it
+wrong by more than ten percent, because a 32-bit float cannot resolve a meter
+at $4.6 \times 10^6$. The cure is the same in both cases: keep $\alpha$ moderate
+and keep the numbers small. A filter that carries position relative to a local
+origin, or better an error state that hovers near zero
+(@sec-ekf-error-state-filtering), has nothing to cancel, as the last line
+shows.
+
+A tiny spread has one more cost. It turns the unscented transform into a
+finite-difference scheme whose step is a thousandth of a standard deviation, so
+anything non-smooth in the model at that scale (a piecewise-linear lookup
+table, an interpolated terrain map, a clipped value, an iterative solver's
+stopping tolerance) is divided by $s^2$ and reported as enormous curvature.
+
+What about $\beta$? @eq-ukf-psd-identity shows it touches only the rank-one
+term along $\bar{\mathbf{m}}$. It never moves the mean, does nothing at all for
+a linear function, and widens the covariance along the direction in which the
+nonlinearity shifted the mean. The standard choice for Gaussian priors is
+$\beta = 2$, which in the small-spread limit restores the Gaussian
+fourth-moment contribution that closely spaced points cannot see (exactly, for
+a scalar quadratic) [@julierUhlmann2004]. With a larger spread the sigma
+points already see part of that term, so $\beta = 2$ errs on the conservative
+side (Exercise 2 works this out for a quadratic).
+
+The defensible defaults are therefore:
+
+- $\beta = 2$ for Gaussian beliefs;
+- $\kappa = 0$, or $\kappa = 3 - n$ when $n \le 3$ (at $\alpha = 1$ this puts
+  the points at $s = \sqrt{3}$, matching the fourth moment of a Gaussian along
+  each axis);
+- $\alpha \in [10^{-3}, 1]$, chosen so that the spread $s = \alpha\sqrt{n+\kappa}$
+  lands roughly between $1$ and $\sqrt{3}$.
+
+The trade-off behind the last item is locality against precision. A larger
+spread samples the function farther from the mean, so the transform responds to
+higher-order and non-local behavior. That helps when the function is smooth over
+the whole uncertainty region and hurts when sigma points land where the model is
+not valid: a negative range, a pitch of 90 degrees, a position off the edge of a
+terrain map. A smaller spread keeps the samples local, and as $s \to 0$ the
+transform converges to a derivative-free second-order filter whose $\beta$ term
+stands in for the fourth-order effects it can no longer see. You pay for that in
+precision through $W_0^{(m)} = 1 - n/s^2$. This chapter's code defaults to
+$\alpha = 1$, $\beta = 2$, $\kappa = 0$, which gives $s = \sqrt{2}$ for its
+two-state examples. For Project 1's 15-state filter the same $\alpha = 1$ would
+put the points at $s = \sqrt{15} \approx 3.9$ standard deviations, so pass
+$\alpha \approx 0.25$ to $0.45$ there and include that range in your
+sensitivity study.
 
 ## The Unscented Transform {#sec-ukf-unscented-transform}
 
-Given sigma points $\mathcal{X}_i$, transform each point through the nonlinear
-function:
+Given sigma points $\mathcal{X}^{(i)}$, transform each point through the
+nonlinear function:
 
 $$
-\mathcal{Y}_i = f(\mathcal{X}_i).
+\mathcal{Y}^{(i)} = f(\mathcal{X}^{(i)}).
 $$
 
-The transformed mean is
+The transformed mean and covariance are
 
 $$
 \boldsymbol{\mu}_y
 =
 \sum_{i=0}^{2n}
-W_i^{(m)} \mathcal{Y}_i.
-$$
-
-The transformed covariance is
-
-$$
+W_i^{(m)} \mathcal{Y}^{(i)},
+\qquad
 \mathbf{P}_y
 =
 \sum_{i=0}^{2n}
 W_i^{(c)}
-(\mathcal{Y}_i - \boldsymbol{\mu}_y)
-(\mathcal{Y}_i - \boldsymbol{\mu}_y)^T.
-$$
+(\mathcal{Y}^{(i)} - \boldsymbol{\mu}_y)
+(\mathcal{Y}^{(i)} - \boldsymbol{\mu}_y)^T.
+$$ {#eq-ukf-transform}
 
 If additive noise is part of the transformation, add its covariance after the
-weighted covariance reconstruction.
+weighted reconstruction.
+
+The implementation below has two optional hooks that will matter later. A
+`mean_fn` replaces the weighted average, and a `residual_fn` replaces the
+subtraction $\mathcal{Y}^{(i)} - \boldsymbol{\mu}_y$. For ordinary vectors
+neither is needed. For angles, bearings, and rotations both are mandatory
+(@sec-ukf-angles and @sec-ukf-attitude).
+
+```{python}
+#| label: ukf-unscented-transform-code
+
+def unscented_transform(points, wm, wc, noise_cov=None, mean_fn=None, residual_fn=None):
+    """Weighted mean and covariance of transformed sigma points.
+
+    points       : (2n+1, m) array, one transformed sigma point per row
+    mean_fn      : mean_fn(points, wm) -> mean; default is the weighted average
+    residual_fn  : residual_fn(points, mean) -> (2n+1, r) array of "points - mean",
+                   including any angle wrapping; default is plain subtraction
+    """
+    mean = wm @ points if mean_fn is None else mean_fn(points, wm)
+    resid = points - mean if residual_fn is None else residual_fn(points, mean)
+    covariance = (wc[:, None] * resid).T @ resid   # sum_i wc[i] * outer(r_i, r_i)
+    if noise_cov is not None:
+        covariance = covariance + noise_cov
+    return mean, covariance
+```
+
+The classic test case is the one every radar, sonar, and lidar tracker meets on
+day one: converting a range and bearing into Cartesian coordinates. A sensor
+reports range $r$ and bearing $\vartheta$ (clockwise from north), so the target is
+at north $= r\cos\vartheta$, east $= r\sin\vartheta$. With 4 m of range noise and
+20 degrees of bearing uncertainty at 100 m, @fig-ukf-nonlinear-transform
+compares three answers: a brute-force Monte Carlo reference, the EKF's
+linearization, and the unscented transform with five sigma points.
 
 ```{python}
 #| label: fig-ukf-nonlinear-transform
-#| fig-cap: "A nonlinear transformation bends the sigma points. The UKF reconstructs a Gaussian approximation from the transformed points instead of using a local tangent."
+#| fig-cap: "Range-bearing to Cartesian conversion three ways. Left: the Gaussian input in sensor space with its sigma points. Right: the Monte Carlo cloud (gray) and its moments (black) form a banana that bends toward the sensor. The EKF (orange, dashed) places the mean on the arc at 100 m and badly underestimates the north spread. The unscented transform (blue) recovers the inward shift of the mean and a covariance that covers the cloud. Means are marked with crosses; ellipses are 2-sigma."
 #| code-fold: true
 
-import numpy as np
-import matplotlib.pyplot as plt
+
+def polar_to_cartesian(x):
+    """[range, bearing] -> [east, north], bearing clockwise from north."""
+    r, b = x[..., 0], x[..., 1]
+    return np.stack([r * np.sin(b), r * np.cos(b)], axis=-1)
 
 
-def make_sigma_points(mean, covariance, alpha=0.75, beta=2.0, kappa=0.0):
-    n = mean.size
-    lam = alpha**2 * (n + kappa) - n
-    scale = n + lam
-    root = np.linalg.cholesky(scale * covariance)
-    points = [mean]
-    points.extend(mean + root[:, i] for i in range(n))
-    points.extend(mean - root[:, i] for i in range(n))
-    points = np.array(points)
-    wm = np.full(2 * n + 1, 1.0 / (2.0 * scale))
-    wc = np.full(2 * n + 1, 1.0 / (2.0 * scale))
-    wm[0] = lam / scale
-    wc[0] = lam / scale + (1.0 - alpha**2 + beta)
-    return points, wm, wc
+def ellipse_points(mean, cov, n_std=2.0, num=200):
+    t = np.linspace(0.0, 2.0 * np.pi, num)
+    return mean[:, None] + n_std * np.linalg.cholesky(cov) @ np.vstack([np.cos(t), np.sin(t)])
 
 
-def nonlinear_map(points):
-    x = points[:, 0]
-    y = points[:, 1]
-    return np.column_stack((x + 0.45 * y**2, np.sin(y) + 0.15 * x))
+mu_polar = np.array([100.0, 0.0])                         # 100 m, due north
+P_polar = np.diag([4.0**2, np.deg2rad(20.0) ** 2])
 
+rng = np.random.default_rng(42)
+samples = rng.multivariate_normal(mu_polar, P_polar, size=20_000)
+Y_mc = polar_to_cartesian(samples)
+mc_mean, mc_cov = Y_mc.mean(axis=0), np.cov(Y_mc.T)
 
-def weighted_mean_and_cov(points, wm, wc):
-    mean = wm @ points
-    diff = points - mean
-    covariance = sum(wc[i] * np.outer(diff[i], diff[i]) for i in range(points.shape[0]))
-    return mean, covariance
+r0, b0 = mu_polar
+J = np.array([[np.sin(b0), r0 * np.cos(b0)],
+              [np.cos(b0), -r0 * np.sin(b0)]])
+ekf_mean, ekf_cov = polar_to_cartesian(mu_polar), J @ P_polar @ J.T
 
+X, wm, wc = sigma_points(mu_polar, P_polar)
+Y_sigma = polar_to_cartesian(X)
+ut_mean, ut_cov = unscented_transform(Y_sigma, wm, wc)
 
-mean = np.array([1.0, 0.4])
-P = np.array([[0.45, 0.12], [0.12, 0.3]])
-X, wm, wc = make_sigma_points(mean, P)
-Y = nonlinear_map(X)
-y_mean, y_cov = weighted_mean_and_cov(Y, wm, wc)
+fig, axes = plt.subplots(1, 2, figsize=(11, 4.6))
+ax = axes[0]
+ax.scatter(np.rad2deg(samples[:3000, 1]), samples[:3000, 0], s=2, color="0.75",
+           label="Monte Carlo samples")
+e = ellipse_points(mu_polar, P_polar)
+ax.plot(np.rad2deg(e[1]), e[0], color="black", label="2-sigma ellipse")
+ax.scatter(np.rad2deg(X[:, 1]), X[:, 0], s=60, color="C0", zorder=3, label="sigma points")
+ax.set_xlabel("bearing [deg]")
+ax.set_ylabel("range [m]")
+ax.set_title("sensor space")
+ax.grid(True, alpha=0.25)
+ax.legend(loc="lower left", fontsize=8)
 
-fig, axes = plt.subplots(1, 2, figsize=(10, 4.5))
-axes[0].scatter(X[:, 0], X[:, 1], s=70)
-axes[0].scatter(mean[0], mean[1], marker="x", color="black", s=90)
-axes[0].set_title("input sigma points")
-axes[0].set_xlabel("x1")
-axes[0].set_ylabel("x2")
-axes[0].grid(True, alpha=0.25)
-
-axes[1].scatter(Y[:, 0], Y[:, 1], s=70)
-axes[1].scatter(y_mean[0], y_mean[1], marker="x", color="black", s=90, label="UKF mean")
-axes[1].set_title("transformed sigma points")
-axes[1].set_xlabel("y1")
-axes[1].set_ylabel("y2")
-axes[1].grid(True, alpha=0.25)
-axes[1].legend()
-
+ax = axes[1]
+ax.scatter(Y_mc[:3000, 0], Y_mc[:3000, 1], s=2, color="0.75", label="Monte Carlo samples")
+for m, c, color, ls, name in [
+    (mc_mean, mc_cov, "black", "-", "Monte Carlo"),
+    (ekf_mean, ekf_cov, "C1", "--", "EKF linearization"),
+    (ut_mean, ut_cov, "C0", "-", "unscented transform"),
+]:
+    e = ellipse_points(m, c)
+    ax.plot(e[0], e[1], color=color, linestyle=ls, linewidth=2, label=name)
+    ax.scatter(*m, color=color, marker="x", s=80, zorder=4)
+ax.scatter(Y_sigma[:, 0], Y_sigma[:, 1], s=60, color="C0", zorder=3,
+           label="transformed sigma points")
+ax.set_xlabel("east [m]")
+ax.set_ylabel("north [m]")
+ax.set_title("Cartesian space")
+ax.grid(True, alpha=0.25)
+ax.legend(loc="lower left", fontsize=8)
 plt.tight_layout()
 plt.show()
 ```
 
-The transformed points do not need to lie on a straight line or an ellipse. The
-UKF uses them only to recover the best Gaussian summary it can from the
-nonlinear transformation.
+The EKF's error here is not subtle. Averaged over the bearing uncertainty, the
+target is closer to the sensor than 100 m along the boresight, because
+$\mathbb{E}[\cos\vartheta] = e^{-\sigma_\vartheta^2/2} < 1$. The tangent line cannot
+see that, and it also misses most of the north spread, so an EKF fed this
+conversion would be both biased and overconfident. The unscented transform used
+five function evaluations and no derivatives.
+
+The same comparison makes a good parameter sensitivity study, the kind Part C
+asks you to run on the drone filter. The cell below repeats the transform for
+several $(\alpha, \beta, \kappa)$ settings.
+
+```{python}
+#| label: ukf-alpha-sweep
+
+print("                          mean north   var east   var north")
+print(f"Monte Carlo reference     {mc_mean[1]:9.2f}  {mc_cov[0, 0]:9.1f}  {mc_cov[1, 1]:9.1f}")
+print(f"EKF linearization         {ekf_mean[1]:9.2f}  {ekf_cov[0, 0]:9.1f}  {ekf_cov[1, 1]:9.1f}")
+for alpha, beta, kappa in [(1e-3, 2, 0), (0.5, 2, 0), (1.0, 2, 0), (1.0, 2, 1), (1.0, 0, 1)]:
+    X, wm, wc = sigma_points(mu_polar, P_polar, alpha=alpha, beta=beta, kappa=kappa)
+    m, c = unscented_transform(polar_to_cartesian(X), wm, wc)
+    s = alpha * np.sqrt(2 + kappa)
+    label = f"UT a={alpha:g} b={beta:g} k={kappa:g} (s={s:.2g})"
+    print(f"{label:<26}{m[1]:9.2f}  {c[0, 0]:9.1f}  {c[1, 1]:9.1f}")
+```
+
+Three things are worth noticing. First, every setting gets the mean shift
+essentially right: the scaled transform captures the local second-order
+curvature for *any* $\alpha$, because the symmetric pairs measure a second
+difference. Second, the tiny-$\alpha$ transform reproduces the EKF's east
+variance, which is too large here: with its points crowded at the mean it
+cannot see the fourth-order behavior of $\sin\vartheta$ farther out. Third, at
+$s = \sqrt{3}$ the points see that behavior, and $\beta = 0$ then nails the
+north variance while $\beta = 2$ inflates it. Inflated is the safe direction to
+be wrong, which is why $\beta = 2$ remains the standard choice.
 
 ## UKF Prediction {#sec-ukf-prediction}
 
@@ -274,43 +480,46 @@ For the nonlinear process model
 
 $$
 \mathbf{x}_k = f(\mathbf{x}_{k-1}, \mathbf{u}_k) + \mathbf{w}_k,
+\qquad
+\mathbf{w}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{Q}_k),
 $$
 
 the prediction step is:
 
-1. Generate sigma points from $\hat{\mathbf{x}}_{k-1}$ and $\mathbf{P}_{k-1}$.
+1. Generate sigma points $\mathcal{X}_{k-1}^{(i)}$ from
+   $\hat{\mathbf{x}}_{k-1|k-1}$ and $\mathbf{P}_{k-1|k-1}$.
 2. Propagate each sigma point through the process model:
 
 $$
-\mathcal{X}_{k|k-1}^{(i)}
+\mathcal{X}_{k|k-1}^{*(i)}
 =
 f(\mathcal{X}_{k-1}^{(i)}, \mathbf{u}_k).
 $$
 
-3. Reconstruct the predicted mean:
+3. Reconstruct the predicted mean and covariance, adding the process noise:
 
 $$
-\hat{\mathbf{x}}_k^-
+\hat{\mathbf{x}}_{k|k-1}
 =
 \sum_i
 W_i^{(m)}
-\mathcal{X}_{k|k-1}^{(i)}.
+\mathcal{X}_{k|k-1}^{*(i)},
 $$
 
-4. Reconstruct the predicted covariance:
-
 $$
-\mathbf{P}_k^-
+\mathbf{P}_{k|k-1}
 =
 \sum_i
 W_i^{(c)}
-(\mathcal{X}_{k|k-1}^{(i)} - \hat{\mathbf{x}}_k^-)
-(\mathcal{X}_{k|k-1}^{(i)} - \hat{\mathbf{x}}_k^-)^T
+(\mathcal{X}_{k|k-1}^{*(i)} - \hat{\mathbf{x}}_{k|k-1})
+(\mathcal{X}_{k|k-1}^{*(i)} - \hat{\mathbf{x}}_{k|k-1})^T
 +
 \mathbf{Q}_k.
-$$
+$$ {#eq-ukf-predict-cov}
 
-No process Jacobian appears.
+No process Jacobian appears. The star marks the *propagated* points; the
+notation follows Wan and van der Merwe [@wanVanDerMerwe2000], and the
+distinction matters in the next step.
 
 ## UKF Update {#sec-ukf-update}
 
@@ -318,9 +527,18 @@ For the nonlinear measurement model
 
 $$
 \mathbf{z}_k = h(\mathbf{x}_k) + \mathbf{v}_k,
+\qquad
+\mathbf{v}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{R}_k),
 $$
 
-propagate the predicted sigma points into measurement space:
+first **redraw** a fresh sigma-point set from the predicted Gaussian:
+
+$$
+\mathcal{X}_{k|k-1}^{(i)} = \text{sigma points of }
+\mathcal{N}\!\left(\hat{\mathbf{x}}_{k|k-1}, \mathbf{P}_{k|k-1}\right),
+$$ {#eq-ukf-redraw}
+
+and propagate those points into measurement space:
 
 $$
 \mathcal{Z}_k^{(i)}
@@ -328,17 +546,16 @@ $$
 h(\mathcal{X}_{k|k-1}^{(i)}).
 $$
 
-The predicted measurement is
+The predicted measurement, innovation covariance, and state-measurement
+cross-covariance are
 
 $$
 \hat{\mathbf{z}}_k
 =
 \sum_i
 W_i^{(m)}
-\mathcal{Z}_k^{(i)}.
+\mathcal{Z}_k^{(i)},
 $$
-
-The innovation covariance is
 
 $$
 \mathbf{S}_k
@@ -348,17 +565,15 @@ W_i^{(c)}
 (\mathcal{Z}_k^{(i)} - \hat{\mathbf{z}}_k)
 (\mathcal{Z}_k^{(i)} - \hat{\mathbf{z}}_k)^T
 +
-\mathbf{R}_k.
+\mathbf{R}_k,
 $$
-
-The cross-covariance between state and measurement is
 
 $$
 \mathbf{P}_{xz}
 =
 \sum_i
 W_i^{(c)}
-(\mathcal{X}_{k|k-1}^{(i)} - \hat{\mathbf{x}}_k^-)
+(\mathcal{X}_{k|k-1}^{(i)} - \hat{\mathbf{x}}_{k|k-1})
 (\mathcal{Z}_k^{(i)} - \hat{\mathbf{z}}_k)^T.
 $$
 
@@ -368,95 +583,226 @@ $$
 \mathbf{K}_k
 =
 \mathbf{P}_{xz}\mathbf{S}_k^{-1},
-$$
-
-$$
-\hat{\mathbf{x}}_k
+\qquad
+\hat{\mathbf{x}}_{k|k}
 =
-\hat{\mathbf{x}}_k^-
+\hat{\mathbf{x}}_{k|k-1}
 +
 \mathbf{K}_k(\mathbf{z}_k - \hat{\mathbf{z}}_k),
-$$
-
-$$
-\mathbf{P}_k
+\qquad
+\mathbf{P}_{k|k}
 =
-\mathbf{P}_k^-
+\mathbf{P}_{k|k-1}
 -
 \mathbf{K}_k \mathbf{S}_k \mathbf{K}_k^T.
 $$
 
+Why redraw? Look at @eq-ukf-predict-cov. The process noise enters the
+prediction only as a matrix added *after* the transform. The propagated points
+$\mathcal{X}^{*(i)}_{k|k-1}$ describe how $f$ moved the old covariance, but
+none of them has ever seen $\mathbf{Q}_k$. Redrawing from
+$(\hat{\mathbf{x}}_{k|k-1}, \mathbf{P}_{k|k-1})$ gives the update a point set
+whose spread includes the process noise, which is what $\mathbf{S}_k$ and
+$\mathbf{P}_{xz}$ need [@wanVanDerMerwe2000].
+
+::: {.callout-warning title="The propagated-points shortcut"}
+Some implementations skip the redraw and pass the propagated points
+$\mathcal{X}^{*(i)}_{k|k-1}$ straight through $h$. filterpy, the companion
+library to Labbe's book [@labbe2020], does this in its `UnscentedKalmanFilter`
+update. It saves one Cholesky factorization per step, and it is exact when
+$\mathbf{Q}_k = \mathbf{0}$.
+
+When $\mathbf{Q}_k \ne \mathbf{0}$ the cost is easy to see in the linear case,
+where the UKF should reproduce the Kalman filter exactly. The shortcut computes
+$\mathbf{S}_k = \mathbf{H}(\mathbf{P}_{k|k-1} - \mathbf{Q}_k)\mathbf{H}^T + \mathbf{R}_k$
+and $\mathbf{P}_{xz} = (\mathbf{P}_{k|k-1} - \mathbf{Q}_k)\mathbf{H}^T$: it
+forgets the process noise at exactly the moment it decides how much to trust
+the measurement. The gain is computed from the wrong covariance, and
+$\mathbf{P}_{k|k} = \mathbf{P}_{k|k-1} - \mathbf{K}_k\mathbf{S}_k\mathbf{K}_k^T$
+comes out too large, so the filter's covariance no longer describes its own
+errors. A scalar random walk shows this most cleanly: in steady state the
+shortcut happens to reach the optimal gain, but it reports the Kalman
+filter's *prior* variance as its posterior, overstating its uncertainty by a
+factor of $1 + P_{k|k-1}/R$. The damage scales with $\mathbf{Q}_k$ relative to
+$\mathbf{P}_{k|k-1}$:
+negligible for a slowly varying state with tiny process noise, severe for
+agile vehicles, random-walk states, or long gaps between measurements.
+
+The other correct option is the **augmented** UKF: append the process noise to
+the state, draw $2(n+q)+1$ sigma points from
+$\text{blkdiag}(\mathbf{P}_{k-1|k-1}, \mathbf{Q}_k)$, and propagate
+$f(\mathbf{x}, \mathbf{u}) + \mathbf{w}$ (or a non-additive
+$f(\mathbf{x}, \mathbf{u}, \mathbf{w})$). Those propagated points do carry the
+process noise and can be used in the update directly, at the price of more
+points [@wanVanDerMerwe2000].
+:::
+
 ## Minimal Implementation Skeleton {#sec-ukf-minimal-implementation-skeleton}
 
+Here is a complete UKF in about thirty lines. The `StateOps` bundle tells the
+filter how to add a perturbation to a state ($\boxplus$), how to subtract two
+states ($\boxminus$), and how to average a set of states. The defaults are
+ordinary vector arithmetic; @sec-ukf-angles and @sec-ukf-attitude swap in
+versions for angles and quaternions without touching the filter itself.
+
 ```{python}
-#| label: ukf-skeleton-code
-#| eval: false
+#| label: ukf-filter-code
 
-import numpy as np
-
-
-def unscented_transform(points, wm, wc, noise_cov=None):
-    mean = wm @ points
-    diff = points - mean
-    covariance = sum(wc[i] * np.outer(diff[i], diff[i]) for i in range(points.shape[0]))
-    if noise_cov is not None:
-        covariance = covariance + noise_cov
-    return mean, covariance
+from functools import partial
+from typing import Callable, NamedTuple
 
 
-def ukf_predict(x, P, u, Q, process_model, sigma_point_fn):
-    points, wm, wc = sigma_point_fn(x, P)
-    propagated = np.array([process_model(point, u) for point in points])
-    x_bar, P_bar = unscented_transform(propagated, wm, wc, Q)
-    return x_bar, P_bar, propagated, wm, wc
+class StateOps(NamedTuple):
+    """How to add, subtract, and average states (the "box-plus" operations)."""
+    add: Callable = lambda x, dx: x + dx                  # x [+] dx
+    residual: Callable = lambda a, b: a - b               # a [-] b
+    mean: Callable = lambda points, wm: wm @ points       # weighted mean
 
 
-def ukf_update(x_bar, P_bar, propagated_points, wm, wc, z, R, measurement_model):
-    z_points = np.array([measurement_model(point) for point in propagated_points])
-    z_bar, S = unscented_transform(z_points, wm, wc, R)
+EUCLIDEAN = StateOps()
 
-    dx = propagated_points - x_bar
-    dz = z_points - z_bar
-    P_xz = sum(wc[i] * np.outer(dx[i], dz[i]) for i in range(propagated_points.shape[0]))
 
-    K = np.linalg.solve(S.T, P_xz.T).T
-    innovation = z - z_bar
-    x = x_bar + K @ innovation
-    P = P_bar - K @ S @ K.T
-    return x, P, innovation, S
+def ukf_predict(x, P, u, Q, f, ops=EUCLIDEAN, sigma_fn=sigma_points):
+    """Unscented prediction for x_k = f(x_{k-1}, u_k) + w_k."""
+    X, wm, wc = sigma_fn(x, P, add_fn=ops.add)
+    X_star = np.array([f(point, u) for point in X])        # propagated points
+    return unscented_transform(X_star, wm, wc, Q, ops.mean, ops.residual)
+
+
+def ukf_update(x_pred, P_pred, z, R, h, x_ops=EUCLIDEAN, z_ops=EUCLIDEAN,
+               sigma_fn=sigma_points):
+    """Unscented update for z_k = h(x_k) + v_k. Returns (x, P, innovation, S)."""
+    # Redraw from the predicted Gaussian so the points include Q.
+    X, wm, wc = sigma_fn(x_pred, P_pred, add_fn=x_ops.add)
+    Z = np.array([h(point) for point in X])
+    z_pred, S = unscented_transform(Z, wm, wc, R, z_ops.mean, z_ops.residual)
+
+    dx = x_ops.residual(X, x_pred)
+    dz = z_ops.residual(Z, z_pred)
+    P_xz = (wc[:, None] * dx).T @ dz
+
+    K = np.linalg.solve(S, P_xz.T).T                       # K = P_xz S^-1, no inverse
+    innovation = z_ops.residual(z, z_pred)
+    x_post = x_ops.add(x_pred, K @ innovation)
+    P_post = P_pred - K @ S @ K.T
+    return x_post, 0.5 * (P_post + P_post.T), innovation, S
 ```
 
-This skeleton omits important production details: angle wrapping, positive
-definite covariance repair, square-root filtering, additive versus augmented
-noise handling, and state components that do not live in ordinary Euclidean
-space. Those details are not optional in serious navigation software.
+To change the scaling parameters, pass a different sigma-point function, for
+example `sigma_fn=partial(sigma_points, alpha=0.4)`.
+
+The best test of any nonlinear filter is to hand it a linear problem. For a
+linear model the unscented transform is exact (the sigma points reproduce the
+mean and covariance, and a linear map preserves both), so a correct UKF must
+match the Kalman filter of @sec-kf to rounding error. The cell below checks
+that, and also runs the propagated-points shortcut from the callout for
+comparison. The single-step case uses a constant-velocity model with
+$\Delta t = 1$, $\mathbf{P}_{0|0} = \mathbf{I}$, $\mathbf{Q} = 0.5\,\mathbf{I}$,
+and a position measurement with $R = 0.1$.
+
+```{python}
+#| label: ukf-linear-kf-check
+
+dt = 1.0
+F = np.array([[1.0, dt], [0.0, 1.0]])
+H = np.array([[1.0, 0.0]])
+Q = 0.5 * np.eye(2)
+R = np.array([[0.1]])
+
+
+def f_cv(x, u):
+    return F @ x
+
+
+def h_pos(x):
+    return H @ x
+
+
+def kf_step(x, P, z):
+    """Reference linear Kalman filter: one predict and one update."""
+    x_pred, P_pred = F @ x, F @ P @ F.T + Q
+    S = H @ P_pred @ H.T + R
+    K = np.linalg.solve(S, H @ P_pred).T
+    return x_pred + K @ (z - H @ x_pred), P_pred - K @ S @ K.T, S
+
+
+def ukf_step_shortcut(x, P, z):
+    """UKF that reuses the propagated points in the update (do not do this)."""
+    X, wm, wc = sigma_points(x, P)
+    X_star = np.array([f_cv(p, None) for p in X])
+    x_pred, P_pred = unscented_transform(X_star, wm, wc, Q)
+    Z = np.array([h_pos(p) for p in X_star])               # these points never saw Q
+    z_pred, S = unscented_transform(Z, wm, wc, R)
+    P_xz = (wc[:, None] * (X_star - x_pred)).T @ (Z - z_pred)
+    K = np.linalg.solve(S, P_xz.T).T
+    return x_pred + K @ (z - z_pred), P_pred - K @ S @ K.T, S
+
+
+x0, P0, z1 = np.zeros(2), np.eye(2), np.array([1.0])
+x_kf, P_kf, S_kf = kf_step(x0, P0, z1)
+x_ukf, P_ukf, _, S_ukf = ukf_update(*ukf_predict(x0, P0, None, Q, f_cv), z1, R, h_pos)
+x_sc, P_sc, S_sc = ukf_step_shortcut(x0, P0, z1)
+print("one step               S       P[0,0] posterior")
+print(f"Kalman filter      {S_kf[0, 0]:6.3f}   {P_kf[0, 0]:8.4f}")
+print(f"UKF (redraw)       {S_ukf[0, 0]:6.3f}   {P_ukf[0, 0]:8.4f}")
+print(f"UKF (shortcut)     {S_sc[0, 0]:6.3f}   {P_sc[0, 0]:8.4f}")
+
+# Fifty steps on simulated data, with a fresh random alpha for good measure.
+rng = np.random.default_rng(11)
+x_true = np.array([0.0, 1.0])
+xk, Pk = x0.copy(), P0.copy()
+xu, Pu = x0.copy(), P0.copy()
+sigma_fn = partial(sigma_points, alpha=rng.uniform(0.2, 1.0))
+max_dx = max_dP = 0.0
+for k in range(50):
+    x_true = F @ x_true + rng.multivariate_normal(np.zeros(2), Q)
+    z = H @ x_true + rng.normal(0.0, np.sqrt(R[0, 0]), size=1)
+    xk, Pk, _ = kf_step(xk, Pk, z)
+    x_pred, P_pred = ukf_predict(xu, Pu, None, Q, f_cv, sigma_fn=sigma_fn)
+    xu, Pu, _, _ = ukf_update(x_pred, P_pred, z, R, h_pos, sigma_fn=sigma_fn)
+    max_dx = max(max_dx, np.abs(xu - xk).max())
+    max_dP = max(max_dP, np.abs(Pu - Pk).max())
+print(f"\n50 steps: max |x_UKF - x_KF| = {max_dx:.1e},  max |P_UKF - P_KF| = {max_dP:.1e}")
+assert max_dx < 1e-9 and max_dP < 1e-9
+```
+
+The redrawn UKF agrees with the Kalman filter to rounding error, better than
+$10^{-12}$. The shortcut computes an innovation variance of 2.1 instead of 2.6
+and reports a posterior position variance six times larger than the Kalman
+filter's. Nothing crashed,
+and nothing looks obviously broken in a plot, which is exactly why this test
+belongs in every UKF code base.
 
 ## Practical Implementation Considerations {#sec-ukf-practical-implementation-considerations}
 
 The UKF removes Jacobians from the main loop, but it does not remove numerical
 care. It trades derivative bookkeeping for sigma-point bookkeeping.
 
-The sigma-point scaling parameters matter. Very small $\alpha$ values keep
-points close to the mean, which can miss nonlinear curvature. Larger values
-sample farther away, which can expose nonlinear behavior but may stress models
-outside their valid region. Start with conventional values, then check
-innovations, consistency, and whether transformed sigma points remain physically
-meaningful.
+The scaling parameters matter, but not in the way they are often described. A
+small $\alpha$ does not make the filter blind to curvature: the scaled
+transform captures the local second-order terms for any spread, as the sweep
+above showed. What a small $\alpha$ buys is protection from *non-local*
+sampling effects: the model is only ever evaluated close to the mean, which is
+valuable when the function is badly behaved or invalid far from it. What a
+larger $\alpha$ buys is sensitivity to higher-order behavior across the whole
+uncertainty region, at the risk of evaluating the model where it was never
+meant to go. Start from the defaults in @sec-ukf-scaling-parameters, then check
+innovations and consistency (@sec-kf-consistency) and whether the transformed
+sigma points remain physically meaningful.
 
 A standard UKF needs a matrix square root of the covariance. Cholesky
 factorization is fast, but it requires positive definite covariance. If it
 fails, the right fix is usually to inspect the model and covariance update, not
 to blindly add a large diagonal term. A small jitter can be useful as a last
-numerical guardrail.
+numerical guardrail. Square-root UKF variants propagate the Cholesky factor
+directly and never form $\mathbf{P}$ at all, which removes this failure mode
+at the cost of more intricate code.
 
 ```{python}
 #| label: ukf-stable-cholesky-code
-#| eval: false
-
-import numpy as np
-
 
 def stable_cholesky(P: np.ndarray, jitter: float = 1e-10, max_tries: int = 5) -> np.ndarray:
+    """Cholesky with symmetrization and escalating jitter as a last resort."""
     P = 0.5 * (P + P.T)
     for i in range(max_tries):
         try:
@@ -464,44 +810,306 @@ def stable_cholesky(P: np.ndarray, jitter: float = 1e-10, max_tries: int = 5) ->
         except np.linalg.LinAlgError:
             pass
     raise np.linalg.LinAlgError("covariance is not positive definite")
+
+
+# A covariance that is positive semidefinite but singular (rank 1).
+P_singular = np.array([[1.0, 1.0], [1.0, 1.0]])
+L = stable_cholesky(P_singular)
+print("reconstruction error:", np.abs(L @ L.T - P_singular).max())
 ```
 
 For additive process and measurement noise, adding $\mathbf{Q}$ and
-$\mathbf{R}$ after the unscented transform is usually sufficient. For
-non-additive noise, augment the state with noise variables and generate sigma
-points over the augmented covariance. That is more expensive, but it models how
-noise passes through the nonlinear functions.
+$\mathbf{R}$ after the unscented transform is correct, provided the update
+redraws its sigma points as in @eq-ukf-redraw. For non-additive noise, augment
+the state with the noise variables and generate sigma points over the augmented
+covariance. That is more expensive, but it models how noise passes through the
+nonlinear functions.
 
-As with the EKF, avoid explicit inverses in the update. Compute the gain with a
-solve:
+As with the EKF, never form $\mathbf{S}_k^{-1}$ explicitly. The gain in
+`ukf_update` is computed with `np.linalg.solve`, which is both cheaper and more
+accurate than `np.linalg.inv`.
+
+## Angles and Wrapped Residuals {#sec-ukf-angles}
+
+Angles break the unscented transform in two places, not one. Everyone remembers
+the mean: averaging bearings of $+179^\circ$ and $-179^\circ$ gives $0^\circ$,
+which is due north when the answer is due south. Fewer people remember that
+every *difference* inside the covariance sums, the innovation, and the
+cross-covariance $\mathbf{P}_{xz}$ has the same problem. One unwrapped residual
+of $358^\circ$ in $\mathbf{S}_k$ is enough to tell the filter that its
+predicted bearing is uncertain by several radians, and the next update will
+ignore a perfectly good measurement.
+
+That is what the hooks are for. `make_angle_ops` builds a `StateOps` whose
+residual wraps the angle components to $[-\pi, \pi)$, whose $\boxplus$ wraps
+after adding, and whose mean averages the *wrapped residuals about the central
+sigma point* and adds the result back. That mean is consistent with the
+residual by construction and does not care that $W_0^{(m)}$ may be negative.
+(Weighted sine-and-cosine averaging also works for modest spreads; the
+residual form generalizes directly to rotations in @sec-ukf-attitude.)
 
 ```{python}
-#| label: ukf-gain-solve-code
-#| eval: false
+#| label: ukf-angle-ops-code
 
-import numpy as np
+def wrap_angle(angle):
+    """Wrap angles to [-pi, pi)."""
+    return (np.asarray(angle) + np.pi) % (2.0 * np.pi) - np.pi
 
 
-def ukf_gain(P_xz: np.ndarray, S: np.ndarray) -> np.ndarray:
-    return np.linalg.solve(S.T, P_xz.T).T
+def make_angle_ops(angle_idx) -> StateOps:
+    """StateOps for vectors whose entries angle_idx are angles in radians."""
+    idx = np.atleast_1d(angle_idx)
+
+    def add(x, dx):
+        out = np.array(x + dx, dtype=float)
+        out[..., idx] = wrap_angle(out[..., idx])
+        return out
+
+    def residual(a, b):
+        out = np.array(a - b, dtype=float)
+        out[..., idx] = wrap_angle(out[..., idx])
+        return out
+
+    def mean(points, wm):
+        # Average the wrapped residuals about the central point, then add back.
+        return add(points[0], wm @ residual(points, points[0]))
+
+    return StateOps(add, residual, mean)
 ```
 
-Angle states require special handling. Do not average headings by ordinary
-weighted arithmetic near the wrap boundary. Use sine/cosine averaging for planar
-angles, and use a manifold-aware mean for quaternions or rotation matrices.
+Here is the failure in a maritime setting. A vessel near the origin of a local
+north-east frame takes range and bearing to a buoy 400 m away and just west of
+due south, so the bearing is close to $\pm 180^\circ$. The vessel's
+own position is uncertain by 20 m north and 25 m east, which is enough for the
+sigma points to straddle the wrap.
 
 ```{python}
-#| label: ukf-circular-mean-code
-#| eval: false
+#| label: ukf-bearing-wrap-demo
 
-import numpy as np
+buoy = np.array([-400.0, 0.0])          # north, east [m]
 
 
-def circular_mean(angles: np.ndarray, weights: np.ndarray) -> float:
-    s = np.sum(weights * np.sin(angles))
-    c = np.sum(weights * np.cos(angles))
-    return float(np.arctan2(s, c))
+def range_bearing(x):
+    """Range and bearing (clockwise from north) from position x = [north, east] to the buoy."""
+    d = buoy - x[:2]
+    return np.array([np.hypot(d[0], d[1]), np.arctan2(d[1], d[0])])
+
+
+x_vessel = np.array([0.0, 3.0])
+P_vessel = np.diag([20.0**2, 25.0**2])
+z_ops = make_angle_ops([1])              # entry 1 of the measurement is an angle
+
+X, wm, wc = sigma_points(x_vessel, P_vessel)
+Z = np.array([range_bearing(p) for p in X])
+z_naive, S_naive = unscented_transform(Z, wm, wc)
+z_wrap, S_wrap = unscented_transform(Z, wm, wc, mean_fn=z_ops.mean, residual_fn=z_ops.residual)
+
+rng = np.random.default_rng(3)
+Z_mc = np.array([range_bearing(p) for p in rng.multivariate_normal(x_vessel, P_vessel, 20_000)])
+b_mc = np.arctan2(np.sin(Z_mc[:, 1]).mean(), np.cos(Z_mc[:, 1]).mean())
+sd_mc = np.std(wrap_angle(Z_mc[:, 1] - b_mc))
+
+print("                       bearing mean   bearing std")
+print(f"naive arithmetic       {np.rad2deg(z_naive[1]):10.2f} deg  {np.rad2deg(np.sqrt(S_naive[1, 1])):9.2f} deg")
+print(f"wrapped mean/residual  {np.rad2deg(z_wrap[1]):10.2f} deg  {np.rad2deg(np.sqrt(S_wrap[1, 1])):9.2f} deg")
+print(f"Monte Carlo            {np.rad2deg(b_mc):10.2f} deg  {np.rad2deg(sd_mc):9.2f} deg")
 ```
+
+The naive transform reports a mean bearing pointing roughly west and a standard
+deviation of about two hundred degrees. The hooked version agrees with Monte
+Carlo. In a filter, pass `z_ops` to `ukf_update` so that the innovation and
+$\mathbf{P}_{xz}$ are wrapped too, and pass angle-aware `x_ops` whenever the
+state itself contains a heading.
+
+For Project 1, the state carries roll, pitch, and yaw in entries 3 to 5 and the
+PnP measurement is $\mathbf{z} = \mathbf{x}_{0:6}$, so the same three indices
+are angles in both spaces: `x_ops = make_angle_ops([3, 4, 5])` and
+`z_ops = make_angle_ops([3, 4, 5])`. Euler angles are acceptable there because
+the drone stays near level. They are not acceptable when pitch can approach
+$\pm 90^\circ$, where sigma points spread across the singularity stop meaning
+anything. That case needs the next section.
+
+## UKF with Attitude {#sec-ukf-attitude}
+
+A quaternion has four numbers and three degrees of freedom, and the unit-norm
+constraint is not something a weighted sum respects. Averaging quaternion
+components fails in three ways. The average is not a unit quaternion.
+$\mathbf{q}$ and $-\mathbf{q}$ are the same rotation, so a sigma point that
+arrives with the other sign cancels its neighbors instead of reinforcing them.
+And a $4 \times 4$ covariance of a 3-DOF quantity is singular, so the next
+Cholesky factorization fails.
+
+The fix is the same error-state idea as the EKF's
+(@sec-ekf-error-state-filtering): carry the attitude as a quaternion, but let
+the *covariance* and the *sigma points* live in the three-dimensional
+attitude error. With the book's convention (@sec-frames-conventions) that the
+error is a small rotation resolved in the navigation frame,
+
+$$
+\mathbf{q}_b^n = \delta\mathbf{q}(\delta\boldsymbol{\theta}) \otimes \hat{\mathbf{q}}_b^n,
+\qquad
+\delta\mathbf{q}(\boldsymbol{\phi}) = \operatorname{Exp}(\boldsymbol{\phi}) =
+\begin{bmatrix}
+\cos(\|\boldsymbol{\phi}\|/2) \\
+\sin(\|\boldsymbol{\phi}\|/2)\,\boldsymbol{\phi}/\|\boldsymbol{\phi}\|
+\end{bmatrix},
+$$
+
+and $\operatorname{Log}$ is its inverse (taking the representative with
+non-negative scalar part, the shorter of the two equivalent rotations). The
+three state operations become:
+
+- **add**: $\hat{\mathbf{q}} \boxplus \delta\boldsymbol{\theta} = \operatorname{Exp}(\delta\boldsymbol{\theta}) \otimes \hat{\mathbf{q}}$,
+  so the sigma points are $\mathbf{q}^{(i)} = \operatorname{Exp}(\delta\boldsymbol{\theta}^{(i)}) \otimes \hat{\mathbf{q}}$
+  with $\delta\boldsymbol{\theta}^{(i)} \in \{\mathbf{0}, \pm s\boldsymbol{\ell}_i\}$;
+- **residual**: $\mathbf{q}_a \boxminus \mathbf{q}_b = \operatorname{Log}(\mathbf{q}_a \otimes \mathbf{q}_b^{-1})$,
+  a 3-vector, which is what goes into every covariance sum;
+- **mean**: start at $\bar{\mathbf{q}} = \mathbf{q}^{(0)}$ and iterate
+  $\bar{\mathbf{q}} \leftarrow \operatorname{Exp}\!\left(\sum_i W_i^{(m)}\, \mathbf{q}^{(i)} \boxminus \bar{\mathbf{q}}\right) \otimes \bar{\mathbf{q}}$
+  until the correction is negligible (a couple of iterations for filter-sized
+  spreads).
+
+The update then estimates an attitude error
+$\delta\hat{\boldsymbol{\theta}} = \mathbf{K}_k \boldsymbol{\nu}_k$, injects
+it with $\hat{\mathbf{q}}_{k|k} = \operatorname{Exp}(\delta\hat{\boldsymbol{\theta}}) \otimes \hat{\mathbf{q}}_{k|k-1}$,
+and the error mean resets to zero, exactly as in the error-state EKF. This is
+the structure of the unscented attitude filters used on spacecraft
+[@crassidisMarkley2003]; see Solà [@sola2017] for the quaternion algebra. If you
+prefer body-frame errors ($\mathbf{q} = \hat{\mathbf{q}} \otimes \delta\mathbf{q}$),
+flip the multiplication order in *both* add and residual. In a full navigation
+state, the attitude block uses these operations and the position, velocity,
+and bias blocks keep ordinary addition.
+
+```{python}
+#| label: ukf-attitude-code
+
+def quat_multiply(q1, q2):
+    """Hamilton product of scalar-first quaternions."""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array([
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ])
+
+
+def quat_conj(q):
+    return q * np.array([1.0, -1.0, -1.0, -1.0])
+
+
+def quat_exp(phi):
+    """Rotation vector -> unit quaternion."""
+    angle = np.linalg.norm(phi)
+    if angle < 1e-12:
+        q = np.concatenate([[1.0], 0.5 * phi])
+        return q / np.linalg.norm(q)
+    return np.concatenate([[np.cos(angle / 2.0)], np.sin(angle / 2.0) * phi / angle])
+
+
+def quat_log(q):
+    """Unit quaternion -> rotation vector, using the shorter of q and -q."""
+    q = q if q[0] >= 0.0 else -q
+    vec_norm = np.linalg.norm(q[1:])
+    if vec_norm < 1e-12:
+        return 2.0 * q[1:]
+    return 2.0 * np.arctan2(vec_norm, q[0]) * q[1:] / vec_norm
+
+
+def quat_to_dcm(q):
+    """C(q_b^n) = C_b^n for a scalar-first Hamilton quaternion."""
+    w, x, y, z = q
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+    ])
+
+
+def attitude_add(q, dtheta):
+    """q [+] dtheta: apply a navigation-frame attitude error."""
+    return quat_multiply(quat_exp(dtheta), q)
+
+
+def attitude_residual(q_a, q_b):
+    """q_a [-] q_b = Log(q_a * q_b^-1); accepts one quaternion or a stack of them."""
+    q_b_inv = quat_conj(q_b)
+    stack = np.atleast_2d(q_a)
+    out = np.array([quat_log(quat_multiply(q, q_b_inv)) for q in stack])
+    return out if np.ndim(q_a) == 2 else out[0]
+
+
+def attitude_mean(points, wm, iterations=5):
+    """Weighted mean on the rotation group by iterating in the error space."""
+    q = points[0]
+    for _ in range(iterations):
+        q = attitude_add(q, wm @ attitude_residual(points, q))
+    return q / np.linalg.norm(q)
+
+
+ATTITUDE = StateOps(attitude_add, attitude_residual, attitude_mean)
+```
+
+Two checks. First, the operations must round-trip: sigma points generated
+around $\hat{\mathbf{q}}$ and averaged with `ATTITUDE` must give back
+$\hat{\mathbf{q}}$ and $\mathbf{P}$, even if half the quaternions arrive with
+their signs flipped. Naive component averaging should fail that test, and does.
+Second, a real update: a vessel heading roughly south with a 10-degree heading
+uncertainty corrects its attitude using an accelerometer (which senses the
+gravity direction, here at rest) and a magnetometer (which senses Earth's
+field), the two vector measurements of a classic attitude and heading
+reference system. The generic `ukf_update` runs unchanged with `x_ops=ATTITUDE`.
+
+```{python}
+#| label: ukf-attitude-demo
+
+q_hat = quat_exp(np.array([0.0, 0.0, np.pi]))          # level, heading 180 deg (due south)
+P_att = np.diag(np.deg2rad([3.0, 3.0, 10.0])) ** 2      # roll/pitch/heading error std
+
+# Check 1: round trip, with half the sigma-point quaternions sign-flipped.
+X, wm, wc = sigma_points(q_hat, P_att, add_fn=ATTITUDE.add)
+X_flipped = X.copy()
+X_flipped[1::2] *= -1.0                                 # same rotations, opposite signs
+q_mean, P_back = unscented_transform(X_flipped, wm, wc,
+                                     mean_fn=ATTITUDE.mean, residual_fn=ATTITUDE.residual)
+q_naive = wm @ X_flipped
+q_naive /= np.linalg.norm(q_naive)
+print(f"error-state mean: {np.rad2deg(np.linalg.norm(attitude_residual(q_mean, q_hat))):.1e} deg off,"
+      f" covariance error {np.abs(P_back - P_att).max():.1e}")
+print(f"naive quaternion average: {np.rad2deg(np.linalg.norm(attitude_residual(q_naive, q_hat))):.1f} deg off")
+
+# Check 2: one update with gravity and magnetic-field directions (NED, normalized).
+g_dir_n = np.array([0.0, 0.0, -1.0])     # accelerometer at rest senses -g, i.e. "up"
+m_dir_n = np.array([0.44, 0.0, 0.90])    # mid-latitude field: north and steeply down
+
+
+def h_vectors(q):
+    """Body-frame accelerometer and magnetometer directions predicted from attitude q."""
+    C_n_b = quat_to_dcm(q).T
+    return np.concatenate([C_n_b @ g_dir_n, C_n_b @ m_dir_n])
+
+
+R_vec = np.diag([0.01**2] * 3 + [0.02**2] * 3)
+q_true = attitude_add(q_hat, np.deg2rad([1.0, -2.0, 8.0]))   # true error: 8 deg of heading
+rng = np.random.default_rng(5)
+z_vec = h_vectors(q_true) + rng.normal(0.0, np.sqrt(np.diag(R_vec)))
+
+q_post, P_post, _, _ = ukf_update(q_hat, P_att, z_vec, R_vec, h_vectors, x_ops=ATTITUDE)
+for name, q, P_q in [("prior", q_hat, P_att), ("posterior", q_post, P_post)]:
+    err = np.rad2deg(attitude_residual(q_true, q))
+    sd = np.rad2deg(np.sqrt(np.diag(P_q)))
+    print(f"{name:9s} error (N, E, D) = {np.round(err, 2)} deg,  std = {np.round(sd, 2)} deg")
+```
+
+The error-state mean is untouched by the sign flips, while the naive average
+lands 180 degrees away, the sort of answer that turns a ship around. In the
+update, the heading error drops from 8 degrees to under one, the heading
+standard deviation from 10 degrees to under 3, and the roll and pitch
+uncertainties shrink to about half a degree, consistent with the 1% and 2%
+direction noise of the two sensors. Exercise 5 asks what happens with
+the magnetometer alone, and why a single vector measurement can never pin down
+all three attitude angles.
 
 ## EKF vs UKF {#sec-ukf-ekf-ukf}
 
@@ -525,34 +1133,86 @@ UKF advantages:
 
 UKF costs:
 
-- $2n+1$ sigma points for an $n$-state filter;
-- more model evaluations;
-- sensitivity to sigma point scaling parameters;
+- $2n+1$ sigma points for an $n$-state filter, so 31 propagations per step for
+  Project 1's 15 states, plus a Cholesky factorization before each predict and
+  each update;
+- sensitivity to the sigma-point spread;
 - care required for angles, quaternions, and constrained states.
 
 For small to medium nonlinear navigation problems, the UKF is often a very good
 teaching and prototyping tool. For large inertial navigation systems, EKF and
 error-state EKF formulations remain common because they are computationally
-efficient and fit the structure of the physics.
+efficient and fit the structure of the physics. In both cases the honest way to
+decide is the one Part C asks for: run them on the same data and compare
+accuracy, consistency, and runtime.
 
 ## Algorithm Summary {#sec-ukf-algorithm-summary}
 
 ```text
 predict:
-    generate sigma points from x, P
+    draw sigma points from x, P
     propagate each point through f(point, u)
-    reconstruct x_bar and P_bar
+    reconstruct x_bar and P_bar (angle-aware mean and residuals)
     add Q
 
 update:
-    pass predicted sigma points through h(point)
-    reconstruct predicted measurement z_bar and S
-    compute cross covariance P_xz
-    K = P_xz inv(S)
-    x = x_bar + K (z - z_bar)
+    REDRAW sigma points from x_bar, P_bar
+    pass them through h(point)
+    reconstruct predicted measurement z_bar and S, add R
+    compute cross covariance P_xz (wrapped residuals)
+    K = solve(S, P_xz.T).T
+    x = x_bar [+] K (z [-] z_bar)
     P = P_bar - K S K.T
 ```
 
 The UKF's central idea is simple: when nonlinear functions bend uncertainty,
 sample the uncertainty structure before the bend, push those points through the
-real function, and rebuild the Gaussian afterward.
+real function, and rebuild the Gaussian afterward. The details that make it
+work in practice are just as simple to state and easy to forget: redraw before
+the update, keep the spread sensible, and never subtract two angles without
+wrapping the answer.
+
+## Exercises {#sec-ukf-exercises}
+
+1. **The covariance identity.** Starting from @eq-ukf-transform with the
+   weights of @eq-ukf-center-weights, derive @eq-ukf-psd-identity. (Hint:
+   write $\mathcal{Y}^{(i)} - \boldsymbol{\mu}_y = \mathbf{d}_i - \bar{\mathbf{m}}$
+   and use $\sum_{i \ge 1} W_i \mathbf{d}_i = \bar{\mathbf{m}}$.) Conclude that
+   the scaled UT covariance is positive semidefinite whenever $\beta \ge \alpha^2$.
+   Then find a one-dimensional example in which the unscaled transform
+   ($\alpha = 1$, $\beta = 0$) with $-1 < \kappa < 0$ returns a negative
+   variance.
+
+2. **How big should $\beta$ be?** Let $x \sim \mathcal{N}(\mu, \sigma^2)$ and
+   $y = x^2$. Show that the scaled unscented transform returns the exact mean of
+   $y$ for every $\alpha$ and $\kappa$, and that it returns the exact variance
+   if and only if $s^2 - \alpha^2 + \beta = 2$. What does this give in the
+   limit $\alpha \to 0$? For $\alpha = 1$ and $\kappa = 3 - n$? Relate your
+   answer to the last two rows of the parameter sweep in
+   @sec-ukf-unscented-transform.
+
+3. **Redraw or reuse?** Using the constant-velocity model of
+   @sec-kf-cv-example with a white-noise-acceleration process noise of
+   intensity $q$, run the redrawn UKF and the propagated-points shortcut for 200
+   Monte Carlo trials of 100 steps each. For $q \in \{0.01, 0.1, 1, 10\}$,
+   compute the average NEES of each filter (@sec-kf-consistency) and plot it
+   against the 95% chi-square bounds. Explain the trend in terms of the ratio
+   of $\mathbf{Q}$ to $\mathbf{P}_{k|k-1}$.
+
+4. **A buoy abeam.** Extend the bearing example into a full filter: a vessel
+   steams west at 5 m/s along a track that passes 50 m north of a buoy,
+   tracked with a constant-velocity model, and every second takes a range and
+   bearing to the buoy. At closest approach the buoy is due south, so the
+   bearing sweeps through $\pm 180^\circ$. Run the UKF with and without the
+   angle-aware `z_ops`. Plot the position error and the bearing innovation for
+   both, and identify the time step at which the unwrapped filter goes wrong.
+
+5. **One vector is not enough.** Rerun the attitude update of
+   @sec-ukf-attitude with the magnetometer alone. Show analytically that a
+   rotation about $\mathbf{m}^n$ leaves the predicted measurement unchanged,
+   and find that direction in the posterior covariance (look at its
+   eigenvectors). Then run a Monte Carlo average NEES (300 trials, true errors
+   drawn from the prior) of the two-vector update for prior heading standard
+   deviations of 5, 10, 15, and 25 degrees, and explain why consistency
+   degrades as the prior widens. Suggest a fix that an AHRS could use at
+   start-up.

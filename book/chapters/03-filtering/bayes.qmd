@@ -32,27 +32,56 @@ $$
 The bar is not decoration. It means the estimator has propagated forward but
 has not yet used the new measurement.
 
+This chapter indexes time with $t$, following Thrun, Burgard, and Fox
+[@ProbRob]. From @sec-kf onward, discrete filter steps are indexed with $k$ and
+the two beliefs get Gaussian names: the prior
+$\overline{\operatorname{bel}}(\mathbf{x}_k)$ becomes the predicted estimate
+$\hat{\mathbf{x}}_{k|k-1}$ with covariance $\mathbf{P}_{k|k-1}$, and the
+posterior $\operatorname{bel}(\mathbf{x}_k)$ becomes the updated estimate
+$\hat{\mathbf{x}}_{k|k}$ with covariance $\mathbf{P}_{k|k}$. Same objects,
+different clothes.
+
 ## The Markov Assumption {#sec-bayes-markov-assumption}
 
 The exact belief depends on the entire history. That is honest but not useful.
-The Bayes filter becomes recursive by assuming the current state captures all
-history relevant to the future:
+The Bayes filter becomes recursive through two conditional-independence
+assumptions, one about motion and one about sensing.
+
+The first says the current state captures all history relevant to predicting
+the next state:
 
 $$
-p(\mathbf{x}_t \mid \mathbf{x}_{0:t-1}, \mathbf{u}_{1:t})
+p(\mathbf{x}_t \mid \mathbf{x}_{0:t-1}, \mathbf{z}_{1:t-1}, \mathbf{u}_{1:t})
 =
 p(\mathbf{x}_t \mid \mathbf{x}_{t-1}, \mathbf{u}_t).
 $$
 
-This is the first-order Markov assumption. In plain engineering language:
+The second says the current measurement depends only on the current state.
+Once $\mathbf{x}_t$ is known, earlier states, earlier measurements, and inputs
+add nothing:
+
+$$
+p(\mathbf{z}_t \mid \mathbf{x}_{0:t}, \mathbf{z}_{1:t-1}, \mathbf{u}_{1:t})
+=
+p(\mathbf{z}_t \mid \mathbf{x}_t).
+$$
+
+The prediction step uses the first assumption and the update step uses the
+second. Together they are the first-order Markov assumption, and a state that
+satisfies both is what Thrun, Burgard, and Fox call *complete* [@ProbRob]. In
+plain engineering language:
 
 > If the state is chosen well, yesterday's measurements matter only through
-> yesterday's state estimate.
+> yesterday's belief over the state.
 
-This assumption is not free. If the state omits an IMU bias, a current, a wind
-term, a clock error, or a flexing sensor mount that materially affects future
-measurements, the filter will pretend the missing variable is noise. Sometimes
-that is fine. Sometimes it is where the bug lives.
+These assumptions are not free. If the state omits an IMU bias, a current, a
+wind term, a clock error, or a flexing sensor mount that materially affects
+future measurements, the filter will pretend the missing variable is noise.
+Measurement errors that are correlated in time break the second assumption in
+the same way: GNSS multipath that persists for minutes, or a camera that keeps
+misdetecting the same feature, will be counted by the filter as fresh,
+independent evidence every time it appears, and the filter will become
+overconfident. Sometimes that is fine. Sometimes it is where the bug lives.
 
 ## Prediction {#sec-bayes-prediction}
 
@@ -171,6 +200,12 @@ motion_sigma = 0.55
 
 # T[i, j] approximates p(x_t = x_i | x_{t-1} = x_j, u_t).
 T = gaussian_pdf(x[:, None], x[None, :] + commanded_motion, motion_sigma)
+# Normalizing each column makes it a proper distribution over the grid. Near the
+# far wall part of the motion Gaussian falls off the grid, and this rescaling
+# silently piles that mass into the last cells: it models a robot that cannot
+# leave the hallway, whether or not we meant to. It is harmless for this one
+# step from a prior near 3.8 m, but see the boundary warning in the
+# implementation section and the explicit choice in the multi-step run below.
 T = T / (T.sum(axis=0, keepdims=True) * dx)
 
 prediction = normalize_density(T @ prior * dx, x)
@@ -202,7 +237,6 @@ For a discrete state grid, the Bayes filter can be written compactly:
 
 ```{python}
 #| label: bayes-discrete-filter-code
-#| eval: false
 
 import numpy as np
 
@@ -230,6 +264,101 @@ If a 2D robot position is discretized into $1000 \times 1000$ cells, the belief
 already has one million entries. Add heading, velocity, IMU bias, and map
 features, and the grid becomes absurd. This is the curse of dimensionality
 wearing a very practical hat.
+
+## Global Localization in the Hallway {#sec-bayes-global-localization-hallway}
+
+One step shows the mechanics. Several steps show why anyone puts up with a
+full-distribution filter. Put the robot somewhere in a 12 m hallway with doors
+at 2, 4, 8, and 11 m, and do not tell the filter where: the prior is uniform.
+This is the *global localization* problem, and it is exactly where a single
+Gaussian has nothing sensible to say.
+
+The robot moves about a meter per step. Its door detector fires with
+probability 0.9 in front of a door and has a 5% false-alarm rate elsewhere.
+Both readings carry information: "door" favors door locations, and "no door"
+disfavors them. The run below uses the `predict_bayes` and `update_bayes`
+functions above, and makes the boundary choice explicit rather than accidental.
+
+```{python}
+#| label: bayes-hallway-global-localization
+
+import numpy as np
+
+hallway = np.linspace(0.0, 12.0, 1201)           # 1 cm cells
+cell = hallway[1] - hallway[0]
+door_positions = np.array([2.0, 4.0, 8.0, 11.0])
+step, step_sigma = 1.0, 0.15                     # commanded motion and its noise [m]
+
+
+def p_door(x, doors=door_positions, width=0.25, p_detect=0.9, p_false=0.05):
+    """Sensor model p(z = door | x) for an array of positions x."""
+    bump = np.max(np.exp(-0.5 * ((x[:, None] - doors[None, :]) / width) ** 2), axis=1)
+    return p_false + (p_detect - p_false) * bump
+
+
+# transition[i, j] = p(x_t = cell i | x_{t-1} = cell j, u_t). Columns are NOT
+# renormalized: mass that would carry the robot past the far wall is dropped,
+# and predict_bayes renormalizes the total. That conditions on the robot still
+# being in the hallway instead of piling probability against the wall.
+offsets = hallway[:, None] - (hallway[None, :] + step)
+transition = np.exp(-0.5 * (offsets / step_sigma) ** 2) / (np.sqrt(2 * np.pi) * step_sigma) * cell
+
+rng = np.random.default_rng(7)
+belief = np.full(hallway.size, 1.0 / hallway.size)   # uniform prior: "somewhere"
+likelihood_door = p_door(hallway)
+x_true, history = 0.0, []
+for t in range(1, 9):
+    x_true += step + step_sigma * rng.standard_normal()            # the robot moves
+    saw_door = rng.random() < p_door(np.array([x_true]))[0]         # the sensor reads
+    belief_bar = predict_bayes(belief, transition)
+    belief = update_bayes(belief_bar, likelihood_door if saw_door else 1.0 - likelihood_door)
+    history.append({"t": t, "x_true": x_true, "door": saw_door,
+                    "belief_bar": belief_bar, "belief": belief})
+    print(f"t = {t}: true x = {x_true:5.2f} m, z = {'door' if saw_door else 'no door':7s} "
+          f"most probable x = {hallway[np.argmax(belief)]:5.2f} m")
+```
+
+```{python}
+#| label: fig-bayes-hallway-sequence
+#| fig-cap: "Global localization in the hallway over eight steps. Gray bands are doors, the black triangle is the true position, the thin line is the predicted belief, and the filled curve is the posterior. The belief starts uniform, splits into one hypothesis per door, and collapses to a single peak once the pattern of doors and walls is unambiguous."
+#| code-fold: true
+
+import matplotlib.pyplot as plt
+
+fig, axes = plt.subplots(4, 2, figsize=(8, 8.5), sharex=True)
+for ax, h in zip(axes.T.ravel(), history):
+    density_bar = h["belief_bar"] / cell
+    density = h["belief"] / cell
+    for door in door_positions:
+        ax.axvspan(door - 0.25, door + 0.25, color="0.88", zorder=0)
+    ax.plot(hallway, density_bar, color="C0", linewidth=0.9, alpha=0.7)
+    ax.fill_between(hallway, density, color="C1", alpha=0.6)
+    ax.plot([h["x_true"]], [0.0], "k^", markersize=8, clip_on=False)
+    ax.set_ylim(0.0, 1.1 * max(density.max(), density_bar.max()))
+    ax.set_yticks([])
+    ax.set_title(f"t = {h['t']}: {'door' if h['door'] else 'no door'}", fontsize=10)
+for ax in axes[-1]:
+    ax.set_xlabel("position [m]")
+fig.tight_layout()
+plt.show()
+```
+
+Read the panels column by column. The first "no door" removes probability from
+the door locations, and the first "door" leaves one hypothesis per door. After
+the second "door", the dominant hypothesis is the only place where a door is
+followed two meters later by another door: the pair at 2 and 4 m. The other
+hypotheses shrink to small bumps rather than vanishing, and a few "no door"
+readings and one more door finish them off, leaving a single peak sitting on
+the robot. A Kalman filter started with a broad Gaussian would have placed its mean
+somewhere in the middle of the hallway and smeared its uncertainty over the
+walls, which is a correct description of nothing in particular.
+
+In fairness, this run is a tidy one: the robot happens to pass close to the
+center of each door it meets. It only samples the hallway once per meter and its
+position random-walks, so on other random seeds it often steps past a door
+without a detection, and two or three hypotheses can survive well past eight
+steps. Global localization takes as long as the environment stays ambiguous,
+not as long as the reader's patience. Exercise 5 measures how lucky this run was.
 
 ## Transition Models as Matrices {#sec-bayes-transition-models-as}
 
@@ -283,9 +412,9 @@ which this landmark would produce this range are plausible."
 For a scalar range measurement,
 
 $$
-z_t = h(\mathbf{x}_t) + \nu_t,
+z_t = h(\mathbf{x}_t) + v_t,
 \qquad
-\nu_t \sim \mathcal{N}(0, \sigma_z^2),
+v_t \sim \mathcal{N}(0, \sigma_z^2),
 $$
 
 the likelihood is
@@ -333,7 +462,6 @@ measurements can all break that assumption.
 
 ```{python}
 #| label: bayes-safe-normalization-code
-#| eval: false
 
 import numpy as np
 
@@ -352,7 +480,6 @@ normalize with a log-sum-exp operation.
 
 ```{python}
 #| label: bayes-log-normalization-code
-#| eval: false
 
 import numpy as np
 
@@ -411,3 +538,50 @@ for each time step:
 
 The notation will become more specialized in later chapters, but the structure
 does not change.
+
+## Exercises {#sec-bayes-exercises}
+
+1. **Where the assumptions enter.** Starting from
+   $p(\mathbf{x}_t \mid \mathbf{z}_{1:t}, \mathbf{u}_{1:t})$, derive the
+   prediction and update equations of the Bayes filter using only Bayes' rule
+   and the law of total probability. Mark the exact line where each of the two
+   conditional-independence assumptions of @sec-bayes-markov-assumption is used,
+   and the line where you assume that a future input $\mathbf{u}_t$ carries no
+   information about $\mathbf{x}_{t-1}$.
+
+2. **A five-cell world by hand.** A robot lives on a circular track of five
+   cells, numbered 0 to 4, with doors in cells 0 and 1. Its door sensor reports
+   "door" with probability 0.8 in a door cell and 0.1 elsewhere. A move command
+   advances it one cell with probability 0.8 and leaves it in place with
+   probability 0.2. Starting from a uniform belief, the robot senses "door",
+   moves, and senses "door" again. Compute the belief after each of the three
+   steps by hand, and give the most probable cell at the end.
+
+3. **Boundary conditions.** Take the hallway grid of @sec-bayes-1d-hallway-example
+   and a prior $\mathcal{N}(9.0, 0.3^2)$ near the far wall. Apply ten
+   prediction-only steps with three transition models: the column-normalized
+   matrix from the one-step example, the "leaky" matrix from the multi-step run,
+   and a circular (wrap-around) matrix. Plot the three beliefs and report the
+   probability mass in the last 0.5 m of the hallway for each. Which physical
+   situation does each model describe, and which would you choose for a robot
+   that genuinely stops at a wall?
+
+4. **Terrain-relative navigation.** An autonomous underwater vehicle runs along
+   a straight survey line over a seabed whose depth profile is known from a
+   prior bathymetric survey. A depth sensor plus a downward altimeter give the
+   seabed depth below the vehicle with $\sigma = 0.5$ m. Build a synthetic
+   20 km depth profile with a few repeated features, move the vehicle 50 m per
+   step with 5 m of motion noise, and implement a grid Bayes filter that starts
+   from a uniform belief. Show how long the belief stays multimodal and how the
+   repeated features delay convergence. The same idea, terrain contour matching,
+   guides cruise missiles; navigation methods do not get to choose their
+   applications.
+
+5. **How lucky was that run?** Repeat the global-localization run for seeds 0
+   to 39. At every step, record the probability mass within 0.5 m of the true
+   position; plot its average over seeds against $t$, and report the fraction of
+   runs that are localized (mass above 0.5) at $t = 8$. Then make one change at a
+   time, in both the simulated sensor and the filter's model: (a) cut the
+   false-alarm rate to 1%, and (b) double the door width the detector responds
+   to. Which helps more, and what does that tell you about where the ambiguity in
+   this problem comes from?

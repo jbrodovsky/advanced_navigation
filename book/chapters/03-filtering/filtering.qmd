@@ -96,9 +96,21 @@ def normalize_density(p, x):
 
 x = np.linspace(-2.0, 10.0, 1000)
 
-prior = gaussian_pdf(x, mean=2.0, sigma=0.7)
-prediction = gaussian_pdf(x, mean=3.2, sigma=1.1)
-likelihood = gaussian_pdf(x, mean=4.1, sigma=0.55)
+# Prior belief about the state.
+prior_mean, prior_var = 2.0, 0.7**2
+
+# Motion step: the vehicle commands a displacement u, executed with noise var_u.
+# For a Gaussian belief and additive Gaussian motion noise, the predicted
+# belief is Gaussian with mean + u and variance var + var_u.
+u, var_u = 1.2, 0.85**2
+pred_mean, pred_var = prior_mean + u, prior_var + var_u
+
+# Measurement of the state with noise standard deviation 0.55.
+z, var_z = 4.1, 0.55**2
+
+prior = gaussian_pdf(x, prior_mean, np.sqrt(prior_var))
+prediction = gaussian_pdf(x, pred_mean, np.sqrt(pred_var))
+likelihood = gaussian_pdf(x, z, np.sqrt(var_z))
 posterior = normalize_density(prediction * likelihood, x)
 
 fig, ax = plt.subplots(figsize=(8, 4))
@@ -214,20 +226,48 @@ systems usually succeed or quietly get weird.
 
 ## What This Part Covers {#sec-filtering-what-this-part}
 
-This part starts with the full Bayes filter because it is the cleanest
-statement of the problem. It then moves to Kalman filtering, where Gaussian
-assumptions make the problem computationally practical. The EKF and UKF relax
-the linearity assumption in different ways, while the Information Filter shows
-how the same Gaussian belief can be stored in a form that favors additive
-measurement fusion. Finally, histogram and particle filters show what changes
-when we stop forcing the belief to be Gaussian.
+@sec-bayes starts with the full Bayes filter, because it is the cleanest
+statement of the problem and every later filter approximates it. @sec-kf then
+assumes linear models and Gaussian noise, which makes the Bayes filter exact and
+cheap, and develops the tools every later chapter reuses: process-noise
+modeling, consistency tests, and smoothing. @sec-ekf relaxes linearity by
+linearizing about the current estimate, and introduces the error-state form used
+in inertial navigation. @sec-ukf relaxes it differently, by pushing sigma points
+through the nonlinear models instead of differentiating them. @sec-information-filter
+stores the same Gaussian belief in inverse-covariance form, which favors
+additive measurement fusion and leads toward factor graphs. Finally, @sec-pf
+drops the Gaussian assumption altogether with histogram and particle filters.
 
-The recurring pattern is always the same:
+The recurring pattern is always the same: **predict** with the motion model,
+**update** with measurements, and **check** whether the assumptions still make
+sense.
 
-$$
-\boxed{\text{predict with motion}}
-\qquad
-\boxed{\text{update with measurements}}
-\qquad
-\boxed{\text{check whether the assumptions still make sense}}.
-$$
+## Exercises {#sec-filtering-exercises}
+
+1. **One step by hand.** Using the numbers in @fig-filtering-predict-update
+   (prior $\mathcal{N}(2.0, 0.7^2)$, commanded motion $u = 1.2$ with noise
+   variance $0.85^2$, and a measurement $z = 4.1$ with noise variance
+   $0.55^2$), compute the predicted mean and variance and then the posterior
+   mean and variance. Use the fact that the product of two Gaussian densities
+   in $x$ is proportional to a Gaussian whose precision (inverse variance) is
+   the sum of the two precisions. Check your answer numerically against the
+   `posterior` array in the figure code.
+
+2. **Dead reckoning between fixes.** A ship's navigator before satellite
+   navigation advanced a dead-reckoning position between celestial fixes. Model
+   this in one dimension: each hour the ship moves a known distance with motion
+   noise variance $\sigma_u^2 = 0.25\ \text{nmi}^2$, and every sixth hour a
+   celestial fix with variance $\sigma_z^2 = 1\ \text{nmi}^2$ is taken. Starting
+   from a variance of $0.1\ \text{nmi}^2$, write a short loop that alternates
+   prediction and occasional updates for 48 hours and plot the variance against
+   time. Explain the sawtooth shape, and find the steady-state variance just
+   before and just after each fix.
+
+3. **Design questions for a real vehicle.** Pick one platform: an autonomous
+   underwater vehicle with a Doppler velocity log, depth sensor, IMU, and
+   occasional acoustic position fixes; or a delivery drone with an IMU,
+   barometer, GNSS, and a downward camera. Answer each question in
+   @sec-filtering-practical-design-questions for that platform in a short
+   paragraph. Which sensors drive prediction and which provide updates? Which
+   part of the belief, if any, could plausibly become multimodal, and what does
+   that imply about the filter family?

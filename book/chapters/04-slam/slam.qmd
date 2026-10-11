@@ -258,7 +258,7 @@ landmark = LandmarkEKF.initialize(pose, first_observation, R)
 landmark.mean
 ```
 
-The Joseph-form covariance update is used here for the same reason it was used in @sec-ekf-measurement-update: it is slightly more expensive and much less annoying.
+The Joseph-form covariance update is used here for the same reason it was used in @sec-kf-joseph-form: it is slightly more expensive and much less annoying.
 
 ## FastSLAM Algorithm {#sec-slam-fastslam-algorithm}
 

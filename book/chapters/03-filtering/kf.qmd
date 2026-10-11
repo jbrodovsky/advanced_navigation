@@ -1,0 +1,1395 @@
+# The Kalman Filter {#sec-kf}
+
+In 1960 Rudolf Kalman published a recursive solution to the linear filtering
+problem [@kalman1960]. Within a few years Stanley Schmidt's group at NASA Ames
+had adapted it for Apollo midcourse navigation, and it has been the default
+answer to "how do I blend a motion model with noisy sensors?" ever since. Your
+phone runs several of them. So does nearly every aircraft, ship, and spacecraft
+that knows where it is.
+
+@sec-bayes gave the exact recursion for any belief. This chapter makes that
+recursion cheap by making two assumptions: the models are linear, and every
+noise source is Gaussian. Under those assumptions a Gaussian belief stays
+Gaussian forever, so the filter only has to carry a mean vector and a covariance
+matrix. That sounds restrictive because it is. It is also the most useful
+approximation in navigation.
+
+The chapter derives the filter from Gaussian conditioning, builds a complete
+simulation you can poke at, and then spends real time on the parts that
+separate a filter that *runs* from a filter that *works*: process-noise
+modeling, consistency testing, and smoothing. @sec-ekf then relaxes the
+linearity assumption.
+
+## Linear Gaussian Systems {#sec-kf-linear-gaussian-systems}
+
+The discrete-time linear system model is
+
+$$
+\mathbf{x}_k =
+\mathbf{F}_k \mathbf{x}_{k-1}
++
+\mathbf{B}_k \mathbf{u}_k
++
+\mathbf{w}_k,
+\qquad
+\mathbf{w}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{Q}_k),
+$$ {#eq-kf-process-model}
+
+with measurement model
+
+$$
+\mathbf{z}_k =
+\mathbf{H}_k \mathbf{x}_k
++
+\mathbf{v}_k,
+\qquad
+\mathbf{v}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{R}_k).
+$$ {#eq-kf-measurement-model}
+
+The process noise $\mathbf{w}_k$ and measurement noise $\mathbf{v}_k$ are
+zero-mean, white (uncorrelated across time), uncorrelated with each other, and
+uncorrelated with the initial state. Each of those words is an assumption you
+will eventually see violated by real hardware.
+
+The symbols have standard roles. $\mathbf{F}_k$ propagates the state,
+$\mathbf{B}_k$ maps known inputs into the state, $\mathbf{Q}_k$ describes
+process noise and unmodeled dynamics, $\mathbf{H}_k$ maps state into
+measurement space, and $\mathbf{R}_k$ describes measurement noise.
+
+The belief is a Gaussian with a mean and covariance. The subscript $k|j$ reads
+"the estimate at step $k$ using measurements through step $j$." In the language
+of @sec-bayes,
+
+$$
+\operatorname{bel}(\mathbf{x}_{k-1})
+=
+\mathcal{N}\!\left(\hat{\mathbf{x}}_{k-1|k-1}, \mathbf{P}_{k-1|k-1}\right),
+\qquad
+\overline{\operatorname{bel}}(\mathbf{x}_{k})
+=
+\mathcal{N}\!\left(\hat{\mathbf{x}}_{k|k-1}, \mathbf{P}_{k|k-1}\right).
+$$
+
+The prior (predicted) estimate is $\hat{\mathbf{x}}_{k|k-1}$ and the posterior
+(updated) estimate is $\hat{\mathbf{x}}_{k|k}$. If the assumptions hold, the
+Kalman filter is not an approximation of the Bayes filter. It *is* the Bayes
+filter, written in closed form.
+
+## Prediction {#sec-kf-prediction}
+
+The Bayes prediction integral pushes the previous belief through the
+transition model. When the belief is Gaussian and the transition is linear with
+additive Gaussian noise, the result is Gaussian with mean and covariance given
+by the linear-transformation rule from @sec-filtering-why-linear-gaussian:
+
+$$
+\hat{\mathbf{x}}_{k|k-1}
+=
+\mathbf{F}_k \hat{\mathbf{x}}_{k-1|k-1}
++
+\mathbf{B}_k \mathbf{u}_k,
+$$ {#eq-kf-predict-mean}
+
+$$
+\mathbf{P}_{k|k-1}
+=
+\mathbf{F}_k \mathbf{P}_{k-1|k-1} \mathbf{F}_k^T
++
+\mathbf{Q}_k.
+$$ {#eq-kf-predict-cov}
+
+The covariance equation says two things at once. First, existing uncertainty is
+transformed by the dynamics: position uncertainty grows as velocity uncertainty
+leaks into it. Second, new uncertainty enters through process noise. If
+$\mathbf{Q}_k$ is too small, the filter becomes overconfident and may reject
+valid measurements. If $\mathbf{Q}_k$ is too large, the filter wanders around
+and lets measurements dominate. @sec-kf-process-noise shows how to build
+$\mathbf{Q}_k$ from physics rather than from hope.
+
+## Deriving the Update by Gaussian Conditioning {#sec-kf-derivation}
+
+The measurement update is Bayes' rule. For Gaussians, Bayes' rule reduces to a
+single piece of linear algebra: conditioning one block of a jointly Gaussian
+vector on another. That is the whole derivation, so it is worth doing
+carefully. The probability background is in @sec-probability and the matrix
+background in @sec-linalg.
+
+### Conditioning a Joint Gaussian {#sec-kf-conditioning-joint-gaussian}
+
+Suppose two random vectors $\mathbf{a}$ and $\mathbf{b}$ are jointly Gaussian:
+
+$$
+\begin{bmatrix}
+\mathbf{a} \\ \mathbf{b}
+\end{bmatrix}
+\sim
+\mathcal{N}\!\left(
+\begin{bmatrix}
+\boldsymbol{\mu}_a \\ \boldsymbol{\mu}_b
+\end{bmatrix},
+\begin{bmatrix}
+\boldsymbol{\Sigma}_{aa} & \boldsymbol{\Sigma}_{ab} \\
+\boldsymbol{\Sigma}_{ba} & \boldsymbol{\Sigma}_{bb}
+\end{bmatrix}
+\right).
+$$
+
+Then $\mathbf{a}$ given an observed value of $\mathbf{b}$ is Gaussian with
+
+$$
+\mathbf{a} \mid \mathbf{b}
+\sim
+\mathcal{N}\!\left(
+\boldsymbol{\mu}_a + \boldsymbol{\Sigma}_{ab}\boldsymbol{\Sigma}_{bb}^{-1}(\mathbf{b} - \boldsymbol{\mu}_b),
+\;
+\boldsymbol{\Sigma}_{aa} - \boldsymbol{\Sigma}_{ab}\boldsymbol{\Sigma}_{bb}^{-1}\boldsymbol{\Sigma}_{ba}
+\right).
+$$ {#eq-kf-gaussian-conditioning}
+
+Here is a proof that fits on an index card. Define the residual
+
+$$
+\mathbf{r}
+=
+\mathbf{a} - \boldsymbol{\mu}_a
+- \boldsymbol{\Sigma}_{ab}\boldsymbol{\Sigma}_{bb}^{-1}(\mathbf{b} - \boldsymbol{\mu}_b).
+$$
+
+It is a linear function of jointly Gaussian variables, so $\mathbf{r}$ and
+$\mathbf{b}$ are jointly Gaussian. Their cross-covariance is
+
+$$
+\operatorname{Cov}(\mathbf{r}, \mathbf{b})
+=
+\boldsymbol{\Sigma}_{ab}
+- \boldsymbol{\Sigma}_{ab}\boldsymbol{\Sigma}_{bb}^{-1}\boldsymbol{\Sigma}_{bb}
+= \mathbf{0}.
+$$
+
+Uncorrelated jointly Gaussian variables are independent (this is the one place
+where "Gaussian" does real work; see
+@sec-probability-cross-covariance-independence). So learning $\mathbf{b}$ tells
+us nothing about $\mathbf{r}$. Rearranging the definition,
+
+$$
+\mathbf{a}
+=
+\underbrace{\boldsymbol{\mu}_a + \boldsymbol{\Sigma}_{ab}\boldsymbol{\Sigma}_{bb}^{-1}(\mathbf{b} - \boldsymbol{\mu}_b)}_{\text{known once } \mathbf{b} \text{ is observed}}
++
+\underbrace{\mathbf{r}}_{\text{independent of } \mathbf{b}},
+$$
+
+and expanding $\operatorname{Cov}(\mathbf{r})$ gives
+$\boldsymbol{\Sigma}_{aa} - \boldsymbol{\Sigma}_{ab}\boldsymbol{\Sigma}_{bb}^{-1}\boldsymbol{\Sigma}_{ba}$.
+That matrix is the **Schur complement** of $\boldsymbol{\Sigma}_{bb}$ in the
+joint covariance. It also appears in the block inverse: the upper-left block of
+the joint *information* matrix is exactly the inverse of this Schur complement,
+which is why the information filter of @sec-information-filter can condition
+by simply reading off a block.
+
+### Reading Off the Kalman Filter {#sec-kf-reading-off-filter}
+
+Now apply @eq-kf-gaussian-conditioning to the state and the measurement. Given
+all measurements through $k-1$, the state is
+$\mathcal{N}(\hat{\mathbf{x}}_{k|k-1}, \mathbf{P}_{k|k-1})$, and
+$\mathbf{z}_k = \mathbf{H}_k\mathbf{x}_k + \mathbf{v}_k$ is a linear function of
+the state and an independent Gaussian noise. The pair is therefore jointly
+Gaussian:
+
+$$
+\begin{bmatrix}
+\mathbf{x}_k \\ \mathbf{z}_k
+\end{bmatrix}
+\sim
+\mathcal{N}\!\left(
+\begin{bmatrix}
+\hat{\mathbf{x}}_{k|k-1} \\
+\mathbf{H}_k \hat{\mathbf{x}}_{k|k-1}
+\end{bmatrix},
+\begin{bmatrix}
+\mathbf{P}_{k|k-1} & \mathbf{P}_{k|k-1}\mathbf{H}_k^T \\
+\mathbf{H}_k\mathbf{P}_{k|k-1} & \mathbf{H}_k\mathbf{P}_{k|k-1}\mathbf{H}_k^T + \mathbf{R}_k
+\end{bmatrix}
+\right).
+$$ {#eq-kf-joint}
+
+Match the blocks: $\mathbf{a} = \mathbf{x}_k$, $\mathbf{b} = \mathbf{z}_k$,
+$\boldsymbol{\Sigma}_{ab} = \mathbf{P}_{k|k-1}\mathbf{H}_k^T$, and
+$\boldsymbol{\Sigma}_{bb} = \mathbf{H}_k\mathbf{P}_{k|k-1}\mathbf{H}_k^T + \mathbf{R}_k$.
+Give the recurring pieces names:
+
+$$
+\boldsymbol{\nu}_k = \mathbf{z}_k - \mathbf{H}_k\hat{\mathbf{x}}_{k|k-1}
+\quad \text{(innovation)},
+\qquad
+\mathbf{S}_k = \mathbf{H}_k\mathbf{P}_{k|k-1}\mathbf{H}_k^T + \mathbf{R}_k
+\quad \text{(innovation covariance)},
+$$
+
+$$
+\mathbf{K}_k = \mathbf{P}_{k|k-1}\mathbf{H}_k^T\mathbf{S}_k^{-1}
+\quad \text{(Kalman gain)}.
+$$
+
+The conditional mean and covariance are then
+
+$$
+\hat{\mathbf{x}}_{k|k} = \hat{\mathbf{x}}_{k|k-1} + \mathbf{K}_k\boldsymbol{\nu}_k,
+\qquad
+\mathbf{P}_{k|k} = \mathbf{P}_{k|k-1} - \mathbf{K}_k\mathbf{S}_k\mathbf{K}_k^T
+= (\mathbf{I} - \mathbf{K}_k\mathbf{H}_k)\mathbf{P}_{k|k-1}.
+$$
+
+That is the Kalman filter. No calculus of variations, no optimal control, just
+"condition a Gaussian." Two consequences are worth pausing on.
+
+First, $\mathbf{P}_{k|k}$ does not depend on the measured value $\mathbf{z}_k$,
+only on $\mathbf{H}_k$, $\mathbf{R}_k$, and the prior. You can run the
+covariance recursion *before* building the vehicle. This is covariance analysis,
+and it is how navigation engineers decide whether a proposed sensor suite can
+meet a requirement before anyone buys a sensor.
+
+Second, the derivation has a non-Gaussian reading. Drop the Gaussian assumption
+and keep only means and covariances, and the same gain still gives the
+minimum-mean-square-error estimator among all *linear* estimators. Its defining
+property is the orthogonality principle: the estimation error is uncorrelated
+with the innovation and with every past measurement, which is precisely the
+$\operatorname{Cov}(\mathbf{r}, \mathbf{b}) = \mathbf{0}$ statement above
+[@barShalom2001].
+
+Do not take the conditioning formula on faith. The cell below draws a million
+samples of a scalar state and measurement, keeps only the samples whose
+measurement landed near a particular value, and compares their statistics to the
+Kalman update.
+
+```{python}
+#| label: kf-conditioning-check
+
+import numpy as np
+
+rng = np.random.default_rng(11)
+
+x_prior, P_prior = 10.0, 4.0     # prior mean and variance of the state
+R = 1.0                          # measurement noise variance
+z_observed = 12.5                # the measurement we "received"
+
+# Sample the joint distribution of (x, z) implied by the model.
+x_samples = x_prior + np.sqrt(P_prior) * rng.standard_normal(1_000_000)
+z_samples = x_samples + np.sqrt(R) * rng.standard_normal(x_samples.size)
+
+# Brute-force conditioning: keep samples whose measurement is close to z_observed.
+near = np.abs(z_samples - z_observed) < 0.02
+x_given_z = x_samples[near]
+
+# Kalman update for the same problem.
+S = P_prior + R
+K = P_prior / S
+x_post = x_prior + K * (z_observed - x_prior)
+P_post = (1.0 - K) * P_prior
+
+print(f"samples kept:       {x_given_z.size}")
+print(f"empirical mean/var: {x_given_z.mean():.3f} / {x_given_z.var():.3f}")
+print(f"Kalman mean/var:    {x_post:.3f} / {P_post:.3f}")
+```
+
+## The Measurement Update {#sec-kf-measurement-update}
+
+Collecting the results, one Kalman filter cycle is
+
+$$
+\begin{aligned}
+\hat{\mathbf{x}}_{k|k-1} &= \mathbf{F}_k \hat{\mathbf{x}}_{k-1|k-1} + \mathbf{B}_k \mathbf{u}_k, \\
+\mathbf{P}_{k|k-1} &= \mathbf{F}_k \mathbf{P}_{k-1|k-1} \mathbf{F}_k^T + \mathbf{Q}_k, \\
+\boldsymbol{\nu}_k &= \mathbf{z}_k - \mathbf{H}_k \hat{\mathbf{x}}_{k|k-1}, \\
+\mathbf{S}_k &= \mathbf{H}_k \mathbf{P}_{k|k-1} \mathbf{H}_k^T + \mathbf{R}_k, \\
+\mathbf{K}_k &= \mathbf{P}_{k|k-1} \mathbf{H}_k^T \mathbf{S}_k^{-1}, \\
+\hat{\mathbf{x}}_{k|k} &= \hat{\mathbf{x}}_{k|k-1} + \mathbf{K}_k \boldsymbol{\nu}_k, \\
+\mathbf{P}_{k|k} &= (\mathbf{I} - \mathbf{K}_k \mathbf{H}_k)\mathbf{P}_{k|k-1}(\mathbf{I} - \mathbf{K}_k \mathbf{H}_k)^T + \mathbf{K}_k \mathbf{R}_k \mathbf{K}_k^T.
+\end{aligned}
+$$ {#eq-kf-cycle}
+
+The last line is the Joseph form of the covariance update, explained in
+@sec-kf-joseph-form. The implementation follows the equations directly. Two
+habits are worth building from day one: solve a linear system for the gain
+instead of forming $\mathbf{S}_k^{-1}$, and return the innovation and its
+covariance so you can test the filter later.
+
+```{python}
+#| label: kf-core-functions
+
+import numpy as np
+
+
+def kf_predict(x, P, F, Q, B=None, u=None):
+    """Kalman prediction: returns the prior mean and covariance.
+
+    x, P : posterior mean (n,) and covariance (n, n) at step k-1
+    F, Q : state transition (n, n) and process-noise covariance (n, n)
+    B, u : optional input matrix (n, p) and known input (p,)
+    """
+    x_pred = F @ x if B is None else F @ x + B @ u
+    P_pred = F @ P @ F.T + Q
+    return x_pred, P_pred
+
+
+def kf_update(x_pred, P_pred, z, H, R):
+    """Kalman measurement update with the Joseph covariance form.
+
+    Returns the posterior mean and covariance plus the innovation and its
+    covariance, which are needed for consistency checks.
+    """
+    nu = z - H @ x_pred                       # innovation
+    S = H @ P_pred @ H.T + R                  # innovation covariance
+    # K = P H^T S^{-1}. Since P and S are symmetric, K^T = S^{-1} H P,
+    # so a single linear solve gives the gain without inverting S.
+    K = np.linalg.solve(S, H @ P_pred).T
+    x_post = x_pred + K @ nu
+    I_KH = np.eye(x_pred.size) - K @ H
+    P_post = I_KH @ P_pred @ I_KH.T + K @ R @ K.T
+    return x_post, P_post, nu, S
+```
+
+When $\mathbf{R}_k$ is diagonal, the measurement components are independent and
+can be processed one scalar at a time, each update using the previous one's
+output as its prior. Each step then needs only a scalar division, and the result
+is identical to the batch update. Many flight codes are written this way.
+
+## The Joseph Form and Factored Filters {#sec-kf-joseph-form}
+
+Where does the Joseph form come from, and why do we prefer it? Write the
+posterior error for an arbitrary gain $\mathbf{K}$ (errors are true minus
+estimate):
+
+$$
+\mathbf{e}_{k|k}
+=
+\mathbf{x}_k - \hat{\mathbf{x}}_{k|k}
+=
+\mathbf{x}_k - \hat{\mathbf{x}}_{k|k-1} - \mathbf{K}(\mathbf{H}_k\mathbf{x}_k + \mathbf{v}_k - \mathbf{H}_k\hat{\mathbf{x}}_{k|k-1})
+=
+(\mathbf{I} - \mathbf{K}\mathbf{H}_k)\mathbf{e}_{k|k-1} - \mathbf{K}\mathbf{v}_k.
+$$
+
+The prior error and the new measurement noise are uncorrelated, so
+
+$$
+\mathbf{P}_{k|k}
+=
+(\mathbf{I} - \mathbf{K}\mathbf{H}_k)\mathbf{P}_{k|k-1}(\mathbf{I} - \mathbf{K}\mathbf{H}_k)^T
++ \mathbf{K}\mathbf{R}_k\mathbf{K}^T.
+$$ {#eq-kf-joseph}
+
+Nothing in that derivation used the optimal gain. **The Joseph form is the
+correct covariance for any gain**, optimal or not. The short form
+$(\mathbf{I}-\mathbf{K}\mathbf{H})\mathbf{P}_{k|k-1}$ is what you get after
+substituting the optimal gain, so it is only correct when the gain is exactly
+optimal. Real filters use suboptimal gains all the time: a measurement that is
+deweighted because it looked suspicious, a gated update, a precomputed
+steady-state gain, a reduced-order filter that ignores some states, or a gain
+computed in slightly different arithmetic than the covariance. In all of these
+cases only the Joseph form tells the truth.
+
+It is also better numerically. The Joseph form is a congruence of a
+positive-semidefinite matrix plus another positive-semidefinite matrix, so
+roundoff cannot easily make it indefinite. The short form subtracts, and
+subtraction is how covariances acquire negative eigenvalues after a few hours of
+flight. The cell below uses a deliberately halved gain and checks both formulas
+against Monte Carlo.
+
+```{python}
+#| label: kf-joseph-check
+
+import numpy as np
+
+rng = np.random.default_rng(5)
+
+P_prior = np.array([[4.0, 1.0], [1.0, 2.0]])
+H = np.array([[1.0, 0.0]])
+R = np.array([[1.0]])
+
+S = H @ P_prior @ H.T + R
+K_opt = np.linalg.solve(S, H @ P_prior).T
+K_sub = 0.5 * K_opt                      # e.g. a deweighted, suspicious measurement
+
+I_KH = np.eye(2) - K_sub @ H
+P_joseph = I_KH @ P_prior @ I_KH.T + K_sub @ R @ K_sub.T
+P_short = I_KH @ P_prior                 # only valid for the optimal gain
+
+# Monte Carlo: e+ = (I - K H) e- - K v
+e_prior = rng.multivariate_normal(np.zeros(2), P_prior, size=200_000)
+v = rng.normal(0.0, np.sqrt(R[0, 0]), size=(200_000, 1))
+e_post = e_prior @ I_KH.T - v @ K_sub.T
+P_monte_carlo = np.cov(e_post.T)
+
+np.set_printoptions(precision=3, suppress=True)
+print("Monte Carlo:\n", P_monte_carlo)
+print("Joseph form:\n", P_joseph)
+print("short form (wrong for this gain):\n", P_short)
+```
+
+Even the Joseph form has limits. An inertial navigation filter may carry
+position errors of meters next to gyro biases of $10^{-6}$ rad/s, so the
+covariance eigenvalues can span more than twelve orders of magnitude.
+**Square-root filters** propagate a factor $\mathbf{P} = \mathbf{L}\mathbf{L}^T$
+instead of $\mathbf{P}$ itself; the factor's condition number is the square root
+of the covariance's, which effectively doubles the available precision and
+guarantees a positive-semidefinite result. Bierman's **UD filter** factors
+$\mathbf{P} = \mathbf{U}\mathbf{D}\mathbf{U}^T$ with $\mathbf{U}$ unit upper
+triangular and $\mathbf{D}$ diagonal, and processes scalar measurements without
+any square roots [@bierman1977]. UD filters flew on 1970s and 1980s flight
+computers with short word lengths and are still common in spacecraft navigation.
+For coursework with 64-bit floats and well-scaled states, Joseph plus an
+occasional symmetrization is usually enough. When a long-duration INS filter's
+covariance goes indefinite, factored forms are the grown-up fix.
+
+## Kalman Gain Intuition {#sec-kf-gain-intuition}
+
+In a scalar measurement problem with $H = 1$, the gain is
+
+$$
+K = \frac{P_{k|k-1}}{P_{k|k-1} + R}.
+$$
+
+If measurement noise $R$ is small, $K$ approaches one and the filter trusts the
+measurement. If $R$ is large, $K$ approaches zero and the filter trusts the
+prediction. The matrix gain
+$\mathbf{K} = \mathbf{P}_{k|k-1}\mathbf{H}^T\mathbf{S}^{-1}$ is the same ratio
+in disguise: the prior uncertainty mapped into measurement space, divided by the
+total uncertainty of the innovation. The off-diagonal terms of
+$\mathbf{P}_{k|k-1}\mathbf{H}^T$ are what let a position measurement correct a
+velocity it never saw.
+
+```{python}
+#| label: fig-kf-gain-noise
+#| fig-cap: "Scalar Kalman gain as measurement noise changes. Larger predicted uncertainty increases measurement influence; larger measurement noise decreases it."
+#| code-fold: true
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+R_values = np.logspace(-3, 2, 500)
+predicted_variances = [0.05, 0.2, 1.0, 5.0]
+
+fig, ax = plt.subplots(figsize=(8, 4))
+for P_pred in predicted_variances:
+    gain = P_pred / (P_pred + R_values)
+    ax.semilogx(R_values, gain, label=fr"$P_{{k|k-1}}={P_pred}$")
+
+ax.set_xlabel("measurement variance R")
+ax.set_ylabel("Kalman gain K")
+ax.set_title("Measurement trust decreases as measurement noise increases")
+ax.grid(True, which="both", alpha=0.25)
+ax.legend()
+plt.show()
+```
+
+The gain is not a magic tuning knob. It is the consequence of the uncertainty
+model. If the gain seems wrong, inspect $\mathbf{P}_{k|k-1}$ and $\mathbf{R}$
+before you start sprinkling constants into the code.
+
+## A Constant-Velocity Example {#sec-kf-cv-example}
+
+Time to run one. A survey vessel transits a dredged channel at roughly constant
+speed. Its GNSS receiver reports along-track position once per second with a
+standard deviation of 4 m, and we want position and speed. The state is
+along-track position $s$ and speed $\dot{s}$:
+
+$$
+\mathbf{x}
+=
+\begin{bmatrix}
+s \\
+\dot{s}
+\end{bmatrix},
+\qquad
+\mathbf{F}
+=
+\begin{bmatrix}
+1 & \Delta t \\
+0 & 1
+\end{bmatrix},
+\qquad
+\mathbf{H}
+=
+\begin{bmatrix}
+1 & 0
+\end{bmatrix}.
+$$
+
+Nobody holds a ship's speed perfectly constant: currents, wind, and the
+helmsman all perturb it. We model those perturbations as white-noise
+acceleration with power spectral density $q$, which gives the process-noise
+matrix derived in @sec-kf-process-noise:
+
+$$
+\mathbf{Q}
+=
+q
+\begin{bmatrix}
+\Delta t^3/3 & \Delta t^2/2 \\
+\Delta t^2/2 & \Delta t
+\end{bmatrix}.
+$$
+
+The simulation generates the truth from exactly this model, so the filter's
+assumptions are correct. That is the right place to start: if a filter misbehaves
+when its model is *perfect*, the bug is in the code, not the physics.
+
+```{python}
+#| label: kf-cv-simulation
+
+import numpy as np
+
+
+def cv_model(dt, q):
+    """Constant-velocity transition and continuous white-noise-acceleration Q."""
+    F = np.array([[1.0, dt],
+                  [0.0, 1.0]])
+    Q = q * np.array([[dt**3 / 3.0, dt**2 / 2.0],
+                      [dt**2 / 2.0, dt]])
+    return F, Q
+
+
+def simulate_cv(rng, n_steps, dt, q, sigma_z, x0):
+    """Simulate truth and position measurements. Index 0 is the initial state."""
+    F, Q = cv_model(dt, q)
+    L_Q = np.linalg.cholesky(Q)             # w_k = L_Q @ n with n ~ N(0, I)
+    x_true = np.zeros((n_steps + 1, 2))
+    x_true[0] = x0
+    z = np.full((n_steps + 1, 1), np.nan)   # no measurement at k = 0
+    for k in range(1, n_steps + 1):
+        x_true[k] = F @ x_true[k - 1] + L_Q @ rng.standard_normal(2)
+        z[k, 0] = x_true[k, 0] + sigma_z * rng.standard_normal()
+    return x_true, z
+
+
+def run_kf(z, F, Q, H, R, x0_hat, P0):
+    """Run a linear KF over z[1:], storing priors (for smoothing) and innovations."""
+    n_steps, n, m = len(z) - 1, x0_hat.size, H.shape[0]
+    out = {
+        "x": np.zeros((n_steps + 1, n)), "P": np.zeros((n_steps + 1, n, n)),
+        "x_pred": np.zeros((n_steps + 1, n)), "P_pred": np.zeros((n_steps + 1, n, n)),
+        "nu": np.zeros((n_steps + 1, m)), "S": np.zeros((n_steps + 1, m, m)),
+    }
+    out["x"][0], out["P"][0] = x0_hat, P0
+    out["x_pred"][0], out["P_pred"][0] = x0_hat, P0
+    for k in range(1, n_steps + 1):
+        x_pred, P_pred = kf_predict(out["x"][k - 1], out["P"][k - 1], F, Q)
+        x_post, P_post, nu, S = kf_update(x_pred, P_pred, z[k], H, R)
+        out["x_pred"][k], out["P_pred"][k] = x_pred, P_pred
+        out["x"][k], out["P"][k] = x_post, P_post
+        out["nu"][k], out["S"][k] = nu, S
+    return out
+
+
+# Scenario: 1 Hz GNSS, 4 m noise, ship near 5 m/s.
+dt, q_true, sigma_z, n_steps = 1.0, 0.1, 4.0, 150
+H = np.array([[1.0, 0.0]])
+R = np.array([[sigma_z**2]])
+x0_true = np.array([0.0, 5.0])
+P0 = np.diag([10.0**2, 2.0**2])
+
+rng = np.random.default_rng(42)
+x_true, z = simulate_cv(rng, n_steps, dt, q_true, sigma_z, x0_true)
+# Draw the initial estimate so that its error really has covariance P0.
+x0_hat = x0_true + np.linalg.cholesky(P0) @ rng.standard_normal(2)
+
+F, Q = cv_model(dt, q_true)
+kf = run_kf(z, F, Q, H, R, x0_hat, P0)
+
+err = x_true - kf["x"]
+sigma = np.sqrt(np.stack([kf["P"][:, 0, 0], kf["P"][:, 1, 1]], axis=1))
+print(f"raw GNSS position RMSE: {np.sqrt(np.mean((z[1:, 0] - x_true[1:, 0])**2)):.2f} m")
+print(f"KF position RMSE:       {np.sqrt(np.mean(err[1:, 0]**2)):.2f} m")
+print(f"KF speed RMSE:          {np.sqrt(np.mean(err[1:, 1]**2)):.2f} m/s")
+print(f"fraction of errors inside 3 sigma (pos, vel): "
+      f"{np.mean(np.abs(err[1:]) < 3 * sigma[1:], axis=0)}")
+```
+
+The filter cuts the position error of the raw fixes by more than 40% and
+recovers a speed the sensor never measured. @fig-kf-cv-truth compares truth and estimate
+directly. The position panel zooms in on the first minute, because at full scale
+a 4 m error on a 750 m track is invisible.
+
+```{python}
+#| label: fig-kf-cv-truth
+#| fig-cap: "Constant-velocity Kalman filter on simulated GNSS fixes. Top: the first 60 s of along-track position. Bottom: estimated speed with its ±3σ band against the true speed, which the sensor never measures directly."
+#| code-fold: true
+
+import matplotlib.pyplot as plt
+
+t = np.arange(n_steps + 1) * dt
+window = t <= 60.0
+
+fig, axes = plt.subplots(2, 1, figsize=(8, 6.5))
+ax = axes[0]
+ax.plot(t[window], x_true[window, 0], color="k", label="truth")
+ax.plot(t[window], z[window, 0], ".", color="C1", alpha=0.7, label="GNSS fixes")
+ax.plot(t[window], kf["x"][window, 0], color="C0", label="KF estimate")
+ax.set_ylabel("along-track position [m]")
+ax.legend()
+ax.grid(True, alpha=0.25)
+
+ax = axes[1]
+ax.fill_between(t, kf["x"][:, 1] - 3 * sigma[:, 1], kf["x"][:, 1] + 3 * sigma[:, 1],
+                color="C0", alpha=0.2, label=r"estimate $\pm 3\sigma$")
+ax.plot(t, x_true[:, 1], color="k", label="true speed")
+ax.plot(t, kf["x"][:, 1], color="C0", label="KF speed")
+ax.set_ylim(0.0, 10.0)
+ax.set_xlabel("time [s]")
+ax.set_ylabel("speed [m/s]")
+ax.legend(loc="upper right")
+ax.grid(True, alpha=0.25)
+fig.tight_layout()
+plt.show()
+```
+
+The more useful plot is the error plot, @fig-kf-cv-errors. In simulation we know
+the truth, so we can check whether the errors actually stay inside the bounds the
+filter claims. The third panel shows the innovations, which is the one diagnostic
+you can also compute on a real vehicle with no truth at all. For a healthy filter
+they hover around zero, about 99.7% of them fall inside $\pm 3\sqrt{S_k}$, and
+they look like structureless noise.
+
+```{python}
+#| label: fig-kf-cv-errors
+#| fig-cap: "Estimation errors with the filter's ±3σ bounds (top two panels) and innovations with ±3√S bounds (bottom). Errors stay inside the bounds and the innovations look white, as they should when the model is correct."
+#| code-fold: true
+
+fig, axes = plt.subplots(3, 1, figsize=(8, 7.5), sharex=True)
+labels = ["position error [m]", "speed error [m/s]"]
+for i, ax in enumerate(axes[:2]):
+    ax.plot(t, err[:, i], color="C0", label="error (true - estimate)")
+    ax.plot(t, 3 * sigma[:, i], "--", color="C3", label=r"$\pm 3\sigma$")
+    ax.plot(t, -3 * sigma[:, i], "--", color="C3")
+    ax.set_ylabel(labels[i])
+    ax.grid(True, alpha=0.25)
+axes[0].set_ylim(-15, 15)
+axes[1].set_ylim(-4, 4)
+axes[0].legend(loc="upper right")
+
+ax = axes[2]
+s_nu = np.sqrt(kf["S"][1:, 0, 0])
+ax.plot(t[1:], kf["nu"][1:, 0], ".", color="C2", label="innovation")
+ax.plot(t[1:], 3 * s_nu, "--", color="C3", label=r"$\pm 3\sqrt{S_k}$")
+ax.plot(t[1:], -3 * s_nu, "--", color="C3")
+ax.set_ylabel("innovation [m]")
+ax.set_xlabel("time [s]")
+ax.legend(loc="upper right")
+ax.grid(True, alpha=0.25)
+fig.tight_layout()
+plt.show()
+```
+
+Notice how quickly the bounds settle. With a time-invariant model the gain and
+covariance converge to steady-state values within a few dozen steps, and they
+would converge to the same values for *any* measurement sequence, because, as
+@sec-kf-derivation showed, the covariance recursion never looks at the data.
+
+## Process Noise and Discretization {#sec-kf-process-noise}
+
+$\mathbf{Q}$ is the most abused matrix in navigation. It is tempting to treat it
+as "a small diagonal matrix because the code needed one." It is better treated
+as a physical model of everything that pushes the state around that the
+deterministic model leaves out. This section builds $\mathbf{Q}$ from a
+continuous-time model, which is where the physics lives.
+
+### Continuous Models {#sec-kf-continuous-models}
+
+Real motion is continuous; digital filters run at discrete steps. A common
+continuous-time linear model is
+
+$$
+\dot{\mathbf{x}}(t)
+=
+\mathbf{A}\mathbf{x}(t)
++
+\mathbf{B}\mathbf{u}(t)
++
+\mathbf{G}\mathbf{w}(t),
+\qquad
+\mathbb{E}\!\left[\mathbf{w}(t)\mathbf{w}(\tau)^T\right] = \mathbf{Q}_c\,\delta(t - \tau),
+$$
+
+where $\mathbf{w}(t)$ is continuous white noise, $\mathbf{G}$ says which states
+it drives, and $\mathbf{Q}_c$ is its **power spectral density**. Note the units:
+if $w$ is an acceleration in m/s², then $\mathbf{Q}_c$ has units of
+(m/s²)²·s = m²/s³. It is a density, not a variance, which is exactly what a
+sensor data sheet gives you when it quotes noise in units per $\sqrt{\text{Hz}}$.
+
+Over one step $\Delta t$ the state transition is the matrix exponential
+$\boldsymbol{\Phi} = e^{\mathbf{A}\Delta t}$ (approximately
+$\mathbf{I} + \mathbf{A}\Delta t$ for small steps), and the discrete process
+noise accumulates every bit of white noise injected during the interval,
+propagated to the end of it:
+
+$$
+\mathbf{Q}_d
+=
+\int_0^{\Delta t}
+\boldsymbol{\Phi}(\tau)\,\mathbf{G}\mathbf{Q}_c\mathbf{G}^T\,\boldsymbol{\Phi}(\tau)^T
+\,d\tau,
+\qquad
+\boldsymbol{\Phi}(\tau) = e^{\mathbf{A}\tau}.
+$$ {#eq-kf-qd-integral}
+
+### White-Noise Acceleration Models {#sec-kf-white-noise-acceleration}
+
+For the constant-velocity model,
+
+$$
+\mathbf{A}
+=
+\begin{bmatrix}
+0 & 1 \\
+0 & 0
+\end{bmatrix},
+\qquad
+\mathbf{G}
+=
+\begin{bmatrix}
+0 \\ 1
+\end{bmatrix},
+\qquad
+\boldsymbol{\Phi}(\tau)
+=
+\begin{bmatrix}
+1 & \tau \\
+0 & 1
+\end{bmatrix},
+\qquad
+\boldsymbol{\Phi}(\tau)\mathbf{G}
+=
+\begin{bmatrix}
+\tau \\ 1
+\end{bmatrix}.
+$$
+
+With scalar spectral density $Q_c = q$, @eq-kf-qd-integral becomes an integral
+of polynomials:
+
+$$
+\mathbf{Q}_d
+=
+q\int_0^{\Delta t}
+\begin{bmatrix}
+\tau^2 & \tau \\
+\tau & 1
+\end{bmatrix}
+d\tau
+=
+q
+\begin{bmatrix}
+\Delta t^3/3 & \Delta t^2/2 \\
+\Delta t^2/2 & \Delta t
+\end{bmatrix}.
+$$ {#eq-kf-cwna}
+
+This is the **continuous white-noise acceleration** (CWNA) model. Its matrix is
+full rank, and it scales correctly when you change the step size: run the filter
+at 10 Hz or 100 Hz with the same $q$ and the accumulated uncertainty over one
+second is the same.
+
+A different and also common model assumes the acceleration is a random constant
+over each step, independent from step to step, with variance $\sigma_a^2$. The
+acceleration enters through $\mathbf{G}_d = [\Delta t^2/2, \; \Delta t]^T$, so
+
+$$
+\mathbf{Q}_d
+=
+\mathbf{G}_d\sigma_a^2\mathbf{G}_d^T
+=
+\sigma_a^2
+\begin{bmatrix}
+\Delta t^4/4 & \Delta t^3/2 \\
+\Delta t^3/2 & \Delta t^2
+\end{bmatrix}.
+$$ {#eq-kf-pwca}
+
+This **piecewise-constant acceleration** model has rank one, its parameter
+$\sigma_a^2$ has units of m²/s⁴ rather than m²/s³, and it is tied to the step
+size. Neither model is "right." CWNA describes a platform buffeted continuously
+by many small forces, like a ship in a seaway. Piecewise-constant acceleration
+fits a vehicle whose commanded acceleration genuinely changes once per control
+cycle. What is wrong is plugging a $\sigma_a^2$ into the CWNA matrix or vice
+versa: the units do not match, and the filter will be mistuned by a factor that
+depends on $\Delta t$. A useful starting point for CWNA is to choose $q$ so that
+$\sqrt{q\,\Delta t}$ is about the speed change you expect over one step; for the
+piecewise model, $\sigma_a$ between one half and one times the largest expected
+acceleration [@barShalom2001].
+
+### The Van Loan Method {#sec-kf-van-loan}
+
+@eq-kf-qd-integral is easy for the constant-velocity model and tedious for
+almost anything else. Van Loan's method computes $\boldsymbol{\Phi}$ and
+$\mathbf{Q}_d$ together from one matrix exponential [@vanLoan1978]. Build the
+$2n \times 2n$ block matrix
+
+$$
+\mathbf{M}
+=
+\begin{bmatrix}
+-\mathbf{A} & \mathbf{G}\mathbf{Q}_c\mathbf{G}^T \\
+\mathbf{0} & \mathbf{A}^T
+\end{bmatrix}\Delta t,
+\qquad
+e^{\mathbf{M}}
+=
+\begin{bmatrix}
+\cdots & \boldsymbol{\Phi}^{-1}\mathbf{Q}_d \\
+\mathbf{0} & \boldsymbol{\Phi}^T
+\end{bmatrix}.
+$$
+
+The lower-right block is $\boldsymbol{\Phi}^T$, and premultiplying the
+upper-right block by $\boldsymbol{\Phi}$ gives $\mathbf{Q}_d$. The cell checks
+the method against @eq-kf-cwna and then uses it on a model where nobody wants to
+do the integral by hand: a vessel whose speed perturbations decay with a drag
+time constant $\tau_d$, so $\dot{v} = -v/\tau_d + w$. A numerical quadrature of
+@eq-kf-qd-integral serves as an independent check.
+
+```{python}
+#| label: kf-van-loan
+
+import numpy as np
+from scipy.integrate import quad_vec
+from scipy.linalg import expm
+
+
+def van_loan(A, G, Qc, dt):
+    """Discretize (A, G, Qc) over dt. Returns Phi and Q_d."""
+    n = A.shape[0]
+    M = np.zeros((2 * n, 2 * n))
+    M[:n, :n] = -A
+    M[:n, n:] = G @ Qc @ G.T
+    M[n:, n:] = A.T
+    E = expm(M * dt)
+    Phi = E[n:, n:].T
+    Q_d = Phi @ E[:n, n:]
+    return Phi, 0.5 * (Q_d + Q_d.T)   # symmetrize away roundoff
+
+
+q, dt_vl = 0.1, 0.5
+A_cv = np.array([[0.0, 1.0], [0.0, 0.0]])
+G_cv = np.array([[0.0], [1.0]])
+Phi, Q_d = van_loan(A_cv, G_cv, np.array([[q]]), dt_vl)
+F_closed, Q_closed = cv_model(dt_vl, q)
+print("CV model: Van Loan matches closed form:",
+      np.allclose(Phi, F_closed) and np.allclose(Q_d, Q_closed))
+
+# Speed perturbations with first-order drag: v_dot = -v / tau_d + w.
+tau_d = 20.0
+A_drag = np.array([[0.0, 1.0], [0.0, -1.0 / tau_d]])
+Phi_drag, Q_drag = van_loan(A_drag, G_cv, np.array([[q]]), dt_vl)
+
+
+def integrand(tau):
+    PhiG = expm(A_drag * tau) @ G_cv
+    return (PhiG * q) @ PhiG.T
+
+
+Q_quad, _ = quad_vec(integrand, 0.0, dt_vl)
+np.set_printoptions(precision=6, suppress=True)
+print("drag model Q_d (Van Loan):\n", Q_drag)
+print("matches numerical quadrature:", np.allclose(Q_drag, Q_quad, rtol=1e-8, atol=1e-12))
+```
+
+### Noise That Enters Through Inputs {#sec-kf-input-noise}
+
+Often the noisiest thing in the propagation is not an unknown force but a
+*measured input*. Suppose the filter knows the input $\mathbf{u}_k$ only through
+a sensor, so the input the vehicle actually experienced was
+$\mathbf{u}_k + \mathbf{n}_k$ with
+$\mathbf{n}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{Q}_u)$. Then
+
+$$
+\mathbf{x}_k
+=
+\mathbf{F}_k\mathbf{x}_{k-1} + \mathbf{B}_k(\mathbf{u}_k + \mathbf{n}_k),
+$$
+
+and the input noise appears as process noise
+$\mathbf{w}_k = \mathbf{B}_k\mathbf{n}_k$ with covariance
+$\mathbf{B}_k\mathbf{Q}_u\mathbf{B}_k^T$. For a nonlinear model
+$\mathbf{x}_k = f(\mathbf{x}_{k-1}, \mathbf{u}_k + \mathbf{n}_k)$, the same
+argument with the input Jacobian $\mathbf{L}_k = \partial f / \partial \mathbf{u}$
+gives
+
+$$
+\mathbf{P}_{k|k-1}
+=
+\mathbf{F}_k\mathbf{P}_{k-1|k-1}\mathbf{F}_k^T
++
+\mathbf{L}_k\mathbf{Q}_u\mathbf{L}_k^T.
+$$ {#eq-kf-input-noise}
+
+If the model has unmodeled dynamics beyond the noisy inputs, add a
+$\mathbf{Q}_k$ term for them as well.
+
+Thrun, Burgard, and Fox write the same thing as
+$\mathbf{G}_t\boldsymbol{\Sigma}_{t-1}\mathbf{G}_t^T + \mathbf{V}_t\mathbf{M}_t\mathbf{V}_t^T$,
+where $\mathbf{V}_t$ is the control Jacobian and $\mathbf{M}_t$ the control-noise
+covariance [@ProbRob]. In our constant-velocity model with a measured
+acceleration held over the step, $\mathbf{L} = \mathbf{B} = [\Delta t^2/2,\;\Delta t]^T$
+and $\mathbf{L}\mathbf{Q}_u\mathbf{L}^T$ is exactly @eq-kf-pwca. The
+piecewise-constant acceleration model is literally "the acceleration input is
+noisy and held over the step."
+
+An inertial navigation system is the extreme case of this pattern. The
+accelerometers and gyroscopes are *inputs* to the mechanization, not
+measurements, and their noise densities enter the filter through
+$\mathbf{L}\mathbf{Q}_u\mathbf{L}^T$ and @eq-kf-qd-integral. The INS chapters
+build $\mathbf{Q}$ in exactly this way from data-sheet numbers (@sec-ins-errors,
+especially @sec-ins-errors-from-imu-specs), and @sec-ekf uses the same input-noise
+form for a wheeled robot.
+
+## Observability {#sec-kf-observability}
+
+A Kalman filter can only estimate what the measurements, combined with the
+dynamics, actually reveal. For a time-invariant system with $n$ states, stack
+the measurement matrix propagated through the dynamics:
+
+$$
+\mathcal{O}
+=
+\begin{bmatrix}
+\mathbf{H} \\
+\mathbf{H}\mathbf{F} \\
+\vdots \\
+\mathbf{H}\mathbf{F}^{n-1}
+\end{bmatrix}.
+$$
+
+The system is observable if and only if $\mathcal{O}$ has rank $n$. Directions
+in the null space of $\mathcal{O}$ are invisible to the sensors: their
+covariance never shrinks, and a filter that claims otherwise is lying. For the
+constant-velocity model, a position measurement makes both states observable
+because speed shows up in how position changes. A speed-only measurement, like a
+Doppler velocity log on an underwater vehicle, leaves position unobservable no
+matter how long you wait.
+
+```{python}
+#| label: kf-observability
+
+import numpy as np
+
+
+def observability_matrix(F, H):
+    n = F.shape[0]
+    return np.vstack([H @ np.linalg.matrix_power(F, i) for i in range(n)])
+
+
+F_cv = np.array([[1.0, 1.0], [0.0, 1.0]])
+for name, H_test in [("position fix", np.array([[1.0, 0.0]])),
+                     ("speed only (DVL)", np.array([[0.0, 1.0]]))]:
+    rank = np.linalg.matrix_rank(observability_matrix(F_cv, H_test))
+    print(f"{name:18s} rank {rank} of {F_cv.shape[0]}")
+```
+
+The rank test is binary; real systems are often *weakly* observable, and the
+covariance tells you how weakly. For time-varying systems the observability of a
+state can depend on the trajectory. In loosely coupled INS/GNSS, heading error
+becomes observable only when the vehicle accelerates or turns
+(@sec-ins-errors-observability-loose-ins). @sec-ins-errors returns to this when
+choosing which error states to carry.
+
+## Filter Consistency: NEES, NIS, and Tuning {#sec-kf-consistency}
+
+A filter is **consistent** when its errors are zero-mean and its covariance
+matches their actual spread: $\mathbb{E}[\mathbf{e}_k] = \mathbf{0}$ and
+$\mathbb{E}[\mathbf{e}_k\mathbf{e}_k^T] = \mathbf{P}_{k|k}$. Accuracy and
+consistency are different properties. A filter with 2 m errors that claims 2 m
+is healthy. A filter with 1 m errors that claims 10 cm is a hazard: it will
+reject good measurements, gate out correct data associations, and report
+integrity it does not have. This section gives the standard tests, following
+Bar-Shalom, Li, and Kirubarajan [@barShalom2001].
+
+### NEES and NIS {#sec-kf-nees-nis}
+
+The **normalized estimation error squared** uses the true error
+$\mathbf{e}_k = \mathbf{x}_k - \hat{\mathbf{x}}_{k|k}$:
+
+$$
+\epsilon_k = \mathbf{e}_k^T\mathbf{P}_{k|k}^{-1}\mathbf{e}_k.
+$$ {#eq-kf-nees}
+
+If the filter is consistent and Gaussian, $\epsilon_k$ is chi-square distributed
+with $n$ degrees of freedom, where $n$ is the state dimension, so its mean is
+$n$. NEES needs the truth, which means simulation, a motion-capture reference
+like the Vicon data in Project 1, or a post-processed reference trajectory.
+
+The **normalized innovation squared** needs no truth:
+
+$$
+\epsilon_{\nu,k} = \boldsymbol{\nu}_k^T\mathbf{S}_k^{-1}\boldsymbol{\nu}_k,
+$$ {#eq-kf-nis}
+
+which is chi-square with $m$ degrees of freedom, $m$ being the measurement
+dimension. You can compute it on the vehicle, in real time, and it is the basis
+of measurement gating (@sec-slam-association-innovation-mahalanobis-distance).
+
+A single sample of either statistic tells you little, because a chi-square
+variable with a few degrees of freedom has a long tail. Average them. With $M$
+independent Monte Carlo runs, the **average NEES** at step $k$ is
+
+$$
+\bar{\epsilon}_k = \frac{1}{M}\sum_{i=1}^{M}\epsilon_k^{(i)},
+\qquad
+M\bar{\epsilon}_k \sim \chi^2_{Mn}.
+$$ {#eq-kf-anees}
+
+For a two-sided test at 95%, the consistent region is
+
+$$
+\bar{\epsilon}_k \in
+\left[
+\frac{\chi^2_{Mn}(0.025)}{M},\;
+\frac{\chi^2_{Mn}(0.975)}{M}
+\right],
+$$
+
+where $\chi^2_{d}(p)$ is the $p$ quantile, `scipy.stats.chi2.ppf(p, d)`. The
+average NIS (ANIS) works the same way with $m$ in place of $n$. On a single real
+data set you cannot rerun the experiment, so average over time instead: with
+$K$ updates, $K\bar{\epsilon}_\nu \sim \chi^2_{Km}$. That time-averaged NIS
+compared to $m$ with these bounds is exactly the check Project 1 Part C asks for,
+with $m = 6$ (@sec-project1c).
+
+```{python}
+#| label: kf-chi2-bounds
+
+from scipy.stats import chi2
+
+
+def chi2_bounds(dof_per_sample, n_samples, confidence=0.95):
+    """Two-sided bounds on the average of n_samples chi-square(dof) variables."""
+    alpha = 1.0 - confidence
+    total_dof = dof_per_sample * n_samples
+    lo, hi = chi2.ppf([alpha / 2.0, 1.0 - alpha / 2.0], total_dof)
+    return lo / n_samples, hi / n_samples
+
+
+print("ANEES, n = 2, M = 50 runs:      [%.2f, %.2f]" % chi2_bounds(2, 50))
+print("time-avg NIS, m = 6, K = 1000:  [%.2f, %.2f]" % chi2_bounds(6, 1000))
+```
+
+### Innovation Whiteness {#sec-kf-whiteness}
+
+The orthogonality principle has a second testable consequence: the innovations
+of an optimal filter are white. Each innovation is the genuinely new part of its
+measurement, so it should be uncorrelated with every earlier innovation. For a
+scalar innovation sequence (or one component of a vector one), the sample
+autocorrelation at lag $j$ is
+
+$$
+\hat{\rho}(j)
+=
+\frac{\sum_k \nu_k\nu_{k+j}}
+{\sqrt{\sum_k \nu_k^2\,\sum_k \nu_{k+j}^2}},
+$$
+
+and for a white sequence of length $K$ it is approximately
+$\mathcal{N}(0, 1/K)$, giving 95% bounds of $\pm 1.96/\sqrt{K}$. Correlated
+innovations mean the filter is leaving information on the table: something
+predictable is showing up in what the filter thinks is new.
+
+### Reading the Diagnostics {#sec-kf-reading-diagnostics}
+
+The interpretation is the part people get backwards, so here it is plainly. If
+the average NEES or NIS is much **larger** than the dimension, the actual errors
+are bigger than the filter believes: the filter is **overconfident**, with
+$\mathbf{P}$ (or $\mathbf{S}$) too small. If it is much **smaller**, the filter
+is **underconfident**, with $\mathbf{P}$ too large, which is safer but wastes
+information.
+
+NIS alone cannot tell you whether $\mathbf{Q}$ or $\mathbf{R}$ is to blame,
+because both feed $\mathbf{S}$. Whiteness breaks the tie. A filter whose gain is
+too low lags behind the truth, so consecutive innovations share the same sign
+and the lag-one correlation is positive. A filter whose gain is too high chases
+measurement noise, so consecutive innovations tend to alternate and the
+correlation is negative. Combining the two gives a diagnostic table you can
+verify with the simulation (Exercise 4):
+
+| Mistake | Average NIS | Lag-one innovation correlation |
+|---|---|---|
+| $\mathbf{Q}$ too small | above $m$ | positive (filter lags) |
+| $\mathbf{R}$ too small | above $m$ | negative (filter chases noise) |
+| $\mathbf{Q}$ too large | below $m$ | negative (filter chases noise) |
+| $\mathbf{R}$ too large | below $m$ | positive (filter lags) |
+
+The Monte Carlo experiment below runs the vessel filter 50 times with the
+correct $q$, a $q$ fifty times too small, and a $q$ fifty times too large, all
+against the same truth model.
+
+```{python}
+#| label: kf-monte-carlo-consistency
+
+import numpy as np
+
+
+def normalized_squares(e, P):
+    """e_k^T P_k^{-1} e_k for stacked e (N, d) and P (N, d, d)."""
+    return np.einsum("ki,ki->k", e, np.linalg.solve(P, e[..., None])[..., 0])
+
+
+def autocorrelation(x, max_lag):
+    return np.array([np.sum(x[:-j] * x[j:]) / np.sqrt(np.sum(x[:-j]**2) * np.sum(x[j:]**2))
+                     for j in range(1, max_lag + 1)])
+
+
+n_runs, max_lag = 50, 15
+q_cases = {"correct q": q_true, "q / 50 (too small)": q_true / 50, "q x 50 (too large)": q_true * 50}
+mc = {}
+for label, q_filter in q_cases.items():
+    F_f, Q_f = cv_model(dt, q_filter)
+    rng_mc = np.random.default_rng(7)            # same truth sequences for every case
+    nees, nis = np.zeros((n_runs, n_steps)), np.zeros((n_runs, n_steps))
+    for i in range(n_runs):
+        x_t, z_i = simulate_cv(rng_mc, n_steps, dt, q_true, sigma_z, x0_true)
+        x0_i = x0_true + np.linalg.cholesky(P0) @ rng_mc.standard_normal(2)
+        run = run_kf(z_i, F_f, Q_f, H, R, x0_i, P0)
+        nees[i] = normalized_squares((x_t - run["x"])[1:], run["P"][1:])
+        nis[i] = normalized_squares(run["nu"][1:], run["S"][1:])
+        if i == 0:   # whiteness from one run, as you would have on real data
+            rho = autocorrelation(run["nu"][1:, 0], max_lag)
+    mc[label] = {"anees": nees.mean(axis=0), "anis": nis.mean(axis=0), "rho": rho}
+    print(f"{label:20s} mean ANEES {nees.mean():6.2f} (n=2)   "
+          f"mean ANIS {nis.mean():5.2f} (m=1)   lag-1 rho {rho[0]:+.2f}")
+```
+
+```{python}
+#| label: fig-kf-consistency
+#| fig-cap: "Consistency diagnostics for the vessel filter over 50 Monte Carlo runs. Dashed lines are two-sided 95% chi-square bounds. The correct q sits inside the bounds with white innovations; too-small q is overconfident with strongly correlated innovations; too-large q is underconfident."
+#| code-fold: true
+
+import matplotlib.pyplot as plt
+
+k_axis = np.arange(1, n_steps + 1)
+fig, axes = plt.subplots(3, 1, figsize=(8, 9))
+for (label, res), color in zip(mc.items(), ["C0", "C3", "C2"]):
+    axes[0].semilogy(k_axis, res["anees"], color=color, label=label)
+    axes[1].semilogy(k_axis, res["anis"], color=color, label=label)
+    axes[2].plot(np.arange(1, max_lag + 1), res["rho"], "o-", color=color, label=label)
+
+for ax, dof, name in [(axes[0], 2, "ANEES"), (axes[1], 1, "ANIS")]:
+    lo, hi = chi2_bounds(dof, n_runs)
+    ax.axhline(lo, color="k", linestyle="--", linewidth=1)
+    ax.axhline(hi, color="k", linestyle="--", linewidth=1)
+    ax.set_ylabel(name)
+    ax.set_xlabel("time step k")
+    ax.grid(True, which="both", alpha=0.25)
+axes[0].legend(loc="upper right")
+
+bound = 1.96 / np.sqrt(n_steps)
+axes[2].axhspan(-bound, bound, color="0.85", label="95% white-noise band")
+axes[2].set_xlabel("lag j")
+axes[2].set_ylabel(r"innovation autocorrelation $\hat\rho(j)$")
+axes[2].set_ylim(-0.6, 0.9)
+axes[2].grid(True, alpha=0.25)
+axes[2].legend(loc="lower right", fontsize=8, ncol=2)
+fig.tight_layout()
+plt.show()
+```
+
+Two lessons hide in those numbers. First, NEES is far more sensitive than NIS:
+the too-small $q$ drives ANEES above 40 while ANIS only reaches about 2.5,
+because the innovation covariance is dominated by the honest $\mathbf{R}$. A
+filter can pass a casual NIS check while its state covariance is badly wrong, so
+use NEES whenever you have any source of truth. Second, the whiteness panel
+catches the too-small $q$ immediately from a single run, with no truth and no
+Monte Carlo at all.
+
+### A Practical Tuning Workflow {#sec-kf-tuning-workflow}
+
+Tuning is not "increase random numbers until the plot looks better." A workable
+sequence:
+
+1. **Get $\mathbf{R}$ from the sensor.** Use the data sheet, then confirm with
+   static data or a reference. $\mathbf{R}$ is usually the easier matrix to pin
+   down, so pin it first and resist using it to fix process-model problems.
+2. **Build $\mathbf{Q}$ from physics.** Use a continuous model, spectral
+   densities, and @eq-kf-qd-integral or Van Loan, with IMU numbers from
+   @sec-ins-errors-from-imu-specs where they apply.
+3. **Check consistency in simulation with truth.** ANEES and ANIS inside their
+   bounds when the simulator matches the filter model. If this fails, the bug is
+   in the code.
+4. **Check on real data with NIS and whiteness.** Look at the innovation mean
+   (a nonzero mean is a bias or a frame error, not a tuning problem), the
+   time-averaged NIS against its bounds, and the autocorrelation. Use the
+   diagnostic table to decide whether $\mathbf{Q}$ or $\mathbf{R}$ is off.
+5. **Adjust one thing at a time, then validate on data you did not tune on.**
+   A filter tuned to one flight tends to be overfit to that flight.
+6. **If no reasonable $\mathbf{Q}$ works, the model is wrong.** Persistent
+   colored innovations usually mean a missing state such as a bias, a scale
+   factor, or a lever arm. Add the state; do not inflate $\mathbf{Q}$ to hide it.
+
+## Smoothing: The Rauch-Tung-Striebel Smoother {#sec-kf-smoothing}
+
+A filter estimates $p(\mathbf{x}_k \mid \mathbf{z}_{1:k})$ because a vehicle has
+to act now. But a surveyor processing a day of hydrographic data, an engineer
+building a reference trajectory from flight-test data, or an investigator
+reconstructing an accident is under no such constraint. They want
+$p(\mathbf{x}_k \mid \mathbf{z}_{1:N})$, the estimate at each time using *all*
+of the data, past and future. That is **smoothing**, and for linear Gaussian
+systems the Rauch-Tung-Striebel (RTS) smoother computes it with one backward
+pass over the stored filter output [@rauch1965].
+
+The derivation is, once again, Gaussian conditioning. Given
+$\mathbf{z}_{1:k}$, the states $\mathbf{x}_k$ and $\mathbf{x}_{k+1}$ are jointly
+Gaussian with cross-covariance $\mathbf{P}_{k|k}\mathbf{F}_{k+1}^T$. Condition
+$\mathbf{x}_k$ on $\mathbf{x}_{k+1}$ with @eq-kf-gaussian-conditioning:
+
+$$
+\mathbb{E}[\mathbf{x}_k \mid \mathbf{x}_{k+1}, \mathbf{z}_{1:k}]
+=
+\hat{\mathbf{x}}_{k|k} + \mathbf{J}_k(\mathbf{x}_{k+1} - \hat{\mathbf{x}}_{k+1|k}),
+\qquad
+\mathbf{J}_k = \mathbf{P}_{k|k}\mathbf{F}_{k+1}^T\mathbf{P}_{k+1|k}^{-1}.
+$$
+
+By the Markov property, once $\mathbf{x}_{k+1}$ is known the future
+measurements $\mathbf{z}_{k+1:N}$ say nothing more about $\mathbf{x}_k$. So we
+can average this conditional over the *smoothed* distribution of
+$\mathbf{x}_{k+1}$, which we already have if we run backward from the end:
+
+$$
+\begin{aligned}
+\hat{\mathbf{x}}_{k|N} &= \hat{\mathbf{x}}_{k|k} + \mathbf{J}_k\left(\hat{\mathbf{x}}_{k+1|N} - \hat{\mathbf{x}}_{k+1|k}\right), \\
+\mathbf{P}_{k|N} &= \mathbf{P}_{k|k} + \mathbf{J}_k\left(\mathbf{P}_{k+1|N} - \mathbf{P}_{k+1|k}\right)\mathbf{J}_k^T.
+\end{aligned}
+$$ {#eq-kf-rts}
+
+The recursion starts at $k = N$, where the filtered and smoothed estimates
+coincide, and needs only the filter's stored priors and posteriors. This is why
+`run_kf` saved `x_pred` and `P_pred`.
+
+```{python}
+#| label: kf-rts-smoother
+
+import numpy as np
+
+
+def rts_smoother(x_filt, P_filt, x_pred, P_pred, F):
+    """Rauch-Tung-Striebel smoother for a time-invariant F.
+
+    x_filt[k], P_filt[k] : posterior x_{k|k}, P_{k|k}
+    x_pred[k], P_pred[k] : prior x_{k|k-1}, P_{k|k-1}
+    """
+    x_s, P_s = x_filt.copy(), P_filt.copy()
+    for k in range(len(x_filt) - 2, -1, -1):
+        # J = P_{k|k} F^T P_{k+1|k}^{-1}, computed with a solve.
+        J = np.linalg.solve(P_pred[k + 1], F @ P_filt[k]).T
+        x_s[k] = x_filt[k] + J @ (x_s[k + 1] - x_pred[k + 1])
+        P_s[k] = P_filt[k] + J @ (P_s[k + 1] - P_pred[k + 1]) @ J.T
+    return x_s, P_s
+
+
+x_smooth, P_smooth = rts_smoother(kf["x"], kf["P"], kf["x_pred"], kf["P_pred"], F)
+err_s = x_true - x_smooth
+sigma_s = np.sqrt(np.stack([P_smooth[:, 0, 0], P_smooth[:, 1, 1]], axis=1))
+for name, e in [("filter", err), ("smoother", err_s)]:
+    print(f"{name:8s} RMSE: position {np.sqrt(np.mean(e[1:, 0]**2)):.2f} m, "
+          f"speed {np.sqrt(np.mean(e[1:, 1]**2)):.2f} m/s")
+```
+
+```{python}
+#| label: fig-kf-rts
+#| fig-cap: "RTS smoothing of the vessel track. The smoother uses future measurements, so its errors and ±3σ bounds (dashed) are tighter than the filter's everywhere except the final step, where the two coincide."
+#| code-fold: true
+
+import matplotlib.pyplot as plt
+
+fig, axes = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+units = ["position error [m]", "speed error [m/s]"]
+for i, ax in enumerate(axes):
+    ax.plot(t, err[:, i], color="C0", alpha=0.6, label="filter error")
+    ax.plot(t, 3 * sigma[:, i], ":", color="C0")
+    ax.plot(t, -3 * sigma[:, i], ":", color="C0")
+    ax.plot(t, err_s[:, i], color="C1", label="smoother error")
+    ax.plot(t, 3 * sigma_s[:, i], "--", color="C1")
+    ax.plot(t, -3 * sigma_s[:, i], "--", color="C1")
+    ax.set_ylabel(units[i])
+    ax.grid(True, alpha=0.25)
+axes[0].set_ylim(-12, 12)
+axes[1].set_ylim(-3, 3)
+axes[0].legend(loc="upper right")
+axes[1].set_xlabel("time [s]")
+fig.tight_layout()
+plt.show()
+```
+
+The smoother is more than a post-processing trick. It is the exact solution of
+a batch least-squares problem over the whole trajectory, with one cost term per
+dynamics step and one per measurement, solved efficiently because each state
+only talks to its neighbors in time. Draw that structure as a graph, with states
+as nodes and cost terms as factors, and you have a **factor graph**. The
+information-form view of @sec-information-filter and the SLAM back ends of
+@sec-slam generalize exactly this idea to problems where the graph is not a
+simple chain.
+
+## Algorithm Summary {#sec-kf-algorithm-summary}
+
+For each time step:
+
+```text
+predict:
+    x_pred = F x + B u
+    P_pred = F P F^T + Q            (or + L Q_u L^T for input noise)
+
+update (when a measurement arrives):
+    nu = z - H x_pred               innovation
+    S  = H P_pred H^T + R           innovation covariance
+    K  = P_pred H^T S^{-1}          via a linear solve
+    x  = x_pred + K nu
+    P  = (I - K H) P_pred (I - K H)^T + K R K^T     Joseph form
+    log nu, S, and NIS = nu^T S^{-1} nu
+```
+
+The loop is short. The engineering is in $\mathbf{Q}$, $\mathbf{R}$, the choice
+of state, and the discipline to check consistency before believing the output.
+
+## Exercises {#sec-kf-exercises}
+
+1. **Steady state by hand.** A hovering drone's barometric altitude is modeled
+   as a random walk, $x_k = x_{k-1} + w_k$ with $\operatorname{Var}(w_k) = Q$,
+   measured as $z_k = x_k + v_k$ with $\operatorname{Var}(v_k) = R$. Show that
+   the steady-state prior variance $P_\text{ss}$ satisfies
+   $P_\text{ss}^2 - QP_\text{ss} - QR = 0$, solve for $P_\text{ss}$ and the steady-state
+   gain $K_\infty$, and evaluate both for $Q = 0.01\ \text{m}^2$ and
+   $R = 0.25\ \text{m}^2$. Roughly how many past measurements does the
+   steady-state filter effectively average?
+
+2. **Why Joseph.** Starting from
+   $\mathbf{e}_{k|k} = (\mathbf{I} - \mathbf{K}\mathbf{H})\mathbf{e}_{k|k-1} - \mathbf{K}\mathbf{v}_k$,
+   derive @eq-kf-joseph. Show that it reduces to
+   $(\mathbf{I} - \mathbf{K}\mathbf{H})\mathbf{P}_{k|k-1}$ when $\mathbf{K}$ is
+   the optimal gain. Then, for a scalar problem with $P_{k|k-1} = 4$, $H = 1$,
+   $R = 1$, and a deweighted gain $K = 0.4$, compute the posterior variance
+   with both formulas. Which one is right, and is the wrong one optimistic or
+   pessimistic?
+
+3. **Constant-acceleration process noise.** For a three-state
+   position-velocity-acceleration model driven by white jerk with spectral
+   density $q$, derive $\mathbf{Q}_d$ from @eq-kf-qd-integral. Then verify your
+   result numerically with `van_loan` for $\Delta t = 0.1$ s and $q = 2$.
+
+4. **Diagnose the filter.** Extend the Monte Carlo cell to mis-specify
+   $\mathbf{R}$ instead of $\mathbf{Q}$ (filter $\mathbf{R}$ ten times too small
+   and ten times too large) and confirm the remaining rows of the diagnostic
+   table in @sec-kf-reading-diagnostics. Report ANEES, ANIS, and the lag-one
+   innovation correlation for all five cases.
+
+5. **GNSS outage under a bridge.** In the vessel simulation, drop the GNSS fixes
+   for $t \in [60, 90)$ s, as happens when a vessel passes under a wide bridge.
+   Plot the position error with its $\pm 3\sigma$ bounds through the outage, and
+   report the NIS of the first fix after reacquisition. Then run the RTS smoother
+   on the same data and explain why the smoother's uncertainty peaks in the
+   *middle* of the gap rather than at its end.
+
+6. **What a Doppler log cannot see.** An underwater vehicle runs the
+   constant-velocity model with only a speed measurement from a Doppler velocity
+   log. Compute the observability matrix, identify the unobservable direction,
+   and predict what $\mathbf{P}_{k|k}$ does for position over a long mission.
+   Verify by modifying `run_kf`, then show that adding one position fix every
+   60 s (for example from an acoustic USBL system) restores observability and
+   bounds the position uncertainty.

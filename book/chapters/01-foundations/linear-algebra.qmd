@@ -12,7 +12,7 @@ $$
 
 typically with a bold-faced lowercase Latin or Greek letter.
 
-In navigation, vectors represent positions, velocities, accelerations, angular rates, and state estimates. A vector can also be represented as a row, but the column convention is more common in linear algebra and navigation. In `NumPy`, 1-D arrays are neither strictly row nor column vectors; they are just 1-D sequences. 
+In navigation, vectors represent positions, velocities, accelerations, angular rates, and state estimates. A vector can also be represented as a row, but the column convention is more common in linear algebra and navigation. In `NumPy`, 1-D arrays are neither strictly row nor column vectors; they are just 1-D sequences.
 
 A vector's magnitude is defined by the Euclidean norm:
 
@@ -20,7 +20,7 @@ $$
 \|\mathbf{v}\| = \sqrt{v_1^2 + v_2^2 + \cdots + v_n^2}
 $$
 
-Thus for a a vector $\mathbf{v} = [3, 4]^T$, we have $\|\mathbf{v}\| = 5$.
+Thus for a vector $\mathbf{v} = [3, 4]^T$, we have $\|\mathbf{v}\| = 5$.
 
 Vectors with a magnitude of 1 are called **unit vectors**. They frequently represent pure directions without scaling. They can also be used to compare directions. To normalize any nonzero vector:
 
@@ -50,19 +50,19 @@ print("â (unit)    =", a / np.linalg.norm(a))
 
 ### Indexing and slicing
 
-Vectors are mathematically indexed from 1 to $n$, frequently using a subscript: $v_i$ is the $i$-th component. However, in many programming language, indexing (for all such containers) begins at 0. While using index 0 to refer to the first component may feel awkward at first, it is a standard convention in programming as it allows for more efficient memory addressing and is consistent across all data structures. In Python arrays and `NumPy` vectors, indexing starts at 0, so the $i$-th component is accessed as `v[i-1]`. For example, `v[0]` gives the first component $v_1$.
+This book uses two indexing conventions and keeps them strictly apart. **Math is 1-based with inclusive ranges**: $v_i$ is the $i$-th component, $v_1$ is the first, and $\mathbf{v}_{i:j}$ means components $i$ through $j$, both included. **Code is 0-based with half-open slices**, as in Python and `NumPy`: `v[0]` is the first component, and `v[i:j]` includes index `i` but stops before index `j`. Zero-based indexing treats the index as an offset from the start of the array, which is how the memory is actually laid out. The translation rule is: math $v_i$ is `v[i-1]`, and math $\mathbf{v}_{i:j}$ is `v[i-1:j]`.
 
-We can also refer to sub-vectors. In mathematical notation, we might write $\mathbf{v}_{1:3}$ to mean the first three components (e.g. $v_1$, $v_2$, and $v_3$). In `NumPy`, slicing syntax is `v[0:3]` which includes indices 0, 1, and 2. `NumPy` also supports some convient shorthand slicing conventions: `v[:3]` means the first three components, and `v[3:]` means all components from index 3 to the end. `NumPy` also supports negative indexing: `v[-1]` gives the last component, `v[-2]` gives the second-to-last, and so on. You can also slice with negative indices: `v[-3:-1]` gives the third-to-last and second-to-last components.
+For example, $\mathbf{v}_{1:3}$ (the first three components, $v_1$, $v_2$, and $v_3$) is `v[0:3]`, which holds indices 0, 1, and 2. `NumPy` also supports some convenient shorthand: `v[:3]` means the first three components, and `v[3:]` means everything from index 3 (the fourth component) to the end. Negative indices count from the end: `v[-1]` is the last component, `v[-2]` the second-to-last, and `v[-3:-1]` the third-to-last and second-to-last.
 
 ```{python}
 v = np.array([10, 20, 30, 40, 50])
 print("v          =", v)
-print("v[0]       =", v[0])        # v1
-print("v[0:3]     =", v[0:3])      # v1, v2, v3
+print("v[0]       =", v[0])        # v_1
+print("v[0:3]     =", v[0:3])      # v_{1:3} = v_1, v_2, v_3
 print("v[:3]      =", v[:3])
-print("v[3:]      =", v[3:])
-print("v[-1]      =", v[-1])       # v5
-print("v[-3:-1]   =", v[-3:-1])    # v3, v4
+print("v[3:]      =", v[3:])       # v_{4:5}
+print("v[-1]      =", v[-1])       # v_5
+print("v[-3:-1]   =", v[-3:-1])    # v_3, v_4
 ```
 
 ### Dot Product (Inner Product)
@@ -97,7 +97,7 @@ print("x · y        =", np.dot(x, y), "  (orthogonal)")
 
 ### Cross Product
 
-The **cross product** is defined only in $\mathbb{R}^3$ or $\mathbb{R}^3$. $\mathbb{R}^3$ vectors are most relevant for navigation, representing 3D positions, velocities, and angular rates. The cross product of $\mathbf{a}$ and $\mathbf{b}$ is a vector perpendicular to both, with magnitude equal to the area of the parallelogram they span:
+The **cross product** is defined only in $\mathbb{R}^3$ (and, more exotically, $\mathbb{R}^7$). $\mathbb{R}^3$ vectors are most relevant for navigation, representing 3D positions, velocities, and angular rates. The cross product of $\mathbf{a}$ and $\mathbf{b}$ is a vector perpendicular to both, with magnitude equal to the area of the parallelogram they span:
 
 $$
 \mathbf{a} \times \mathbf{b} =
@@ -131,7 +131,7 @@ print("a · (a × b) =", np.dot(a, cross), "  (orthogonal)")
 The cross product can be written as a matrix-vector product $\mathbf{a} \times \mathbf{b} = [\mathbf{a}]_\times \mathbf{b}$, where:
 
 $$
-[\mathbf{a}]_\times = \begin{bmatrix}\mathbf{a} & \wedge\end{bmatrix} =
+[\mathbf{a}]_\times =
 \begin{bmatrix}
 0 & -a_3 & a_2 \\
 a_3 & 0 & -a_1 \\
@@ -139,34 +139,37 @@ a_3 & 0 & -a_1 \\
 \end{bmatrix}
 $$
 
-This skew-symmetric form appears throughout rotation kinematics and IMU modeling. Three-dimensional rotation rates are sometimes represented as skew-symmetric matrices to express cross products as matrix multiplications, which is more efficient and numerically stable. For example: $\boldsymbol{\omega} \times \mathbf{v} = \begin{bmatrix}\boldsymbol{\omega} & \wedge\end{bmatrix} \cdot \mathbf{v}$.
+The matrix is skew-symmetric: $[\mathbf{a}]_\times^T = -[\mathbf{a}]_\times$. This form appears throughout rotation kinematics and IMU modeling, for example $\boldsymbol{\omega} \times \mathbf{v} = [\boldsymbol{\omega}]_\times \mathbf{v}$. The point is algebraic convenience, not speed (calling `np.cross` is cheaper than building a $3 \times 3$ matrix and multiplying). As a matrix, a cross product can be composed with other linear maps, factored out of a longer expression, and differentiated: the Jacobian of $\mathbf{a} \times \mathbf{b}$ with respect to $\mathbf{b}$ is $[\mathbf{a}]_\times$, and with respect to $\mathbf{a}$ it is $-[\mathbf{b}]_\times$. That is what makes rotation kinematics and filter linearizations tractable (@sec-frames-attitude-kinematics, @sec-ekf).
 
 ```{python}
-a3 = np.array([1.0, 2.0, 3.0])  # x-axis
-b3 = np.array([0.1, 0.2, 0.3])  # y-axis
+x_axis = np.array([1.0, 0.0, 0.0])
+y_axis = np.array([0.0, 1.0, 0.0])
+print("x × y =", np.cross(x_axis, y_axis), "  (the z axis, by the right-hand rule)")
 
-cross = np.cross(a3, b3)
-print("x × y =", cross)
 
-def skew(v):
+def skew(v: np.ndarray) -> np.ndarray:
+    """Return [v]_x, the skew-symmetric matrix with skew(v) @ b == np.cross(v, b)."""
     return np.array([
-        [ 0,    -v[2],  v[1]],
-        [ v[2],  0,    -v[0]],
-        [-v[1],  v[0],  0   ]
+        [ 0.0,  -v[2],  v[1]],
+        [ v[2],  0.0,  -v[0]],
+        [-v[1],  v[0],  0.0 ],
     ])
 
-print("Skew-symmetric [a]× @ b =", skew(a3) @ b3)
 
-# Confirm equivalence
-print("Cross product equals skew-symmetric multiplication form:", np.allclose(cross, skew(a3) @ b3))
+a3 = np.array([1.0, 2.0, 3.0])
+b3 = np.array([-2.0, 0.5, 1.0])     # not parallel to a3, so a3 × b3 is far from zero
+print("a × b       =", np.cross(a3, b3))
+print("[a]× @ b    =", skew(a3) @ b3)
+print("Cross product equals skew-symmetric multiplication:", np.allclose(np.cross(a3, b3), skew(a3) @ b3))
+print("[a]× is skew-symmetric:", np.allclose(skew(a3).T, -skew(a3)))
 ```
 
 
 ## Matrices {#sec-linalg-matrices}
 
-A **matrix** has $m$ rows and $n$ columns and is typically written with a capital boldface letter: $\mathbf{A} \in \mathbb{R}^{m \times n}$ Entry in row $i$, column $j$ is written $A_{ij}$ or $[\mathbf{A}]_{ij}$. A **tensor** is a generalization of matrices to higher dimensions, but we will only need two dimensional matrices in this course. Matrices can be sliced and indexed similarly to vectors, but with two indices: $A_{ij}$ is the element in the $i$-th row and $j$-th column, and we can refer to sub-matrices with slicing: $\mathbf{A}_{1:3, 2:4}$ is the $2 \times 2$ block formed by rows 1-2 and columns 2-3. Slicing matrices in `NumPy` uses the same syntax: `A[0:2, 1:3]` for the same block.
+A **matrix** has $m$ rows and $n$ columns and is typically written with a capital boldface letter: $\mathbf{A} \in \mathbb{R}^{m \times n}$. The entry in row $i$, column $j$ is written $A_{ij}$ or $[\mathbf{A}]_{ij}$. A **tensor** is a generalization of matrices to higher dimensions, but we will only need two dimensional matrices in this course. Matrices are indexed like vectors, with the same two conventions. In math, $\mathbf{A}_{1:2,\,2:3}$ is the $2 \times 2$ block formed by rows 1–2 and columns 2–3 (inclusive, 1-based). In `NumPy` the same block is `A[0:2, 1:3]` (half-open, 0-based).
 
-Matrices represent linear transformations or systems of linear equations. For example, a sensor model $\mathbf{z} = \mathbf{H}\mathbf{x} + \mathbf{v}$ uses the matrix $\mathbf{H}$ to map the state vector $\mathbf{x}$ to the measurement space. 
+Matrices represent linear transformations or systems of linear equations. For example, a sensor model $\mathbf{z} = \mathbf{H}\mathbf{x} + \mathbf{v}$ uses the matrix $\mathbf{H}$ to map the state vector $\mathbf{x}$ to the measurement space.
 
 ### Special matrices
 
@@ -210,7 +213,7 @@ $$
 
 The inner dimensions must match: $(m \times k)(k \times n) = (m \times n)$.
 
-Python supports matrix multiplication with the `@` operator or `np.dot` function. 
+Python supports matrix multiplication with the `@` operator or `np.dot` function.
 
 ```{python}
 A = np.array([[1, 2, 3],
@@ -237,7 +240,7 @@ $$
 \det(\mathbf{A}) = ad - bc
 $$
 
-and for a $3 \times 3$ matrix: 
+and for a $3 \times 3$ matrix:
 $$
 \mathbf{A} = \begin{bmatrix}a & b & c \\
 d & e & f \\
@@ -271,8 +274,6 @@ The **rank** of $\mathbf{A}$ is the number of linearly independent rows (or colu
 - Full rank: $\text{rank}(\mathbf{A}) = \min(m,n)$
 - $\text{rank}(\mathbf{A}) < n$ means some columns are redundant — the matrix has a nontrivial **null space**: vectors $\mathbf{x}$ such that $\mathbf{Ax} = \mathbf{0}$.
 
-In filtering, a null space in the observation matrix $\mathbf{H}$ means some state components are unobservable.
-
 ```{python}
 M_full = np.array([[1, 0], [0, 1]])
 M_sing = np.array([[1, 2], [2, 4]])   # row 2 = 2 * row 1
@@ -281,6 +282,40 @@ print("det(full rank):     ", np.linalg.det(M_full))
 print("det(singular):      ", round(np.linalg.det(M_sing), 10))
 print("rank(full rank):    ", np.linalg.matrix_rank(M_full))
 print("rank(singular):     ", np.linalg.matrix_rank(M_sing))
+```
+
+### Rank and observability
+
+It is tempting to read a null space in the measurement matrix $\mathbf{H}$ as "those state components are unobservable." That is wrong, because a filter also knows the dynamics. Take the constant-velocity model with state $[p, v]^T$, transition $\mathbf{F} = \begin{bmatrix} 1 & \Delta t \\ 0 & 1 \end{bmatrix}$, and position measurements $\mathbf{H} = [1\ 0]$. Velocity is in the null space of $\mathbf{H}$, yet a sequence of positions plainly reveals it: the dynamics carry velocity into future positions. Observability is a property of $\mathbf{F}$ and $\mathbf{H}$ together. For an $n$-state linear system, stack the **observability matrix**
+
+$$
+\mathcal{O} =
+\begin{bmatrix}
+\mathbf{H} \\ \mathbf{H}\mathbf{F} \\ \vdots \\ \mathbf{H}\mathbf{F}^{n-1}
+\end{bmatrix}.
+$$
+
+The state is observable iff $\text{rank}(\mathcal{O}) = n$, and the null space of $\mathcal{O}$, not of $\mathbf{H}$, holds the directions no amount of data can pin down. Measure velocity alone and position is unobservable: a constant position offset never shows up in any velocity measurement, which is the heart of why dead reckoning drifts.
+
+```{python}
+dt = 0.1
+F = np.array([[1.0, dt],
+              [0.0, 1.0]])            # constant velocity, state [position, velocity]
+
+
+def observability_matrix(F: np.ndarray, H: np.ndarray) -> np.ndarray:
+    """Stack H, HF, ..., HF^(n-1)."""
+    n = F.shape[0]
+    return np.vstack([H @ np.linalg.matrix_power(F, k) for k in range(n)])
+
+
+for name, H in [("position", np.array([[1.0, 0.0]])), ("velocity", np.array([[0.0, 1.0]]))]:
+    O = observability_matrix(F, H)
+    print(f"measure {name}: rank(H) = {np.linalg.matrix_rank(H)}, rank(O) = {np.linalg.matrix_rank(O)}")
+
+# Null space of O when only velocity is measured: the position direction [1, 0].
+_, s, Vt = np.linalg.svd(observability_matrix(F, np.array([[0.0, 1.0]])))
+print("unobservable direction (up to sign):", np.round(Vt[-1], 6))
 ```
 
 ## Matrix Inverse {#sec-linalg-matrix-inverse}
@@ -301,7 +336,7 @@ $$
 (\mathbf{A}^{-1})^{-1} = \mathbf{A}
 $$
 
-For non-square or rank-deficient $\mathbf{A}$, the **Moore–Penrose pseudoinverse** $\mathbf{A}^+$ generalizes the inverse and appears in least-squares solutions.
+For non-square or rank-deficient $\mathbf{A}$, the **Moore–Penrose pseudoinverse** $\mathbf{A}^+$ generalizes the inverse and appears in least-squares solutions. When $\mathbf{A} \in \mathbb{R}^{m \times n}$ has full column rank ($\text{rank}(\mathbf{A}) = n \le m$), $\mathbf{A}^T\mathbf{A}$ is invertible and $\mathbf{A}^+ = (\mathbf{A}^T\mathbf{A})^{-1}\mathbf{A}^T$; otherwise $\mathbf{A}^+$ is defined through the SVD (@sec-linalg-matrix-decompositions).
 
 
 `NumPy` has the following functions for matrix inversion:
@@ -310,7 +345,7 @@ For non-square or rank-deficient $\mathbf{A}$, the **Moore–Penrose pseudoinver
 - `np.linalg.solve(A, b)` solves the linear system $\mathbf{Ax} = \mathbf{b}$ without explicitly computing the inverse, which can be more efficient and numerically stable.
 - `np.linalg.pinv(A)` computes the pseudoinverse, which generalizes the inverse to non-square or rank-deficient matrices.
 
-The `SciPy` library also provides `scipy.linalg.inv` and `scipy.linalg.pinv` with additional options for handling singular matrices and improving numerical stability. 
+The `SciPy` library also provides `scipy.linalg.inv` and `scipy.linalg.pinv` with additional options for handling singular matrices and improving numerical stability.
 
 Practical rule: **don't** compute $\mathbf{A}^{-1}\mathbf{b}$ explicitly when you need to solve $\mathbf{Ax} = \mathbf{b}$. Use a linear solve instead — it is faster and more numerically stable.
 
@@ -329,6 +364,59 @@ print("Residual   =", np.linalg.norm(A @ x - b))
 # Pseudoinverse for non-square
 A_rect = np.array([[1, 2], [3, 4], [5, 6]])   # 3x2
 print("Pseudoinverse shape:", np.linalg.pinv(A_rect).shape)
+```
+
+## Block Inversion and the Woodbury Identity {#sec-linalg-woodbury}
+
+Navigation matrices often come in blocks (position and velocity, vehicle and landmarks), and inverting a block matrix reduces to inverting its pieces. For a partitioned matrix with invertible $\mathbf{A}$ and **Schur complement** $\mathbf{S} = \mathbf{D} - \mathbf{C}\mathbf{A}^{-1}\mathbf{B}$,
+
+$$
+\begin{bmatrix} \mathbf{A} & \mathbf{B} \\ \mathbf{C} & \mathbf{D} \end{bmatrix}^{-1}
+=
+\begin{bmatrix}
+\mathbf{A}^{-1} + \mathbf{A}^{-1}\mathbf{B}\mathbf{S}^{-1}\mathbf{C}\mathbf{A}^{-1} & -\mathbf{A}^{-1}\mathbf{B}\mathbf{S}^{-1} \\
+-\mathbf{S}^{-1}\mathbf{C}\mathbf{A}^{-1} & \mathbf{S}^{-1}
+\end{bmatrix}.
+$$
+
+Equating this with the version that eliminates $\mathbf{D}$ first yields the **Woodbury identity** (matrix inversion lemma):
+
+$$
+(\mathbf{A} + \mathbf{U}\mathbf{C}\mathbf{V})^{-1}
+=
+\mathbf{A}^{-1} - \mathbf{A}^{-1}\mathbf{U}\left(\mathbf{C}^{-1} + \mathbf{V}\mathbf{A}^{-1}\mathbf{U}\right)^{-1}\mathbf{V}\mathbf{A}^{-1}.
+$$ {#eq-linalg-woodbury}
+
+Its most important instance in this course connects the two forms of the Kalman measurement update. With prior covariance $\mathbf{P}$ ($n \times n$), measurement Jacobian $\mathbf{H}$, and noise $\mathbf{R}$ ($m \times m$),
+
+$$
+\left(\mathbf{P}^{-1} + \mathbf{H}^T\mathbf{R}^{-1}\mathbf{H}\right)^{-1}
+=
+\mathbf{P} - \mathbf{P}\mathbf{H}^T\left(\mathbf{H}\mathbf{P}\mathbf{H}^T + \mathbf{R}\right)^{-1}\mathbf{H}\mathbf{P}.
+$$
+
+The left side is the information form (@sec-information-filter) and needs $n \times n$ inverses; the right side is the covariance form (@sec-kf-derivation) and needs only an $m \times m$ one. A three-component GNSS fix updating a fifteen-state INS filter favors the right side; hundreds of feature measurements on a small state favor the left.
+
+```{python}
+rng = np.random.default_rng(7)
+n, m = 6, 2
+G = rng.standard_normal((n, n))
+P = G @ G.T + n * np.eye(n)                  # a symmetric positive definite prior covariance
+H = rng.standard_normal((m, n))
+R = np.diag([0.5, 2.0])
+
+information_form = np.linalg.inv(np.linalg.inv(P) + H.T @ np.linalg.inv(R) @ H)   # n x n inverses
+covariance_form = P - P @ H.T @ np.linalg.solve(H @ P @ H.T + R, H @ P)            # one m x m solve
+print("Woodbury: information form == covariance form:", np.allclose(information_form, covariance_form))
+
+# Block inverse via the Schur complement, checked against a direct inverse.
+M = P + 0.1 * rng.standard_normal((n, n))
+A11, B12, C21, D22 = M[:4, :4], M[:4, 4:], M[4:, :4], M[4:, 4:]
+A11_inv = np.linalg.inv(A11)
+S_inv = np.linalg.inv(D22 - C21 @ A11_inv @ B12)
+M_inv = np.block([[A11_inv + A11_inv @ B12 @ S_inv @ C21 @ A11_inv, -A11_inv @ B12 @ S_inv],
+                  [-S_inv @ C21 @ A11_inv, S_inv]])
+print("Block inverse == np.linalg.inv:", np.allclose(M_inv, np.linalg.inv(M)))
 ```
 
 ## Eigenvalues and Eigenvectors {#sec-linalg-eigenvalues-eigenvectors}
@@ -371,6 +459,38 @@ for i in range(len(eigenvalues)):
     print(f"λ{i+1}: Av ≈ λv:", np.allclose(lhs, rhs))
 ```
 
+### Trace
+
+The **trace** of a square matrix is the sum of its diagonal, $\operatorname{tr}(\mathbf{A}) = \sum_i A_{ii}$. It is linear, it is invariant under cyclic permutations ($\operatorname{tr}(\mathbf{AB}) = \operatorname{tr}(\mathbf{BA})$, $\operatorname{tr}(\mathbf{ABC}) = \operatorname{tr}(\mathbf{CAB})$), and it equals the sum of the eigenvalues. For a covariance, $\operatorname{tr}(\mathbf{P})$ is the total variance, the expected squared length of the error vector $\mathbb{E}[\|\mathbf{x} - \hat{\mathbf{x}}\|^2]$. The Kalman gain is also the linear gain that minimizes the trace of the posterior covariance; that classic derivation, an alternative to the Gaussian-conditioning route of @sec-kf-derivation, leans on the cyclic property.
+
+### Positive definiteness
+
+A symmetric matrix is **positive definite** (PD) if $\mathbf{x}^T\mathbf{P}\mathbf{x} > 0$ for every nonzero $\mathbf{x}$, and positive semidefinite if $\ge 0$. Every valid covariance is positive semidefinite, and in practice filters need it strictly PD. There are two practical tests: all eigenvalues positive (`np.linalg.eigvalsh`), or a Cholesky factorization that succeeds (@sec-linalg-matrix-decompositions), which is cheaper and is what most code uses. Checking that every correlation coefficient lies in $[-1, 1]$ is **not** enough: the matrix below claims that $x_1$ and $x_2$ are strongly correlated, $x_2$ and $x_3$ are strongly correlated, and $x_1$ and $x_3$ are uncorrelated, which no random vector can satisfy. Filters lose definiteness through round-off and asymmetric updates, so symmetrize with $(\mathbf{P} + \mathbf{P}^T)/2$ and test periodically.
+
+```{python}
+def is_positive_definite(M: np.ndarray) -> bool:
+    """Cholesky succeeds iff a symmetric matrix is positive definite."""
+    try:
+        np.linalg.cholesky(M)
+        return True
+    except np.linalg.LinAlgError:
+        return False
+
+
+P_good = np.array([[4.0, 1.2, 0.0],
+                   [1.2, 2.0, 0.3],
+                   [0.0, 0.3, 1.0]])
+P_bad = np.array([[1.0, 0.9, 0.0],     # every |correlation| <= 1, but jointly impossible
+                  [0.9, 1.0, 0.9],
+                  [0.0, 0.9, 1.0]])
+for name, M in [("P_good", P_good), ("P_bad", P_bad)]:
+    print(f"{name}: eigenvalues = {np.round(np.linalg.eigvalsh(M), 4)}, "
+          f"trace = {np.trace(M):.1f}, PD = {is_positive_definite(M)}")
+
+G1, G2 = rng.standard_normal((3, 4)), rng.standard_normal((4, 3))
+print("tr(AB) == tr(BA):", np.isclose(np.trace(G1 @ G2), np.trace(G2 @ G1)))
+```
+
 ---
 
 ## Norms {#sec-linalg-norms}
@@ -411,7 +531,7 @@ print("Condition: ", np.linalg.cond(A))
 
 ## Matrix Decompositions {#sec-linalg-matrix-decompositions}
 
-Decompositions factor a matrix into structured pieces that are easier to work with numerically. They are the workhorses of linear algebra algorithms, underlying everything from solving linear systems to computing eigenvalues. 
+Decompositions factor a matrix into structured pieces that are easier to work with numerically. They are the workhorses of linear algebra algorithms, underlying everything from solving linear systems to computing eigenvalues.
 
 ### LU decomposition
 
@@ -420,6 +540,31 @@ $\mathbf{A} = \mathbf{LU}$ (lower × upper triangular, with permutation in pract
 ### QR decomposition
 
 $\mathbf{A} = \mathbf{QR}$ ($\mathbf{Q}$ orthogonal, $\mathbf{R}$ upper triangular). Preferred over normal equations for numerically stable least-squares.
+
+### Cholesky decomposition
+
+A symmetric positive definite matrix factors as $\mathbf{P} = \mathbf{L}\mathbf{L}^T$ with $\mathbf{L}$ lower triangular and a positive diagonal. It costs about half as much as LU, it exists exactly when $\mathbf{P}$ is PD (hence the test above), and $\mathbf{L}$ acts as a **matrix square root**. Two uses recur in this course. To draw correlated noise with covariance $\mathbf{P}$, draw $\mathbf{z} \sim \mathcal{N}(\mathbf{0}, \mathbf{I})$ and form $\mathbf{L}\mathbf{z}$, whose covariance is $\mathbf{L}\mathbf{I}\mathbf{L}^T = \mathbf{P}$. And the UKF places its sigma points at $\hat{\mathbf{x}} \pm$ the columns of $\sqrt{(n+\lambda)\mathbf{P}}$ (@sec-ukf). Any square root $\mathbf{S}$ with $\mathbf{S}\mathbf{S}^T = (n+\lambda)\mathbf{P}$ would reproduce the covariance, and Cholesky is the cheapest, most stable one to compute. Watch the convention: `np.linalg.cholesky` returns the lower factor, while `scipy.linalg.cholesky` returns the upper factor $\mathbf{L}^T$ unless you pass `lower=True`.
+
+```{python}
+L = np.linalg.cholesky(P_good)                 # lower triangular, P = L L^T
+print("L =\n", np.round(L, 4))
+print("L @ L.T == P:", np.allclose(L @ L.T, P_good))
+
+# Correlated noise: x = L z with z ~ N(0, I) has covariance P.
+z = rng.standard_normal((3, 200_000))
+print("sample covariance of L z:\n", np.round(np.cov(L @ z), 2))
+
+# Sigma points: mean and mean +/- columns of sqrt((n + lambda) P).
+n_x, lam = 3, 1.0                               # lambda = alpha^2 (n + kappa) - n in the UKF chapter
+x_hat = np.array([1.0, -2.0, 0.5])
+S = np.linalg.cholesky((n_x + lam) * P_good)
+sigma = np.vstack([x_hat, x_hat + S.T, x_hat - S.T])       # rows are sigma points
+w = np.full(2 * n_x + 1, 1.0 / (2.0 * (n_x + lam)))
+w[0] = lam / (n_x + lam)
+mean = w @ sigma
+cov = (sigma - mean).T @ np.diag(w) @ (sigma - mean)
+print("sigma points reproduce mean and covariance:", np.allclose(mean, x_hat), np.allclose(cov, P_good))
+```
 
 ### Singular Value Decomposition (SVD)
 
@@ -452,15 +597,13 @@ $$
 \min_{\mathbf{x}} \|\mathbf{Ax} - \mathbf{b}\|_2^2
 $$
 
-The solution satisfies the **normal equations**:
+The solution satisfies the **normal equations** $\mathbf{A}^T\mathbf{A}\,\mathbf{x} = \mathbf{A}^T\mathbf{b}$. If $\mathbf{A}$ has full column rank ($\text{rank}(\mathbf{A}) = n$), then $\mathbf{A}^T\mathbf{A}$ is invertible and the minimizer is unique:
 
 $$
-\mathbf{A}^T\mathbf{A}\,\mathbf{x} = \mathbf{A}^T\mathbf{b}
-\implies
-\mathbf{x}^* = (\mathbf{A}^T\mathbf{A})^{-1}\mathbf{A}^T\mathbf{b} = \mathbf{A}^+\mathbf{b}
+\mathbf{x}^* = (\mathbf{A}^T\mathbf{A})^{-1}\mathbf{A}^T\mathbf{b} = \mathbf{A}^+\mathbf{b}.
 $$
 
-In practice, use `np.linalg.lstsq` (which uses QR/SVD internally) rather than forming the normal equations explicitly.
+If the columns are dependent, infinitely many $\mathbf{x}$ fit equally well (the problem itself is unobservable in some direction), and $\mathbf{A}^+\mathbf{b}$ picks the one with the smallest norm. In practice, use `np.linalg.lstsq` (which uses QR/SVD internally) rather than forming the normal equations explicitly.
 
 ### Weighted least squares
 
@@ -487,6 +630,30 @@ print("Least-squares solution:", np.round(x, 4))
 print("Fit: intercept =", round(x[0], 3), "  slope =", round(x[1], 3))
 ```
 
+## The Matrix Exponential {#sec-linalg-matrix-exponential}
+
+The scalar ODE $\dot{x} = ax$ has solution $x(t) = e^{at}x(0)$. The vector version $\dot{\mathbf{x}} = \mathbf{A}\mathbf{x}$ has solution $\mathbf{x}(t) = e^{\mathbf{A}t}\mathbf{x}(0)$, with the **matrix exponential** defined by the same power series:
+
+$$
+e^{\mathbf{A}t} = \mathbf{I} + \mathbf{A}t + \frac{(\mathbf{A}t)^2}{2!} + \frac{(\mathbf{A}t)^3}{3!} + \cdots
+$$
+
+This is how a continuous-time model becomes the discrete transition matrix of a filter: $\mathbf{F} = e^{\mathbf{A}\Delta t}$. For the constant-velocity model $\mathbf{A}$ is nilpotent ($\mathbf{A}^2 = \mathbf{0}$), so the series stops and $\mathbf{F} = \mathbf{I} + \mathbf{A}\Delta t$ exactly. For a skew-symmetric $[\boldsymbol{\theta}]_\times$, the series sums to a rotation matrix (Rodrigues' formula, @sec-frames-rotation-vector). Discretizing the process noise needs a related exponential of a larger block matrix, Van Loan's method, covered in @sec-kf-process-noise. In code use `scipy.linalg.expm`; `np.exp` exponentiates each entry separately and is a different (and here wrong) function.
+
+```{python}
+from scipy.linalg import expm
+
+dt = 0.1
+A_cv = np.array([[0.0, 1.0],
+                 [0.0, 0.0]])                  # continuous-time constant velocity
+print("expm(A dt) =\n", expm(A_cv * dt))        # [[1, dt], [0, 1]] exactly
+print("np.exp(A dt), elementwise and wrong =\n", np.exp(A_cv * dt))
+
+C = expm(skew(np.array([0.1, -0.2, 0.3])))      # exponential of a skew matrix
+print("expm([theta]x) is a rotation: C^T C = I:", np.allclose(C.T @ C, np.eye(3)),
+      " det =", round(np.linalg.det(C), 12))
+```
+
 ## Quick Reference {#sec-linalg-quick-reference}
 
 | Operation | Math | NumPy |
@@ -495,11 +662,14 @@ print("Fit: intercept =", round(x[0], 3), "  slope =", round(x[1], 3))
 | Cross product | $\mathbf{a}\times\mathbf{b}$ | `np.cross(a, b)` |
 | Matrix multiply | $\mathbf{AB}$ | `A @ B` |
 | Transpose | $\mathbf{A}^T$ | `A.T` |
+| Trace | $\operatorname{tr}(\mathbf{A})$ | `np.trace(A)` |
 | Inverse | $\mathbf{A}^{-1}$ | `np.linalg.inv(A)` |
 | Solve $\mathbf{Ax}=\mathbf{b}$ | — | `np.linalg.solve(A, b)` |
 | Pseudoinverse | $\mathbf{A}^+$ | `np.linalg.pinv(A)` |
 | Eigendecomposition | $\mathbf{Av}=\lambda\mathbf{v}$ | `np.linalg.eigh(A)` (symmetric) |
+| Cholesky | $\mathbf{P}=\mathbf{LL}^T$ | `np.linalg.cholesky(P)` (lower) |
 | SVD | $\mathbf{U\Sigma V}^T$ | `np.linalg.svd(A)` |
+| Matrix exponential | $e^{\mathbf{A}t}$ | `scipy.linalg.expm(A * t)` |
 | Vector norm | $\|\mathbf{v}\|_p$ | `np.linalg.norm(v, p)` |
 | Determinant | $\det(\mathbf{A})$ | `np.linalg.det(A)` |
 | Rank | $\text{rank}(\mathbf{A})$ | `np.linalg.matrix_rank(A)` |
@@ -509,6 +679,25 @@ print("Fit: intercept =", round(x[0], 3), "  slope =", round(x[1], 3))
 
 - **Dimension mismatch.** Check shapes before multiplying: $(m \times k)(k \times n)$ is valid; $(m \times k)(m \times k)$ is not unless $m=k$.
 - **Row vs. column vector conventions.** NumPy 1-D arrays are neither; use `reshape(-1, 1)` when shape matters.
+- **Off-by-one indexing.** Math is 1-based and inclusive; NumPy is 0-based and half-open. $\mathbf{v}_{i:j}$ is `v[i-1:j]`.
 - **Explicit inverse.** $\mathbf{A}^{-1}\mathbf{b}$ is slower and less stable than `solve(A, b)`.
 - **Forgetting the transpose in covariance propagation.** $\mathbf{APA}^T$, not $\mathbf{APA}$.
+- **Elementwise exponential.** `np.exp(A)` is not $e^{\mathbf{A}}$; use `scipy.linalg.expm`.
+- **Upper vs. lower Cholesky factor.** NumPy returns $\mathbf{L}$, SciPy returns $\mathbf{L}^T$ by default.
 - **Trusting poorly-conditioned results.** Check `np.linalg.cond(A)` before interpreting solutions.
+
+## Exercises {#sec-linalg-exercises}
+
+1. **Skew-matrix identities.** For $\mathbf{a}, \mathbf{b} \in \mathbb{R}^3$, show that (a) $[\mathbf{a}]_\times^T = -[\mathbf{a}]_\times$; (b) $[\mathbf{a}]_\times\mathbf{b} = -[\mathbf{b}]_\times\mathbf{a}$, so the Jacobian of $\mathbf{a} \times \mathbf{b}$ with respect to $\mathbf{a}$ is $-[\mathbf{b}]_\times$; (c) $[\mathbf{a}]_\times^2 = \mathbf{a}\mathbf{a}^T - \|\mathbf{a}\|^2\mathbf{I}$; and (d) $[\mathbf{a}]_\times^3 = -\|\mathbf{a}\|^2[\mathbf{a}]_\times$. Explain how (d) makes the series for $e^{[\boldsymbol{\theta}]_\times}$ collapse to Rodrigues' formula.
+
+2. **Why dead reckoning drifts.** Use the constant-acceleration model with state $[p, v, a]^T$ and
+   $\mathbf{F} = \begin{bmatrix} 1 & \Delta t & \Delta t^2/2 \\ 0 & 1 & \Delta t \\ 0 & 0 & 1 \end{bmatrix}$.
+   By hand, build $\mathcal{O}$ and find its rank and null space for (a) a position measurement (GNSS), $\mathbf{H} = [1\ 0\ 0]$; (b) a velocity measurement (wheel odometry or Doppler), $\mathbf{H} = [0\ 1\ 0]$; and (c) an accelerometer alone, $\mathbf{H} = [0\ 0\ 1]$. Interpret each null space physically, then confirm the ranks with `observability_matrix`.
+
+3. **Which update form is cheaper?** Implement the covariance-form and information-form measurement updates of @sec-linalg-woodbury as functions. For $(n, m) = (15, 3)$, a GNSS fix on an INS error state, and $(n, m) = (15, 400)$, a camera frame with many feature measurements, verify that the two agree and time each with `timeit`, using random symmetric positive definite $\mathbf{P}$ and diagonal $\mathbf{R}$ from a seeded generator. Explain the results by counting the size of the matrices each form inverts.
+
+4. **Repairing a covariance.** A log file contains the "covariance" `P_bad` from @sec-linalg-eigenvalues-eigenvectors. (a) Show by hand that its eigenvalues are $1$ and $1 \pm 0.9\sqrt{2}$. (b) Write `nearest_psd(P, floor)` that symmetrizes, clips eigenvalues below `floor`, and reassembles the matrix, then confirm that its output passes the Cholesky test. (c) Name two ways a running filter can end up with a covariance like this, and how to prevent each.
+
+5. **Exact versus first-order discretization.** For a mass on a spring with natural frequency $\omega_0$, $\mathbf{A} = \begin{bmatrix} 0 & 1 \\ -\omega_0^2 & 0 \end{bmatrix}$. (a) Show that $\mathbf{A}^2 = -\omega_0^2\mathbf{I}$ and use it to sum the series:
+   $e^{\mathbf{A}\Delta t} = \begin{bmatrix} \cos\omega_0\Delta t & \sin(\omega_0\Delta t)/\omega_0 \\ -\omega_0\sin\omega_0\Delta t & \cos\omega_0\Delta t \end{bmatrix}$.
+   (b) Check it against `expm` for $\omega_0 = 2\pi$ rad/s and $\Delta t = 0.01$ s. (c) Propagate $[1, 0]^T$ for 10 s with both $e^{\mathbf{A}\Delta t}$ and $\mathbf{I} + \mathbf{A}\Delta t$, and explain the growth of the second using the eigenvalues of $\mathbf{I} + \mathbf{A}\Delta t$.
