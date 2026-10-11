@@ -2,134 +2,122 @@
 
 ## Overview {#sec-project1c-overview}
 
-Part C combines the IMU propagation from Part A and the visual pose measurements from Part B into three nonlinear estimators:
+Part C combines the inertial propagation of Part A and the visual pose measurements of Part B into three navigation filters: an extended Kalman filter (@sec-ekf), an unscented Kalman filter (@sec-ukf), and a particle filter (@sec-pf). The output is what the controller at the bottom of the stack consumes: a full state estimate and covariance at every IMU sample, including through the stretches where the camera sees nothing.
 
-- Extended Kalman Filter
-- Unscented Kalman Filter
-- Particle Filter
-
-All three filters must use the same dataset, the same 15-state convention, the same propagation model, and the same PnP-based observation source. If one filter gets different semantics, the comparison stops being interesting and turns into a bookkeeping accident.
+All three filters must use the same datasets, the same 15-state vector, the same propagation model, the same PnP measurements, and the same processing loop. If one filter gets different semantics, the comparison stops being interesting and turns into a bookkeeping accident.
 
 ## Starter Interfaces {#sec-project1c-starter-interfaces}
 
-Use the starter package:
-
-```python
-from drone_pipeline.datasets import load_drone_dataset
-from drone_pipeline.filters import (
-    EKFNavigator,
-    ParticleFilterNavigator,
-    UKFNavigator,
-)
-from drone_pipeline.mechanization import propagate_state
+``` python
+from drone_pipeline.datasets import interpolate_vicon_truth, load_drone_dataset
+from drone_pipeline.filters import EKFNavigator, ParticleFilterNavigator, UKFNavigator
+from drone_pipeline.mechanization import PropagationParams, propagate_state
 from drone_pipeline.observation import estimate_pose
 ```
 
-The starter classes define the public interfaces, but the core estimation logic is for you to implement.
+The constructors, the `state` and `covariance` accessors, and the particle filter's `effective_sample_size` and `resample_if_needed` are provided; the estimation logic is yours. Every navigator is driven the same way:
+
+``` python
+nav.predict(acc, omg, dt)      # one IMU interval
+accepted = nav.update(z)       # one PnP pose z = pose.z; False if the gate rejected it
+nav.state                      # (15,) current estimate
+nav.covariance                 # (15, 15) current covariance
+nav.history                    # one dict per update: "nis", "accepted", ...
+```
+
+`Q` is a process-noise spectral density (per second), so the discrete covariance over an interval is at least `Q * dt` (@sec-kf-process-noise); `R` is your Part B measurement covariance plus any inflation you report. Each `update` appends a dict to `nav.history` with at least `"nis"` and `"accepted"`; the Kalman filters also log `"innovation"` and `"S"`, and the particle filter logs `"n_eff"`. The filter docstrings in `filters.py` spell out the contract. `uv run python -m drone_pipeline.run_all` drives all three filters with the loop below and writes RMSE, NIS, NEES, and runtime tables and plots; edit its `TUNING` block for your values.
+
+## Processing Loop {#sec-project1c-processing-loop}
+
+Use this order in every filter (it is what `run_all.run_navigator` does):
+
+1.  **Initialize from PnP alone.** Use the first pose seen by at least two tags; single-tag poses are biased (@sec-project1b). Velocity may start at zero or come from a line fitted through the first few poses, and the biases at zero or at your Part A estimates. Several validation flights begin while the drone is already moving at about half a meter per second, right after a dropout, so choose $\mathbf{P}_0$ accordingly and report it. No Vicon here.
+2.  **Predict.** For each later packet $k$, propagate from $t_{k-1}$ to $t_k$ with the IMU sample of packet $k-1$ held constant over the interval, using the actual $dt_k = t_k - t_{k-1}$. Packet spacing is not constant: it is about 0.02 s in `studentdata1`-`7` with gaps up to 0.08 s, and up to 0.49 s in `studentdata0`. Split any interval longer than about 0.05 s into equal sub-steps so the Euler integration stays accurate; the covariance then grows correctly by itself, since $\mathbf{Q}\,dt$ accumulates over the sub-steps.
+3.  **Update.** If packet $k$ has a PnP pose, gate it and fuse it. If it has none, the prediction is the answer for that packet. Never skip the prediction because a measurement is missing, and never fuse the same pose twice.
 
 ## Common Requirements {#sec-project1c-common-requirements}
 
-All three filters must:
+All three filters must use the shared 15-state vector, propagate with your `propagate_state(...)` (or a vectorized version of the same model), use the Part B PnP poses as the only measurement source, keep Vicon out of the update path, and wrap propagated attitudes and attitude residuals. Single-tag poses get whatever treatment you chose and justified in Part B, applied identically in all three filters.
 
-- use the shared 15-state vector
-- propagate with `propagate_state(...)`
-- use PnP observations from Part B as the measurement source
-- skip updates when no valid visual pose is available
-- keep Vicon out of the update path
-- wrap propagated attitudes and attitude residuals
-- report position RMSE against Vicon truth
+## Gating and Consistency {#sec-project1c-gating-consistency}
+
+A filter that reports a small covariance is making a claim. Part C asks you to test that claim two ways (@sec-kf-consistency).
+
+**NIS.** For every update compute the normalized innovation squared $\epsilon_\nu = \boldsymbol{\nu}^T\mathbf{S}^{-1}\boldsymbol{\nu}$, with $\boldsymbol{\nu} = \mathbf{z} - h(\hat{\mathbf{x}}_{k|k-1})$ (angles wrapped) and $\mathbf{S}$ the innovation covariance. For a consistent filter it is $\chi^2$ with 6 degrees of freedom: mean 6, and about 95% of samples inside $[1.24, 14.45]$. NIS needs no truth, so it is the test you could run on a real vehicle.
+
+**NEES.** Because this dataset has truth, also compute the normalized estimation error squared $\epsilon_x = \mathbf{e}^T\mathbf{P}^{-1}\mathbf{e}$ with $\mathbf{e} = \mathbf{x} - \hat{\mathbf{x}}$ over the nine states Vicon observes (position, attitude, velocity; Vicon says nothing about biases). For a consistent filter it is $\chi^2_9$: mean 9, with about 95% of samples inside $[2.70, 19.02]$. `drone_pipeline.evaluation` provides `nees`, `chi2_interval`, and `fraction_inside`. Bounds on the time-averaged NEES or NIS shrink like $1/K$ for $K$ samples, but samples along one trajectory are correlated, so treat averaged bounds as optimistic. Plot both statistics over time with their bounds, and if NIS and NEES tell different stories, explain why; that disagreement is usually the most interesting paragraph in the report.
+
+**Gating.** Reject a PnP pose whose NIS exceeds a chi-square threshold (for example $\chi^2_{6}(0.999) = 22.46$), log the rejection, and report how many poses each filter rejected. Gating is a sharp knife. An overconfident filter, from a $\mathbf{Q}$ that is too small or a bad initialization, rejects perfectly good measurements, drifts further, and then rejects everything that follows. That is a lockout, not outlier rejection. If you see long runs of consecutive rejections, fix the model rather than loosening the gate until the symptom disappears, and report what you changed.
 
 ## EKF Requirements {#sec-project1c-ekf-requirements}
 
 Implement `EKFNavigator` with:
 
-- nonlinear prediction using `propagate_state(...)`
-- state-transition Jacobian, analytical or finite-difference
-- measurement Jacobian for `h(x) = x[:6]`
-- angle-aware innovation handling
-- Joseph-form covariance update
-- innovation and NIS logging
+- nonlinear prediction using `propagate_state(...)`;
+- a state-transition Jacobian $\mathbf{F}$, analytic or finite-difference (the Part A covariance propagation);
+- the measurement Jacobian for `h(x) = x[:6]`;
+- angle-aware innovations;
+- the Joseph-form covariance update (@sec-ekf-update);
+- NIS logging, gating, and NEES.
 
-Report:
-
-- `Q`, `R`, and `P0`
-- NIS history or histogram
-- mean NIS compared to the expected measurement dimension of `6`
-- any covariance inflation or tuning choices
+Report `Q`, `R`, and `P0`; NIS and NEES histories against their bounds; the number of gated measurements; and any covariance inflation or tuning choices with the evidence that motivated them.
 
 ## UKF Requirements {#sec-project1c-ukf-requirements}
 
 Implement `UKFNavigator` with:
 
-- sigma-point generation
-- unscented prediction through `propagate_state(...)`
-- unscented update through `h(x) = x[:6]`
-- angle-aware mean and residual handling
-- additive process and measurement covariance
+- scaled sigma-point generation from $(\hat{\mathbf{x}}, \mathbf{P})$;
+- unscented prediction through `propagate_state(...)`, with additive `Q * dt`;
+- an unscented update through `h(x) = x[:6]` (@sec-ukf-update);
+- angle-aware means and residuals for both state and measurement sigma points.
 
-Report:
+Because the process noise is additive, the propagated sigma points do not carry $\mathbf{Q}$. **Redraw** the sigma points from $(\hat{\mathbf{x}}_{k|k-1}, \mathbf{P}_{k|k-1})$ before the update (or augment the state with the noise); reusing the propagated set understates the cross-covariance $\mathbf{P}_{xz}$. For the angle means, a weighted average of residuals about the central sigma point stays well behaved even when a small $\alpha$ makes $W_0$ large and negative.
 
-- `alpha`, `beta`, and `kappa`
-- a short sensitivity study over at least three `alpha` values
-- innovation or NIS diagnostics comparable to the EKF
-- whether the UKF earned its extra bookkeeping
+Report `alpha`, `beta`, and `kappa`; a sensitivity study over at least three `alpha` values; NIS and NEES diagnostics comparable to the EKF's; and a frank answer to whether the UKF earned its extra bookkeeping on this problem, given that its measurement model is linear.
 
 ## Particle Filter Requirements {#sec-project1c-particle-filter-requirements}
 
 Implement `ParticleFilterNavigator` with:
 
-- vectorized particle propagation
-- process-noise sampling for attitude, velocity, and bias terms
-- log-weight likelihood updates
-- effective sample size:
+- vectorized particle propagation (one `propagate_state` call on an `(N, 15)` array, not a Python loop over particles);
+- process-noise sampling for every state, consistent with the `Q` the Kalman filters use;
+- log-weight likelihood updates with the angle residuals wrapped;
+- the effective sample size `N_eff = 1.0 / np.sum(weights**2)`, logged after every reweighting;
+- low-variance (systematic) resampling (@sec-pf-resampling), triggered when `N_eff` drops below a threshold;
+- `estimate(method)` for the three point estimates below, with angle-aware means;
+- optional roughening, documented clearly if you use it.
 
-```python
-N_eff = 1.0 / np.sum(weights**2)
-```
+**Expect weight collapse, and report what you do about it.** The PnP noise is tiny, about a centimeter and half a degree, while a 15-dimensional particle cloud is spread thinly. If the predicted cloud is much wider than $\mathbf{R}$, a single update puts nearly all the weight on one or two particles ($N_\text{eff} \approx 1$), resampling clones them, and the filter degenerates. The usual remedies are a process noise large enough to cover the real model error, more particles, roughening, or an inflated $\mathbf{R}$ in the likelihood. Each is legitimate if reported: state any inflation factor applied to `R` or `Q` and show the $N_\text{eff}$ history before and after.
 
-- low-variance or systematic resampling
-- optional roughening if needed, documented clearly
+Run the particle-count study for `[250, 1000, 2500, 5000]` particles (`run_all --pf-study` does this). For each count compute three navigation solutions: the highest-weight particle, the unweighted particle mean, and the weighted particle mean. Take the point estimates after reweighting and *before* resampling; after resampling the weights are uniform and the weighted and unweighted means coincide. Report position RMSE (computed exactly as for the other filters), median $N_\text{eff}$, and runtime for each combination.
 
-Investigate these particle counts:
+## Evaluation Protocol {#sec-project1c-evaluation-protocol}
 
-```python
-[250, 500, 750, 1000, 2000, 3000, 4000, 5000]
-```
-
-For each particle count, compute navigation solutions using:
-
-1. highest-weight particle
-2. unweighted particle mean
-3. weighted particle mean
-
-Report position RMSE and runtime for each choice. For weighted means, use a weighted RMSE.
+Evaluate every method at the packet timestamps, from the filter's initialization to the end of the flight, against Vicon interpolated with `interpolate_vicon_truth`, keeping only samples with `valid == True`. Position RMSE is the 3-D value $\sqrt{\frac{1}{K}\sum_k \|\mathbf{p}_k - \hat{\mathbf{p}}_k\|^2}$ in meters; also report per-axis position RMSE and per-axis attitude RMSE in degrees with wrapped residuals. `drone_pipeline.evaluation.rmse` computes all of these. Several flights end with more than a second without tags, and that tail can dominate the RMSE, so also report the RMSE over the samples that have a PnP pose and the error growth during each dropout. Robustness to missing measurements is part of the comparison, not noise in it.
 
 ## Comparison Requirements {#sec-project1c-comparison-requirements}
 
-Compare EKF, UKF, and PF on:
+Compare dead reckoning, raw PnP, EKF, UKF, and PF on:
 
-- accuracy
-- implementation difficulty
-- tuning difficulty
-- runtime
-- robustness to missing visual measurements
-- dominant failure modes
+- accuracy, during visual coverage and during dropouts;
+- consistency (NIS, NEES, gated measurements);
+- implementation and tuning difficulty;
+- runtime;
+- dominant failure modes.
 
-Use one development trial and one validation trial for detailed figures, then summarize all eight datasets in tables.
+Use one development flight and one validation flight for detailed figures, then summarize `studentdata1`-`7` in tables. Be honest about where the filters help: when the camera sees several tags every frame, PnP alone is already accurate, and the filters earn their keep mainly by providing velocity, a smooth state at the IMU rate, a covariance, and continuity through dropouts.
 
 ## Deliverables {#sec-project1c-deliverables}
 
-Submit:
+Submit, as part of the final Project 1 report and code archive:
 
-- `EKFNavigator`
-- `UKFNavigator`
-- `ParticleFilterNavigator`
-- trajectory plots showing truth, PnP observations, mechanization, and filtered outputs
-- RMSE tables across all eight datasets
-- EKF and UKF innovation diagnostics
-- PF particle-count and runtime study
-- a short technical comparison of the three methods
+- `EKFNavigator`, `UKFNavigator`, and `ParticleFilterNavigator`, passing the Part C tests;
+- trajectory plots showing truth, PnP poses, dead reckoning, and the filtered outputs;
+- RMSE tables for `studentdata1`-`7`, with and without the dropout segments;
+- NIS and NEES diagnostics for all three filters, with chi-square bounds and gating counts;
+- the particle-count and runtime study, including the $N_\text{eff}$ history and any inflation used;
+- a technical comparison of the three methods.
 
 ## Notes {#sec-project1c-notes}
 
-The old nonlinear-KF and particle-filter projects are merged here on purpose. You are not building three unrelated assignments. You are building one pipeline with three different estimators attached to the same underlying navigation problem.
+You are not building three unrelated assignments. You are building one pipeline with three different estimators attached to the same navigation problem, and the interesting results are usually in the differences: where they agree, where one breaks, and why.
