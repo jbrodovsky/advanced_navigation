@@ -565,12 +565,12 @@ recognize the recurring system pattern.
 
 Feature-based methods throw away most of the image and keep only keypoints.
 **Direct** methods skip features and minimize a photometric error instead: take
-a pixel $\mathbf{u}$ with depth $d_\mathbf{u}$ in a reference frame,
+a pixel $\mathbf{u}$ with depth $d_{\mathbf{u}}$ in a reference frame,
 back-project it, move it with the candidate relative pose $\mathbf{T}_r^k$,
 project it into the current frame, and compare intensities,
 
 $$
-r_\mathbf{u} = I_k\Big(\pi\big(\mathbf{T}_r^k\,\pi^{-1}(\mathbf{u}, d_\mathbf{u})\big)\Big) - I_r(\mathbf{u}),
+r_{\mathbf{u}} = I_k\Big(\pi\big(\mathbf{T}_r^k\,\pi^{-1}(\mathbf{u}, d_{\mathbf{u}})\big)\Big) - I_r(\mathbf{u}),
 $$
 
 summed over many pixels with strong gradients. LSD-SLAM [@engel2014lsd] tracks

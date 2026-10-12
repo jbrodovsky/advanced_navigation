@@ -15,8 +15,9 @@ The niche of this course is the intersection of traditional maritime and aerospa
 
 ## Repository conventions
 
-- The course title is **Advanced Robot Navigation**. Content is proprietary: no license file, and copyright reads "© 2026 James Brodovsky. All rights reserved." Do not describe the material as openly available.
+- The course title is **Advanced Robot Navigation**. The repository is **public** and is a GitHub template that students copy into their own public portfolio repositories. Book text and figures are CC BY-NC-SA 4.0 (`LICENSE-CONTENT.md`); code is MIT (`LICENSE`). Copyright reads "© 2026 James Brodovsky".
 - Datasets are never committed. Code finds them under `data/<name>/` (or `$ADVNAV_DATA_DIR/<name>/`) through each package's `data_paths.find_dataset_dir`; students download them with `uv run python scripts/fetch_data.py <name>`.
-- The book freezes code-cell output (`execute: freeze: auto`). After changing a chapter's code, re-render it with the data present and commit the updated `book/_freeze/` files.
-- `admin/` is instructor-only (planning notes, old syllabi, templates, solutions). Never render it or copy solutions into handouts or starter packages.
+- The book freezes code-cell output (`execute: freeze: auto`), separately for each format. After changing a chapter's code, re-render it to **both** html and pdf with the data present (`uv run quarto render <chapter> --to html` and `--to pdf`) and commit the updated `book/_freeze/` files.
+- CI (`.github/workflows/publish.yml`) runs the tests, renders the PDF and website, and deploys them to GitHub Pages on every push to `main`. It never has the datasets, so it relies entirely on `_freeze/`.
+- `admin/` is instructor-only (planning notes, old syllabi, templates, solutions). It is a separate **private** repository (`jbrodovsky/advanced_navigation-admin`) cloned into `admin/`, which is gitignored here. Never commit it, render it, or copy solutions into the book, handouts, or starter packages; CI fails if anything under `admin/` is tracked.
 - Run `uv run pytest` before committing; tests that need data skip with a reason when it is absent.
