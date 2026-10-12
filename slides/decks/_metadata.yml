@@ -1,0 +1,36 @@
+# reveal.js settings shared by every deck. Each deck adds its own title,
+# `part`, `footer`, and `book-sources` (see ../README.md). No bibliography:
+# slides name their sources in words and leave citations to the book.
+format:
+  revealjs:
+    theme: [default, ../theme/course.scss]
+    width: 1280
+    height: 720
+    margin: 0.06
+    slide-number: c/t
+    hash-type: title
+    menu:
+      numbers: true
+    chalkboard:
+      buttons: false
+    transition: fade
+    background-transition: fade
+    transition-speed: fast
+    preview-links: auto
+    pdf-separate-fragments: false
+    html-math-method: mathjax
+    fig-width: 9
+    fig-height: 4.5
+    fig-align: center
+    fig-dpi: 150
+    code-overflow: wrap
+    code-line-numbers: false   # a block opts in with code-line-numbers="|2-3|..."
+
+filters:
+  - ../theme/part.lua
+
+# Plotting cells hide their code; cells meant to be read opt in with
+# `#| echo: true`.
+execute:
+  echo: false
+  warning: false

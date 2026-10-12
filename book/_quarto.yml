@@ -50,6 +50,13 @@ book:
   author: "James Brodovsky"
   page-footer: "© 2026 James Brodovsky · Text [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) · Code [MIT](https://github.com/jbrodovsky/advanced_navigation/blob/main/LICENSE)"
   downloads: [pdf]
+  # The lecture slides are a separate Quarto project (slides/) that CI copies
+  # into the site, so the link is absolute.
+  sidebar:
+    tools:
+      - icon: easel
+        href: https://jbrodovsky.github.io/advanced_navigation/slides/
+        text: Lecture slides
   chapters:
     - index.qmd
     - part: "Introduction"

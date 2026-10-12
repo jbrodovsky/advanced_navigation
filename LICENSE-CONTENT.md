@@ -17,7 +17,7 @@ provided you:
 - **share alike**: distribute adaptations under the same license.
 
 Source code, including the starter packages in `projects/`, the scripts in
-`scripts/`, the tests, and the code cells in the book, is licensed separately
+`scripts/`, the tests, and the code cells in the book and slides, is licensed separately
 under the MIT License (see `LICENSE`).
 
 The course datasets are not part of this repository and are not covered by

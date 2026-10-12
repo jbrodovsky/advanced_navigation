@@ -1,0 +1,42 @@
+---
+title: "Lecture Slides"
+subtitle: "Advanced Robot Navigation"
+format:
+  html:
+    theme: cosmo
+    toc: false
+---
+
+One deck for each part of the [course notes](https://jbrodovsky.github.io/advanced_navigation/).
+The slides carry the talking points and the pictures; the notes carry the
+derivations, the code, and the details. Each deck is also available as a PDF
+with every slide fully revealed, for taking notes on or reviewing later.
+
+| Part | Slides | PDF |
+|:---|:---|:---|
+| [1]{.part-chip style="background:#3730a3"} | [Introduction](decks/01-introduction.html) | [PDF](decks/01-introduction.pdf) |
+| [2]{.part-chip style="background:#1d4ed8"} | [Foundations](decks/02-foundations.html) | [PDF](decks/02-foundations.pdf) |
+| [3]{.part-chip style="background:#0e7490"} | [Sensing and Perception](decks/03-sensing.html) | [PDF](decks/03-sensing.pdf) |
+| [4]{.part-chip style="background:#047857"} | [Filtering and State Estimation](decks/04-filtering.html) | [PDF](decks/04-filtering.pdf) |
+| [5]{.part-chip style="background:#b45309"} | [Simultaneous Localization and Mapping](decks/05-slam.html) | [PDF](decks/05-slam.pdf) |
+| [6]{.part-chip style="background:#b91c1c"} | [Global Scale Navigation](decks/06-global.html) | [PDF](decks/06-global.pdf) |
+| [7]{.part-chip style="background:#be185d"} | [Practical Implementation Guide](decks/07-practical.html) | [PDF](decks/07-practical.pdf) |
+| [8]{.part-chip style="background:#7e22ce"} | [Advanced Topics](decks/08-advanced.html) | [PDF](decks/08-advanced.pdf) |
+
+All eight decks in one file: [advanced-robot-navigation-slides.pdf](advanced-robot-navigation-slides.pdf).
+
+## Presenting
+
+Press **F** for full screen, **S** for the speaker view (notes and a timer),
+**M** for the slide menu, **O** for an overview of every slide, **B** to draw on
+a blackboard, **C** to draw on the slide, and **?** for the full list of keys.
+The address bar keeps the current slide, so a link can open a deck at any slide.
+
+<style>
+.part-chip { display: inline-block; min-width: 1.8em; text-align: center;
+  color: #fff; font-weight: 600; border-radius: 0.3em; }
+</style>
+
+---
+
+© 2026 James Brodovsky · Text [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) · Code [MIT](https://github.com/jbrodovsky/advanced_navigation/blob/main/LICENSE)

@@ -7,7 +7,8 @@ navigation system of an autonomous vehicle, from perception-derived
 measurements through filtering and SLAM to INS/GNSS integration.
 
 **Read the notes online:** <https://jbrodovsky.github.io/advanced_navigation/>
-(a PDF download is linked from the site).
+(a PDF download is linked from the site). The lecture slides, with PDF copies,
+are at <https://jbrodovsky.github.io/advanced_navigation/slides/>.
 
 © 2026 James Brodovsky. The notes are licensed
 [CC BY-NC-SA 4.0](LICENSE-CONTENT.md) and the code [MIT](LICENSE).
@@ -44,7 +45,7 @@ including the rules on attribution and your own work.
 | `scripts/` | Dataset download (`fetch_data.py`) and instructor packaging (`package_datasets.py`) |
 | `data/` | Downloaded datasets (not in git); see `data/README.md` |
 | `tests/` | Tests for the repository scripts |
-| `slides/` | Lecture slide tooling (to be replaced by Quarto reveal.js decks) |
+| `slides/` | Lecture slides: one Quarto reveal.js deck per book part (see `slides/README.md`) |
 | `admin/` | Instructor only, not in this repository (see *Instructor tasks*) |
 
 ## Setup
@@ -96,9 +97,24 @@ html and pdf formats, so the book builds without the datasets. After editing a
 chapter's code, re-render it to both formats with the data present and commit
 the updated `_freeze/` files.
 
+## Building the slides
+
+The lecture slides are separate from the book: one reveal.js deck per part in
+`slides/decks/`, written for presenting rather than generated from the chapters.
+Their code output is frozen in `slides/_freeze/` the same way. To render the
+decks and print each to PDF (needs Node.js for `npx` and `pdfunite` from
+poppler-utils):
+
+```bash
+scripts/build_slides.sh
+```
+
+The output is in `slides/output/`. `slides/README.md` is the authoring guide.
+
 Pushes to `main` run `.github/workflows/publish.yml`, which runs the tests,
-renders the PDF and the website, and deploys them to GitHub Pages. Template
-copies skip this workflow unless they remove its repository guard.
+renders the PDF and the website, renders the slides and their PDFs, and deploys
+them to GitHub Pages (the slides under `slides/`). Template copies skip this
+workflow unless they remove its repository guard.
 
 ## Instructor tasks
 
@@ -129,8 +145,8 @@ starter packages; CI fails if anything under `admin/` is tracked.
 
 ## License
 
-- Book text, figures, and handouts (`book/`): [CC BY-NC-SA 4.0](LICENSE-CONTENT.md)
-- Code (`projects/`, `scripts/`, `tests/`, and code in the book): [MIT](LICENSE)
+- Book text, figures, and handouts (`book/`) and lecture slides (`slides/`): [CC BY-NC-SA 4.0](LICENSE-CONTENT.md)
+- Code (`projects/`, `scripts/`, `tests/`, and code in the book and slides): [MIT](LICENSE)
 - Datasets: not included and not covered by either license; see `data/README.md`
 
 ## Credits
