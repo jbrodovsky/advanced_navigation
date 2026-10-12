@@ -28,3 +28,6 @@ book/images/src/*.fls
 book/images/src/*.log
 book/images/src/*.pdf
 book/images/src/*.synctex.gz
+
+# Instructor-only material: a separate private repo cloned here, never committed.
+/admin/

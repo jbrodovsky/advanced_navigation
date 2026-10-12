@@ -6,14 +6,12 @@ The detailed book chapters remain the presenter script. Each slide has speaker n
 
 ## Regenerate
 
-The deck is generated with the bundled presentation runtime. From the repository root:
+The deck is generated with Node.js and the `@oai/artifact-tool` presentation
+library, which `generate_lecture_deck.mjs` imports. With that library available
+in `slides/node_modules/`, run from the repository root:
 
 ```bash
-RUNTIME_NODE="/Users/jamesbrodovsky/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
-RUNTIME_NODE_MODULES="/Users/jamesbrodovsky/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules"
-RUNTIME_BIN_DIR="/Users/jamesbrodovsky/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/override"
-ln -sfn "$RUNTIME_NODE_MODULES" slides/node_modules
-"$RUNTIME_NODE" slides/generate_lecture_deck.mjs
+node slides/generate_lecture_deck.mjs
 ```
 
 Edit the `chapters` list in `generate_lecture_deck.mjs` to change slide copy or add a chapter. The PPTX remains editable in PowerPoint, Keynote, or LibreOffice.

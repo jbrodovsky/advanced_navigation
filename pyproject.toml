@@ -4,8 +4,7 @@ version = "0.1.0"
 description = "Course notes and project starter workspace for Advanced Robot Navigation."
 readme = "README.md"
 requires-python = ">=3.11"
-license = "LicenseRef-Proprietary"
-classifiers = ["Private :: Do Not Upload"]
+license = "MIT"
 dependencies = [
     "drone-pipeline",
     "victoria-park-slam",

@@ -1,0 +1,104 @@
+# Test the code, render the book (PDF + website), and deploy it to GitHub Pages.
+#
+# The datasets are never available here: every code cell's output comes from
+# book/_freeze/, which the instructor commits after rendering with the data.
+#
+# Each job only runs in the course repository. If you created your own copy
+# from the template and want CI too, delete the `if: github.repository == ...`
+# lines (and enable Pages with source "GitHub Actions" to deploy the book).
+name: Publish
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  QUARTO_VERSION: 1.8.27
+
+jobs:
+  test:
+    if: github.repository == 'jbrodovsky/advanced_navigation'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that no instructor material is tracked
+        run: |
+          if [ -n "$(git ls-files admin)" ]; then
+            echo "::error::admin/ is instructor-only and must not be committed"
+            git ls-files admin
+            exit 1
+          fi
+
+      - uses: astral-sh/setup-uv@v6
+
+      - run: uv sync --locked
+
+      - run: uv run pytest
+
+  build:
+    if: github.repository == 'jbrodovsky/advanced_navigation'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      # Jupyter and the book's imports, for any cell that is not frozen.
+      - run: uv sync --locked
+
+      - uses: quarto-dev/quarto-actions/setup@v2
+        with:
+          version: ${{ env.QUARTO_VERSION }}
+          tinytex: true
+
+      # Mermaid diagrams are rasterised with a headless browser for the PDF;
+      # DejaVu Sans Mono covers the Unicode in the code listings.
+      - name: Install PDF dependencies
+        run: |
+          quarto install chrome-headless-shell --no-prompt
+          sudo apt-get update
+          sudo apt-get install -y fonts-dejavu-core
+
+      # One render builds both formats. (Rendering them in separate calls
+      # would let the html render wipe the PDF out of book/output.)
+      - name: Render PDF and website
+        working-directory: book
+        run: uv run quarto render
+
+      - name: Check that the PDF is in the site
+        run: ls -l book/output/*.pdf
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: book/output
+
+      - name: Upload the PDF for review
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: book-pdf
+          path: book/output/*.pdf
+
+  deploy:
+    if: github.repository == 'jbrodovsky/advanced_navigation' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

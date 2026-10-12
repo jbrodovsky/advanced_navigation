@@ -6,8 +6,32 @@ background to the point where they can design, implement, and evaluate the
 navigation system of an autonomous vehicle, from perception-derived
 measurements through filtering and SLAM to INS/GNSS integration.
 
-© 2026 James Brodovsky. All rights reserved. This repository is private and its
-contents are proprietary; do not redistribute.
+**Read the notes online:** <https://jbrodovsky.github.io/advanced_navigation/>
+(a PDF download is linked from the site).
+
+© 2026 James Brodovsky. The notes are licensed
+[CC BY-NC-SA 4.0](LICENSE-CONTENT.md) and the code [MIT](LICENSE).
+
+## For students
+
+This repository is a GitHub template. Your project work lives in your own
+**public** repository, which doubles as your portfolio:
+
+1. Click **Use this template → Create a new repository** and make it public.
+2. Clone your copy, run `uv sync`, and fetch the data (below).
+3. Implement the starter packages in `projects/`, and commit your reports and
+   figures alongside the code.
+
+To pull later course updates into your copy:
+
+```bash
+git remote add course https://github.com/jbrodovsky/advanced_navigation.git
+git fetch course
+git merge course/main --allow-unrelated-histories
+```
+
+The book's introduction (*Your Portfolio Repository*) has the details,
+including the rules on attribution and your own work.
 
 ## Layout
 
@@ -21,7 +45,7 @@ contents are proprietary; do not redistribute.
 | `data/` | Downloaded datasets (not in git); see `data/README.md` |
 | `tests/` | Tests for the repository scripts |
 | `slides/` | Lecture slide tooling (to be replaced by Quarto reveal.js decks) |
-| `admin/` | Instructor-only material: planning notes, old syllabi, templates, solutions |
+| `admin/` | Instructor only, not in this repository (see *Instructor tasks*) |
 
 ## Setup
 
@@ -64,10 +88,17 @@ cd book
 uv run quarto render --to html
 ```
 
-The site is written to `book/output/` (not in git). Code-cell results are frozen
-in `book/_freeze/` (committed), so the book builds without the datasets. After
-editing a chapter's code, re-render it with the data present and commit the
-updated `_freeze/` files.
+The site is written to `book/output/` (not in git). For the PDF, render
+`--to pdf` as well; it needs a LaTeX installation (`quarto install tinytex`).
+
+Code-cell results are frozen in `book/_freeze/` (committed), separately for the
+html and pdf formats, so the book builds without the datasets. After editing a
+chapter's code, re-render it to both formats with the data present and commit
+the updated `_freeze/` files.
+
+Pushes to `main` run `.github/workflows/publish.yml`, which runs the tests,
+renders the PDF and the website, and deploys them to GitHub Pages. Template
+copies skip this workflow unless they remove its repository guard.
 
 ## Instructor tasks
 
@@ -84,8 +115,23 @@ paste its link into `url` in `scripts/data_sources.toml`. The archives are
 built deterministically, so the recorded `sha256` and `size_bytes` stay valid
 unless the data changes; if it does, copy the new values printed by the script.
 
-**Solutions** for projects and exercises live in `admin/solutions/` and must
-never be copied into the student-facing book or starter packages.
+**Solutions** for projects and exercises live in the private repository
+`jbrodovsky/advanced_navigation-admin`. Clone it into `admin/` in your checkout
+(the path is gitignored) so its `check_solutions.py` scripts can find the
+starter packages:
+
+```bash
+git clone https://github.com/jbrodovsky/advanced_navigation-admin.git admin
+```
+
+Never commit `admin/` here or copy solutions into the book, handouts, or
+starter packages; CI fails if anything under `admin/` is tracked.
+
+## License
+
+- Book text, figures, and handouts (`book/`): [CC BY-NC-SA 4.0](LICENSE-CONTENT.md)
+- Code (`projects/`, `scripts/`, `tests/`, and code in the book): [MIT](LICENSE)
+- Datasets: not included and not covered by either license; see `data/README.md`
 
 ## Credits
 

@@ -97,8 +97,11 @@ state, measurement, covariance, and validation choices.
 - **Reports:** expected structure and length are in @sec-intro-project-guidance.
 - **AI tools and software libraries:** see @sec-intro-ai-policy-and-dependencies,
   including the rule for pre-built filtering libraries such as `filterpy`.
-- **Course materials** are proprietary. Keep your solutions in a private
-  repository and do not republish the notes, handouts, or starter code.
+- **Course materials** are public: the notes are licensed CC BY-NC-SA 4.0 and
+  the code MIT. Create your own **public** repository from the course template;
+  it is your project workspace and your portfolio
+  (@sec-intro-portfolio-repository). Submitted work must be your own; cite any
+  code you adapt from the book, and do not copy from classmates' repositories.
 - **WPI policies** (academic integrity, accessibility accommodations,
   incompletes, and student support resources) are on Canvas.
 

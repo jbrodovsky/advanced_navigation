@@ -4,7 +4,7 @@ These course notes and this project are inspired by Roger Labbe's [Kalman Filter
 
 This course was developed as part of the curriculum for Worcester Polytechnic Institute's Robotics Engineering program. The primary audience is current (and former!) students in that program. That said, like Mr. Labbe's contribution, these notes are written for anyone interested in learning or teaching advanced robot navigation. I too have stood on the shoulders of those who contributed to the navigation literature before me, and this is my rung in the ladder. 
 
-Previously this course was structured and integrated directly through Canvas, a learning management system used by many universities. However, I have since restructured the course materials to be hosted on GitHub for a variety of reasons. First and foremost is the simple availability of the materials and the ability for students to easily access and refer back to these materials as needed. Second, in April and May of 2026 there was a notable and widespread cyber attack on Canvas that rendered the platform inaccessible for several days...right at the end of the Spring semester grading period. As a simple reliability precaution, having the materials available from multiple sources is a simple way to ensure that students can always access the materials. Additionally, hosting the materials on GitHub allows for easier version control and collaboration rather than the significantly manual process of managing course materials on Canvas. Finally, there is a substantial amount of code associated with the course projects, and hosting it on GitHub makes that code easier to manage and lets every student start from the same starter packages, kept in their own private repository. That encourages good software development practices and builds a code-based portfolio that students can show to potential employers.
+Previously this course was structured and integrated directly through Canvas, a learning management system used by many universities. However, I have since restructured the course materials to be hosted on GitHub for a variety of reasons. First and foremost is the simple availability of the materials and the ability for students to easily access and refer back to these materials as needed. Second, in April and May of 2026 there was a notable and widespread cyber attack on Canvas that rendered the platform inaccessible for several days...right at the end of the Spring semester grading period. As a simple reliability precaution, having the materials available from multiple sources is a simple way to ensure that students can always access the materials. Additionally, hosting the materials on GitHub allows for easier version control and collaboration rather than the significantly manual process of managing course materials on Canvas. Finally, there is a substantial amount of code associated with the course projects, and hosting it on GitHub makes that code easier to manage and lets every student start from the same starter packages in their own public repository. That encourages good software development practices and builds a code-based portfolio that students can show to potential employers.
 
 ## Why Write This Course? {#sec-intro-why-write-this}
 
@@ -90,7 +90,26 @@ The notion of a closed book timed exam as the epitome of technical academic asse
 
 In a similar notion to my dislike of closed-book timed exams, I tend to view things like grades and homework assignments as similarly anachronistic and prefer a project-based approach to learning that produces tangible results and artifacts that students can use to demonstrate their understanding of the material and to build a portfolio of work that they can show to potential employers. This is a philosophy that I picked up from my wife's undergraduate experience in art school as part of a graphic design program. At some point, we had gotten into the discussion about worrying about grades and GPAs and she made the shocking point to me that she didn't look at her GPA or care about her grades. Instead, she focused on building a portfolio of work that she could show to potential employers. At the time, these were a physical thing (we've probably still got it somewhere in our attic or basement) that she would send samples of to jobs and take with her on interviews. This was a revelation to me as I had always been focused on grades and GPAs as the primary measure of success in my academic career.
 
-This also rings true to graduate engineering education as well. While there are courses where grades will be considered your only measure of success, in general most graduate engineering programs will ask you to complete some sort of project or thesis at the masters level, and at the PhD level you are judged primarily on your published research and the impact of that research. These are tangible things that you can show to potential employers and that will be the primary measure of your success in your career. I have used such graduate school projects and research to land interviews and jobs. As such, this course is entirely project-based. Keep your project solutions in your own private repository and use your results, figures, reports, and your own code as part of a portfolio you can show to potential employers. Please do not republish the course notes, handouts, or starter code themselves; they are not licensed for redistribution.
+This also rings true to graduate engineering education as well. While there are courses where grades will be considered your only measure of success, in general most graduate engineering programs will ask you to complete some sort of project or thesis at the masters level, and at the PhD level you are judged primarily on your published research and the impact of that research. These are tangible things that you can show to potential employers and that will be the primary measure of your success in your career. I have used such graduate school projects and research to land interviews and jobs. As such, this course is entirely project-based, and the repository you build over the semester *is* your portfolio. Keep it public, keep it tidy, and make it something you would be happy to send a hiring manager: your own code, your figures, and your reports, with a README that explains what you built and what you learned.
+
+### Your Portfolio Repository {#sec-intro-portfolio-repository}
+
+The [course repository](https://github.com/jbrodovsky/advanced_navigation) is a GitHub *template*. Rather than forking it, create your own copy:
+
+1.  On the course repository page, click **Use this template → Create a new repository**, choose your own account, and make the repository **public**. You get a clean copy with no commit history of mine attached, so the history that shows up on your profile is yours.
+2.  Clone it, run `uv sync` from the repository root, and download the datasets with `uv run python scripts/fetch_data.py all`. The datasets are never committed; `.gitignore` already keeps them out.
+3.  Work in the starter packages under `projects/`, commit early and often, and put your reports, figures, and a short write-up of each project in the repository alongside the code.
+4.  When the course materials are updated, pull the changes into your copy. The first time, add the course repository as a second remote and merge with `--allow-unrelated-histories`; after that, a plain merge works:
+
+    ``` bash
+    git remote add course https://github.com/jbrodovsky/advanced_navigation.git
+    git fetch course
+    git merge course/main --allow-unrelated-histories
+    ```
+
+    Git will flag a conflict in any file that both you and I changed; keep your version of your own code and take mine for the notes.
+
+The notes are licensed CC BY-NC-SA 4.0 and the code MIT, so you are free to keep the book and starter code in your public repository. If you adapt code from the book, say so in a comment and in your report; attribution is both a license condition and simple good manners. Working in public does mean everyone can see everyone else's repository. Your submission must be your own work: reading a classmate's code and submitting something derived from it is plagiarism whether or not the repository was public, and public repositories make it very easy to spot.
 
 ### Grading and Project Submission {#sec-intro-grading}
 
@@ -154,7 +173,7 @@ While programming is not the primary concern of this course, it is nonetheless a
 #### Version Control and Submission
 
 -   Use a version control system (e.g., Git) to track changes and manage your codebase.
--   Keep your work in a private repository (e.g. on GitHub) and build your code-based portfolio from your own solutions; do not republish the course materials.
+-   Keep your work in your own public repository created from the course template (see [Your Portfolio Repository](#sec-intro-portfolio-repository)); it doubles as your code-based portfolio.
 -   Submit your assignments through the designated submission channel on Canvas.
 -   Submit each file individually (e.g., Python scripts, report pdf, Jupyter notebooks, etc.) and do not compress them into a single archive.
 

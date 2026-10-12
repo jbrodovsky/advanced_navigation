@@ -508,8 +508,8 @@ errors and its down component is the heading error, which is why inertial
 navigators like this convention. Solà's error-state notes use the right choice,
 with $\delta\boldsymbol{\theta}$ resolved in the body frame [@sola2017]. Neither
 is more correct. The two are related by the **adjoint**,
-$\mathbf{X}\operatorname{Exp}(\boldsymbol{\tau})\mathbf{X}^{-1} = \operatorname{Exp}(\operatorname{Ad}_\mathbf{X}\boldsymbol{\tau})$,
-which for $SO(3)$ is the rotation itself, $\operatorname{Ad}_\mathbf{C} = \mathbf{C}$.
+$\mathbf{X}\operatorname{Exp}(\boldsymbol{\tau})\mathbf{X}^{-1} = \operatorname{Exp}(\operatorname{Ad}_{\mathbf{X}}\boldsymbol{\tau})$,
+which for $SO(3)$ is the rotation itself, $\operatorname{Ad}_{\mathbf{C}} = \mathbf{C}$.
 The same attitude can therefore be written both ways,
 
 $$

@@ -8,11 +8,11 @@ toc: false
 
 *Advanced Robot Navigation: A Practical Guide to State Estimation, Simultaneous Localization and Mapping (SLAM), and Inertial Navigation for Roboticists and Autonomous Vehicle Engineers*
 
-Text copyright © 2026 James Brodovsky. All rights reserved.
+Copyright © 2026 James Brodovsky.
 
-No part of this publication may be reproduced, stored in a retrieval system, or transmitted in any form or by any means, electronic, mechanical, photocopying, recording, or otherwise, without prior written permission of the publisher, except for brief quotations used in reviews, criticism, or scholarly reference as permitted by applicable copyright law.
+The text and figures are licensed under the [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License](https://creativecommons.org/licenses/by-nc-sa/4.0/) (CC BY-NC-SA 4.0). The code in the book and the project starter packages are licensed under the [MIT License](https://github.com/jbrodovsky/advanced_navigation/blob/main/LICENSE). You are welcome to share and adapt the text for non-commercial use, with attribution, under the same terms, and to reuse the code freely under the MIT terms.
 
-These course materials are available in several formats. You can view them online, or download them for offline use, including as a PDF or an eBook.
+The notes are published as a website at <https://jbrodovsky.github.io/advanced_navigation/> and as a downloadable PDF. The source, starter code, and project handouts live at <https://github.com/jbrodovsky/advanced_navigation>.
 
 ```{=latex}
 \tableofcontents

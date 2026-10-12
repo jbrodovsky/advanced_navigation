@@ -4,13 +4,18 @@ project:
 
 # Code cells are executed once on the instructor's machine (with the datasets
 # present) and the results are stored in _freeze/, which is committed. Builds
-# without the data, such as CI, reuse those stored results.
+# without the data, such as CI, reuse those stored results. Results are stored
+# per format, so re-render both html and pdf after changing a chapter's code.
 execute:
   freeze: auto
 
 website:
   title: "Advanced Robot Navigation"
   description: "Bridging robotics and aerospace navigation"
+  site-url: https://jbrodovsky.github.io/advanced_navigation/
+  repo-url: https://github.com/jbrodovsky/advanced_navigation
+  repo-subdir: book
+  repo-actions: [issue]
   navbar:
     left:
       - href: index.qmd
@@ -37,13 +42,14 @@ website:
             text: INS/GNSS Integration
     right:
       - icon: github
-        href: https://github.com/yourusername/advanced-navigation
+        href: https://github.com/jbrodovsky/advanced_navigation
 
 book:
   title: "Advanced Robot Navigation"
   subtitle: "A Practical Guide to State Estimation, Simultaneous Localization and Mapping (SLAM), and Inertial Navigation for Roboticists and Autonomous Vehicle Engineers"
   author: "James Brodovsky"
-  page-footer: "© 2026 James Brodovsky. All rights reserved."
+  page-footer: "© 2026 James Brodovsky · Text [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) · Code [MIT](https://github.com/jbrodovsky/advanced_navigation/blob/main/LICENSE)"
+  downloads: [pdf]
   chapters:
     - index.qmd
     - part: "Introduction"
@@ -114,14 +120,25 @@ format:
     toc: true
     math: true
   pdf:
+    pdf-engine: lualatex
+    # Latin Modern lacks the Greek letters and symbols used in prose and code
+    # (σ, τ, ≤, ℓ, superscript minus, bold-italic Σ); fall back to DejaVu and Latin Modern
+    # Math for those glyphs.
+    include-in-header:
+      text: |
+        \directlua{
+          luaotfload.add_fallback("textfallback",
+            {"DejaVu Serif:mode=node;", "file:latinmodern-math.otf:mode=node;"})
+          luaotfload.add_fallback("monofallback",
+            {"DejaVu Sans:mode=node;", "file:latinmodern-math.otf:mode=node;"})
+        }
+        % \mathbf{\Sigma} etc. must come from the math font, not bold text.
+        \unimathsetup{mathbf=sym}
+        \setmainfont{Latin Modern Roman}[RawFeature={fallback=textfallback}]
+        \setmonofont{DejaVu Sans Mono}[Scale=MatchLowercase, RawFeature={fallback=monofallback}]
     documentclass: scrreprt
     number-sections: true
     colorlinks: false
     toc: true
     toc-depth: 1
-  epub:
-    toc: true
-    toc-depth: 2
-    math: true
-    cover: images/cover.png
 

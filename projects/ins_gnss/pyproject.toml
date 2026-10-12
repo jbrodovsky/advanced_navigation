@@ -8,8 +8,7 @@ version = "0.1.0"
 description = "Starter package for the INS/GNSS integration assignment."
 readme = "README.md"
 requires-python = ">=3.11"
-license = "LicenseRef-Proprietary"
-classifiers = ["Private :: Do Not Upload"]
+license = "MIT"
 dependencies = [
     "matplotlib>=3.10.9",
     "numpy>=2.4.6",
