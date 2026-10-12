@@ -84,12 +84,25 @@ the source in words ("Kalman, 1960") and leave the bibliography to the book.
   and matrices).
 - **Code:** short excerpts (about 12 lines at most) that teach something; walk
   through them with line highlighting. Long implementations stay in the book.
+  Code does not wrap inside a `.column`: keep lines short there (about 50
+  characters in a half-width column).
 - **Figures:** generate them with code cells (code hidden by default). Keep the
-  code self-contained and fast. Size them for the slide: about 12 x 3.6 in for a
-  full-width figure with a line of text under it, at most 4.2 in tall on a slide
-  with nothing else, and about 6 x 4 in in a half-width column. Prefer one row
-  of panels to a stack. Figures that need a dataset are fine; their output is
-  frozen.
+  code self-contained and fast. Figures render at 150 dpi and are scaled down to
+  the width of the slide (about 1200 px) or of their column, keeping their
+  aspect ratio. So the **aspect ratio sets the height**: a full-width figure
+  shows about 1200 / (width / height) px tall. Leave room for the heading
+  (about 110 px) and any text: about 3:1 (e.g. 12 x 4 in) with a line or two of
+  text below, no taller than 2.3:1 (e.g. 11.5 x 5 in) on a slide with only a
+  heading. The width in inches sets the text size: with `font.size` 13 (the
+  reference deck's setup cell), a 9-12 in figure reads well; use 14-16 for
+  wider figures. Prefer one row of panels to a stack. Figures that need a
+  dataset are fine; their output is frozen.
+- **Diagrams:** draw them with matplotlib, not mermaid (mermaid renders small,
+  clipped labels on slides). For a drawing with no axes, use
+  `ax = fig.add_axes([0, 0, 1, 1])` and `ax.axis("off")`; turning the axes off
+  on `plt.subplots` makes the cropped figure about a quarter narrower.
+  Equal-aspect drawings take their height from the data limits, not from
+  `figsize`.
 - **Check the fit.** Nothing may run into the footer. Render and page through
   the deck (or its PDF) before committing.
 - **Speaker notes** (`::: {.notes}`): what to say that is not on the slide, the
@@ -164,7 +177,9 @@ lines again, so the PDF, which shows the last step, is not dimmed):
 
 Build up a figure in layers: stack several cell outputs, all the same size, and
 reveal them in turn (the PDF shows the last layer). Define the plotting helper in
-an earlier `#| include: false` cell.
+an earlier `#| include: false` cell. Figures are cropped to their content, so
+every layer must draw the same elements: draw the not-yet-revealed ones with
+`alpha=0` (or keep identical axes, labels and legend) so that the layers line up.
 
 ````markdown
 ::: {.r-stack}
@@ -203,8 +218,21 @@ colour, bold), `::: {.smaller-text}` (for a big table), `.muted`, and
 Markdown does not work inside `$$ ... $$`: to reveal the terms of an equation one
 at a time, show the equation and then reveal one line about each term.
 
+`. . .` pauses only work at the top level of a slide. Inside a `.column` or any
+other div, wrap the later content in `::: {.fragment}` instead. A cell with
+`#| output: asis` that prints a list must print the whole
+`::: {.incremental}` block itself.
+
+decktape logs a harmless `Uncaught TypeError ... 'Config'` page error while
+printing; the PDF, maths included, is fine.
+
 Images from the book are under `images/` (a link to `book/images/`): from a deck
-write `../images/name.png`.
+write `../images/name.png`. Quarto stretches a lone image to fill the rest of
+its slide; when the slide also has text (which the PDF shows all at once), add
+`.nostretch` and a width: `![](../images/imu.png){.nostretch width=40%}`.
+
+Big tables: `::: {.smaller-text}` fits about six rows plus a key box. Split a
+longer table across slides, ideally by a question each part answers.
 
 ## Rendering
 

@@ -19,10 +19,16 @@ format:
     preview-links: auto
     pdf-separate-fragments: false
     html-math-method: mathjax
+    # At 150 dpi almost every figure is wider than its slide or column, so the
+    # theme scales it down to fit, keeping its aspect ratio: a figure's width
+    # sets its text size and its aspect ratio sets its height on the slide.
     fig-width: 9
-    fig-height: 4.5
+    fig-height: 4
     fig-align: center
     fig-dpi: 150
+    # Plain PNG at 150 dpi is already ~1.5x the displayed size; the default
+    # "retina" format would double it again and quadruple slides/_freeze/.
+    fig-format: png
     code-overflow: wrap
     code-line-numbers: false   # a block opts in with code-line-numbers="|2-3|..."
 

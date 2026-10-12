@@ -866,7 +866,7 @@ physics.
 
 ```{python}
 window = t_axis <= 60.0
-fig, axes = plt.subplots(1, 2, figsize=(12, 3.6))
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.2))
 ax = axes[0]
 ax.plot(t_axis[window], x_true[window, 0], color="k", label="truth")
 ax.plot(t_axis[window], z[window, 0], ".", color="C1", alpha=0.7, label="GNSS fixes")
@@ -898,7 +898,7 @@ print(f"Position RMSE: raw GNSS {gnss_rmse:.1f} m, Kalman filter {kf_rmse:.1f} m
 ## The plot that matters: errors inside their bounds
 
 ```{python}
-fig, axes = plt.subplots(1, 3, figsize=(13, 3.5))
+fig, axes = plt.subplots(1, 3, figsize=(13, 4.3))
 labels = ["position error [m]", "speed error [m/s]"]
 limits = [15, 4]
 for i, ax in enumerate(axes[:2]):
@@ -1102,7 +1102,7 @@ for label, q_filter in q_cases.items():
 
 ```{python}
 k_axis = np.arange(1, n_steps + 1)
-fig, axes = plt.subplots(1, 3, figsize=(13, 3.6))
+fig, axes = plt.subplots(1, 3, figsize=(13, 4.3))
 colors = ["C0", "C3", "C2"]
 for (label, res), color in zip(mc.items(), colors):
     axes[0].semilogy(k_axis, res["anees"], color=color, label=label)
@@ -1555,7 +1555,7 @@ cases = [
     (polar_to_cartesian(mu_polar), J_pol @ P_polar @ J_pol.T, "C1", "--", "EKF linearization"),
     (*unscented_transform(Y_sig, wm, wc), "C0", "-", "unscented transform"),
 ]
-fig, ax = plt.subplots(figsize=(10, 3.7))
+fig, ax = plt.subplots(figsize=(12, 4.4))
 ax.scatter(Y_mc[:3000, 0], Y_mc[:3000, 1], s=2, color="0.75", label="Monte Carlo samples")
 for m, c, color, ls, name in cases:
     e = ellipse_points(m, c)
@@ -1564,8 +1564,9 @@ for m, c, color, ls, name in cases:
 ax.scatter(Y_sig[:, 0], Y_sig[:, 1], s=60, color="C0", zorder=3, label="sigma points")
 ax.set_xlabel("east [m]")
 ax.set_ylabel("north [m]")
-ax.set_aspect("equal", adjustable="datalim")
-ax.legend(loc="lower left", fontsize=10, ncol=2)
+ax.set_xlim(-115, 115)
+ax.set_ylim(-5, 125)
+ax.legend(loc="lower left", fontsize=11, ncol=2)
 fig.tight_layout()
 plt.show()
 ```

@@ -44,6 +44,17 @@ $parts: (
   }
 }
 
+// Figures from code cells: reveal.js caps an image's width at 95% but Quarto
+// also writes a fixed height, which would stretch a wide figure vertically.
+// Keep the aspect ratio, and centre figures narrower than the slide. (Markdown
+// images keep any {height=...} their author gave them.)
+.reveal .cell-output-display img {
+  height: auto;
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 // Headings, links, and reveal.js chrome in the part colour.
 .reveal h2,
 .reveal h3 {
@@ -178,5 +189,6 @@ $parts: (
   font-size: 1.5em;
   font-weight: 600;
   color: var(--part-accent);
-  margin-top: 1.5em;
+  margin-top: 0.6em;
+  margin-bottom: 0.4em;
 }

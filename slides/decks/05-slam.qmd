@@ -1,0 +1,4015 @@
+---
+title: "Simultaneous Localization and Mapping"
+subtitle: "Part 5 · Advanced Robot Navigation"
+part: 5
+footer: "Advanced Robot Navigation · SLAM"
+book-sources:
+  - book/chapters/04-slam/mapping.qmd
+  - book/chapters/04-slam/slam.qmd
+  - book/chapters/04-slam/data-association.qmd
+  - book/chapters/04-slam/visual-navigation.qmd
+  - book/chapters/04-slam/loop-closure.qmd
+  - book/assignments/m2-victoria-park.qmd
+---
+
+## Part 5 at a glance
+
+```{python}
+#| include: false
+import math
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+plt.rcParams.update({
+    "font.size": 13,
+    "axes.grid": True,
+    "grid.alpha": 0.25,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "legend.frameon": False,
+})
+
+
+def wrap_angle(angle):
+    """Wrap an angle (or an array of angles) to [-pi, pi)."""
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
+```
+
+:::: {.columns}
+::: {.column width="50%"}
+1. [Mapping for SLAM](#/mapping)
+2. [Simultaneous localization and mapping](#/slam)
+3. [Data association](#/association)
+:::
+::: {.column width="50%"}
+4. [Visual navigation and visual SLAM](#/visual)
+5. [Loop closure](#/loop)
+6. [Project 2: Victoria Park FastSLAM](#/project2)
+:::
+::::
+
+::: {.key}
+Localization needs a map; mapping needs a pose. SLAM estimates both, and most
+of what goes wrong is bookkeeping: which tree is which, which path hypotheses
+survive, and what to believe when you come back.
+:::
+
+::: {.notes}
+Weeks 10 and 11 of the schedule, alongside Project 2. Part 4 ended on three
+threads, and this part pulls all of them: the information form stays sparse if
+you keep the past poses (GraphSLAM, pose graphs); smoothing is least squares
+over a chain you can draw as a factor graph (loop closure); and
+Rao-Blackwellization, which is FastSLAM, the project back end.
+:::
+
+# Mapping for SLAM {#mapping}
+
+Turning measurements into memory.
+
+[Chapter: Mapping for SLAM](https://jbrodovsky.github.io/advanced_navigation/chapters/04-slam/mapping.html)
+
+## Two questions, one robot
+
+[What does the robot remember about the world?]{.question}
+
+. . .
+
+::: {.incremental}
+- **Localization:** the map is known. Where am I?
+- **Mapping:** the trajectory is known. What is around me?
+- **SLAM:** both at once, which is exactly why life gets interesting
+:::
+
+. . .
+
+$$
+p(\mathbf{m} \mid \mathbf{z}_{1:t}, \mathbf{x}_{1:t})
+\propto p(\mathbf{m}) \prod_{k=1}^{t} p(\mathbf{z}_k \mid \mathbf{m}, \mathbf{x}_k)
+$$
+
+. . .
+
+Wrong trajectory: every measurement painted from the **wrong pose**.
+
+::: {.notes}
+Maps sit on both sides of navigation's contract with the stack. As an output,
+the map is what planning consumes (an occupancy grid to avoid obstacles). As an
+input, it is what localization measures against, the modern pilot's chart. SLAM
+couples the two: trajectory errors become map errors, and map errors become the
+next pose's errors. A sensor mounted somewhere other than you think gives maps
+that smear every time the vehicle turns; Victoria Park will show it. The choice
+of representation decides what m means and what an update looks like.
+:::
+
+## Occupancy grids
+
+Each cell is occupied or free, and the map stores the probability:
+
+$$
+m_i \in \{0, 1\}, \qquad p(m_i = 1) \in [0, 1]
+$$
+
+. . .
+
+Assume the cells are independent:
+
+$$
+p(\mathbf{m} \mid \mathbf{z}_{1:t}, \mathbf{x}_{1:t})
+\approx \prod_i p(m_i \mid \mathbf{z}_{1:t}, \mathbf{x}_{1:t})
+$$
+
+::: {.incremental}
+- Not physically exact: a wall is a wall over many neighboring cells
+- Useful anyway: one enormous problem becomes millions of tiny binary ones
+- A planner asks "is this cell free?" and does not care whether the obstacle is
+  a tree, a wall, or a regrettably placed traffic cone
+:::
+
+## Log-odds: the update is a sum
+
+```{python}
+#| include: false
+WALLS = [  # line segments (x0, y0, x1, y1) in meters
+    (0.0, 0.0, 20.0, 0.0), (20.0, 0.0, 20.0, 14.0), (20.0, 14.0, 0.0, 14.0), (0.0, 14.0, 0.0, 0.0),
+    (13.0, 9.0, 16.0, 9.0), (16.0, 9.0, 16.0, 11.5), (16.0, 11.5, 13.0, 11.5), (13.0, 11.5, 13.0, 9.0),
+]
+TREES = [(5.0, 4.0, 0.3), (8.0, 10.0, 0.25), (11.0, 5.0, 0.35), (15.5, 4.0, 0.3), (4.0, 10.5, 0.2)]
+
+
+def cast_ray(origin, angle, max_range):
+    """Range from `origin` along `angle` to the first wall or trunk (inf if none)."""
+    d = np.array([math.cos(angle), math.sin(angle)])
+    best = math.inf
+    for x0, y0, x1, y1 in WALLS:
+        edge = np.array([x1 - x0, y1 - y0])
+        det = d[0] * (-edge[1]) - d[1] * (-edge[0])
+        if abs(det) < 1e-12:
+            continue
+        rel = np.array([x0, y0]) - origin
+        t = (rel[0] * (-edge[1]) - rel[1] * (-edge[0])) / det
+        s = (d[0] * rel[1] - d[1] * rel[0]) / det
+        if t > 0.0 and 0.0 <= s <= 1.0:
+            best = min(best, t)
+    for cx, cy, radius in TREES:
+        rel = np.array([cx, cy]) - origin
+        along = rel @ d
+        disc = along**2 - (rel @ rel - radius**2)
+        if disc >= 0.0 and along > 0.0:
+            best = min(best, along - math.sqrt(disc))
+    return best if best <= max_range else math.inf
+
+
+def simulate_scan(pose, beam_angles, max_range, rng, range_std=0.03):
+    """Noisy ranges for one scan; inf means no return within max_range."""
+    origin = np.asarray(pose[:2], dtype=float)
+    ranges = np.array([cast_ray(origin, pose[2] + a, max_range) for a in beam_angles])
+    hit = np.isfinite(ranges)
+    ranges[hit] += rng.normal(0.0, range_std, np.count_nonzero(hit))
+    return ranges
+
+
+L_FREE = math.log(0.3 / 0.7)   # inverse sensor model, crossed cells
+L_OCC = math.log(0.7 / 0.3)    # inverse sensor model, cell with the return
+L_MIN, L_MAX = -2.0, 3.5       # clamp: p in [0.12, 0.97]
+
+
+def bresenham(i0, j0, i1, j1):
+    """Integer cells on the line from (i0, j0) to (i1, j1), both ends included."""
+    cells = []
+    di, dj = abs(i1 - i0), -abs(j1 - j0)
+    si, sj = (1 if i1 > i0 else -1), (1 if j1 > j0 else -1)
+    error = di + dj
+    while True:
+        cells.append((i0, j0))
+        if i0 == i1 and j0 == j1:
+            return cells
+        twice = 2 * error
+        if twice >= dj:
+            error += dj
+            i0 += si
+        if twice <= di:
+            error += di
+            j0 += sj
+
+
+class OccupancyGrid:
+    """Log-odds occupancy grid; cell (i, j) covers x in [i, i+1)*res, y in [j, j+1)*res."""
+
+    def __init__(self, origin_xy, size_xy, resolution):
+        self.origin = np.asarray(origin_xy, dtype=float)
+        self.resolution = float(resolution)
+        self.shape = tuple(int(math.ceil(s / resolution)) for s in size_xy)
+        self.log_odds = np.zeros(self.shape)
+
+    def cell(self, xy):
+        return tuple(int(v) for v in np.floor((np.asarray(xy) - self.origin) / self.resolution))
+
+    def inside(self, ij):
+        return 0 <= ij[0] < self.shape[0] and 0 <= ij[1] < self.shape[1]
+
+    def integrate_scan(self, pose, ranges, beam_angles, max_range):
+        start = self.cell(pose[:2])
+        free, occupied = set(), set()
+        for r, angle in zip(ranges, beam_angles):
+            hit = np.isfinite(r)
+            reach = r if hit else max_range
+            end_xy = np.asarray(pose[:2]) + reach * np.array([math.cos(pose[2] + angle), math.sin(pose[2] + angle)])
+            ray = bresenham(*start, *self.cell(end_xy))
+            free.update(c for c in (ray[:-1] if hit else ray) if self.inside(c))
+            if hit and self.inside(ray[-1]):
+                occupied.add(ray[-1])
+        free -= occupied
+        for cells, delta in ((free, L_FREE), (occupied, L_OCC)):
+            if cells:
+                i, j = np.array(list(cells)).T
+                self.log_odds[i, j] = np.clip(self.log_odds[i, j] + delta, L_MIN, L_MAX)
+
+    def probability(self):
+        return 1.0 / (1.0 + np.exp(-self.log_odds))
+```
+
+$$
+l_t(m_i) = l_{t-1}(m_i) + \log\frac{p(m_i \mid \mathbf{z}_t, \mathbf{x}_t)}{1 - p(m_i \mid \mathbf{z}_t, \mathbf{x}_t)} - l_0,
+\qquad
+l(m_i) = \log \frac{p(m_i)}{1 - p(m_i)}
+$$
+
+:::: {.columns}
+::: {.column width="45%"}
+::: {.fragment}
+$p(m_i \mid \mathbf{z}_t, \mathbf{x}_t)$ is an **inverse sensor model**: not
+"what would this map produce?" but "what does this beam say about this cell?"
+:::
+
+::: {.incremental}
+- Crossed cells: probably free
+- The return: probably occupied
+- Beyond it: untouched. The beam never got there
+:::
+:::
+::: {.column width="55%"}
+```{python}
+demo = OccupancyGrid(origin_xy=(0.0, 0.0), size_xy=(14.0, 7.0), resolution=1.0)
+pose_demo = np.array([1.5, 1.5, 0.0])
+wall_x, trunk, trunk_r = 10.6, np.array([7.5, 5.5]), 0.45
+d_trunk = trunk - pose_demo[:2]
+demo_angles = [math.atan2(d_trunk[1], d_trunk[0]), math.radians(3.0), math.radians(20.0)]
+demo_ranges = [math.hypot(*d_trunk) - trunk_r] + [(wall_x - pose_demo[0]) / math.cos(a)
+                                                   for a in demo_angles[1:]]
+demo.integrate_scan(pose_demo, demo_ranges, demo_angles, max_range=20.0)
+
+fig, ax = plt.subplots(figsize=(6.6, 3.6), constrained_layout=True)
+ax.imshow(1.0 - demo.probability().T, origin="lower", extent=(0, 14, 0, 7), cmap="gray",
+          vmin=0.0, vmax=1.0)
+ax.set_xticks(np.arange(15))
+ax.set_yticks(np.arange(8))
+ax.tick_params(labelbottom=False, labelleft=False, length=0)
+ax.grid(True, color="0.35", alpha=0.6, linewidth=0.6)
+ax.plot([wall_x, wall_x], [0, 7], color="black", lw=4)
+ax.add_patch(plt.Circle(trunk, trunk_r, color="tab:green"))
+for r, a in zip(demo_ranges, demo_angles):
+    tip = pose_demo[:2] + r * np.array([math.cos(a), math.sin(a)])
+    far = pose_demo[:2] + 16.0 * np.array([math.cos(a), math.sin(a)])
+    ax.plot([pose_demo[0], tip[0]], [pose_demo[1], tip[1]], color="tab:blue", lw=2)
+    ax.plot([tip[0], far[0]], [tip[1], far[1]], ":", color="tab:blue", lw=1.5)
+ax.plot(*pose_demo[:2], "^", color="tab:red", ms=13)
+box = dict(facecolor="white", edgecolor="none", alpha=0.85)
+ax.text(4.2, 0.3, "crossed: p = 0.3", fontsize=13, bbox=box)
+ax.text(1.3, 6.2, "return: p = 0.7", fontsize=13, bbox=box)
+ax.text(11.2, 3.0, "beyond:\nuntouched", fontsize=13, bbox=box)
+ax.set_xlim(0, 14)
+ax.set_ylim(0, 7)
+ax.set_aspect("equal")
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+The binary Bayes filter for one static cell is one multiplication per
+measurement; in odds it is explicit, and the logarithm turns it into a sum. Each
+"occupied" reading adds the same constant, each "free" reading subtracts one,
+and the order does not matter. Book section: Log-Odds Updates.
+:::
+
+## Building a grid, scan by scan
+
+```{python}
+#| include: false
+rng = np.random.default_rng(7)
+beam_angles = np.deg2rad(np.arange(-180.0, 180.0, 2.0))
+max_range = 8.0
+waypoints = np.array([[2.5, 2.0], [17.5, 2.0], [17.5, 7.0], [10.0, 7.5], [10.0, 12.5], [2.0, 12.5], [2.0, 2.0]])
+
+poses = []
+for (xa, ya), (xb, yb) in zip(waypoints[:-1], waypoints[1:]):
+    heading = math.atan2(yb - ya, xb - xa)
+    for s in np.arange(0.0, math.hypot(xb - xa, yb - ya), 0.6):
+        poses.append(np.array([xa + s * math.cos(heading), ya + s * math.sin(heading), heading]))
+
+grid = OccupancyGrid(origin_xy=(-1.0, -1.0), size_xy=(22.0, 16.0), resolution=0.1)
+snap_at = (1, 3, 20, len(poses))
+grid_snapshots = []
+for k, pose in enumerate(poses, start=1):
+    grid.integrate_scan(pose, simulate_scan(pose, beam_angles, max_range, rng), beam_angles, max_range)
+    if k in snap_at:
+        grid_snapshots.append((k, grid.probability().copy()))
+grid_extent = (grid.origin[0], grid.origin[0] + grid.shape[0] * grid.resolution,
+               grid.origin[1], grid.origin[1] + grid.shape[1] * grid.resolution)
+path_all = np.array(poses)
+
+
+def plot_grid_stage(i):
+    n_scans, prob = grid_snapshots[i]
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.6), constrained_layout=True)
+    ax = axes[0]
+    for x0, y0, x1, y1 in WALLS:
+        ax.plot([x0, x1], [y0, y1], color="black", lw=2)
+    for cx, cy, radius in TREES:
+        ax.add_patch(plt.Circle((cx, cy), radius, color="tab:green"))
+    ax.plot(path_all[:n_scans, 0], path_all[:n_scans, 1], ".-", color="tab:blue", ms=3, lw=0.8)
+    ax.plot(*path_all[n_scans - 1, :2], "^", color="tab:red", ms=10)
+    ax.set_title("world and path so far")
+    ax = axes[1]
+    ax.imshow(1.0 - prob.T, origin="lower", extent=grid_extent, cmap="gray", vmin=0.0, vmax=1.0)
+    ax.set_title(f"occupancy grid after {n_scans} scan{'s' if n_scans > 1 else ''}")
+    for ax in axes:
+        ax.set_aspect("equal")
+        ax.set_xlim(grid_extent[0], grid_extent[1])
+        ax.set_ylim(grid_extent[2], grid_extent[3])
+        ax.set_xlabel("x [m]")
+        ax.grid(False)
+    axes[0].set_ylabel("y [m]")
+    plt.show()
+```
+
+::: {.r-stack}
+```{python}
+plot_grid_stage(0)
+```
+::: {.fragment}
+```{python}
+plot_grid_stage(1)
+```
+:::
+::: {.fragment}
+```{python}
+plot_grid_stage(2)
+```
+:::
+::: {.fragment}
+```{python}
+plot_grid_stage(3)
+```
+:::
+:::
+
+::: {.notes}
+A 2D lidar with 2-degree beams and an 8 m range, one scan every 0.6 m; each beam
+traced through the grid with Bresenham's line algorithm. Grey is unknown, white free, black occupied. One vote per cell per scan keeps
+the cells near the robot, which every beam crosses, from collecting a hundred
+votes from one glance. Cells behind obstacles that no beam reached stay unknown
+at the end, and the clamped log-odds keep the map ready to change its mind. Book
+section: A Runnable Occupancy Grid.
+:::
+
+## Why log-odds, really
+
+Not underflow: a single cell is never a long product of small numbers. It is
+**saturation**.
+
+```{python}
+#| echo: true
+#| output-location: fragment
+def update_probability(p, p_meas):           # Bayes' rule, probability form
+    odds = (p / (1.0 - p)) * (p_meas / (1.0 - p_meas))
+    return odds / (1.0 + odds)
+
+p_cell, l_cell, hits = np.float64(0.5), 0.0, 0
+while p_cell < 1.0:                          # "occupied", again and again
+    p_cell, l_cell, hits = update_probability(p_cell, 0.7), l_cell + L_OCC, hits + 1
+print(f"after {hits} hits:   p = {float(p_cell)!r}, l = {l_cell:.2f}")
+with np.errstate(divide="ignore", invalid="ignore"):
+    p_after = update_probability(p_cell, 0.3)    # then one "free" reading
+print(f"one free reading: p = {float(p_after)!r}, l = {l_cell + L_FREE:.2f}")
+```
+
+::: {.fragment}
+At exactly 1.0 the cell is dead. In log-odds it sits at 37 and moves by the
+usual 0.85. Clamp to $[l_{\min}, l_{\max}]$ so the parked car can drive away.
+:::
+
+## Landmark maps
+
+$\mathbf{m} = \{\boldsymbol{\ell}_1, \ldots, \boldsymbol{\ell}_N\}$: a short list
+of distinctive features. A range-bearing view of landmark $j$ from
+$\mathbf{x} = [x, y, \theta]^T$:
+
+$$
+\mathbf{z} =
+\begin{bmatrix} r \\ \beta \end{bmatrix}
+=
+\begin{bmatrix}
+\sqrt{(\ell_{x,j} - x)^2 + (\ell_{y,j} - y)^2} \\
+\operatorname{wrap}\!\left(\operatorname{atan2}(\ell_{y,j} - y,\; \ell_{x,j} - x) - \theta\right)
+\end{bmatrix}
++ \mathbf{v}
+$$
+
+. . .
+
+The inverse observation, the bridge from laser features to a map:
+
+$$
+\boldsymbol{\ell} =
+\begin{bmatrix}
+x + r \cos(\theta + \beta) \\
+y + r \sin(\theta + \beta)
+\end{bmatrix}
+$$
+
+. . .
+
+Two hidden assumptions: $(x, y)$ is the position of the [sensor]{.accent}, and
+$\beta$ is measured from the vehicle's [forward axis, counter-clockwise]{.accent}.
+
+## Victoria Park: a real, messy log
+
+```{python}
+#| include: false
+import os
+from pathlib import Path
+
+from scipy.io import loadmat
+from scipy.spatial import cKDTree
+
+LASER_RANGE_MASK = 0x1FFF   # low 13 bits: range in cm; the top 3 bits are flags
+LASER_NO_RETURN_CM = 8000   # decoded values at or above this mean "no return"
+
+
+def find_victoria_park_root(root=None):
+    """Folder with the Victoria Park .mat files: $ADVNAV_DATA_DIR, then data/ upward."""
+    if root is not None:
+        candidates = [Path(root)]
+    else:
+        candidates = []
+        if os.environ.get("ADVNAV_DATA_DIR"):
+            candidates.append(Path(os.environ["ADVNAV_DATA_DIR"]) / "victoria-park")
+        candidates += [base / "data" / "victoria-park" for base in [Path.cwd(), *Path.cwd().parents]]
+    for candidate in candidates:
+        if (candidate / "aa3_lsr2.mat").exists():
+            return candidate
+    raise FileNotFoundError(
+        "Victoria Park data not found; run `uv run python scripts/fetch_data.py victoria-park`"
+    )
+
+
+def decode_laser(raw):
+    """Raw LASER words -> ranges in meters, NaN where the scanner saw nothing."""
+    centimeters = (np.asarray(raw, dtype=np.int64) & LASER_RANGE_MASK).astype(float)
+    ranges = centimeters / 100.0
+    ranges[centimeters >= LASER_NO_RETURN_CM] = np.nan
+    return ranges
+
+
+def load_victoria_park_data(root=None):
+    """Load the local Victoria Park MATLAB files with explicit unit conversions."""
+    root = find_victoria_park_root(root)
+    laser_data = loadmat(root / "aa3_lsr2.mat", squeeze_me=True)
+    odom_data = loadmat(root / "aa3_dr.mat", squeeze_me=True)
+    gps_data = loadmat(root / "aa3_gpsx.mat", squeeze_me=True)
+    return {
+        "laser_raw": np.asarray(laser_data["LASER"]),
+        "laser_m": decode_laser(laser_data["LASER"]),
+        "laser_time_s": np.asarray(laser_data["TLsr"], dtype=float) / 1000.0,
+        "speed_mps": np.asarray(odom_data["speed"], dtype=float),
+        "steering_rad": np.asarray(odom_data["steering"], dtype=float),
+        "odom_time_s": np.asarray(odom_data["time"], dtype=float) / 1000.0,
+        "gps_xy_m": np.column_stack([gps_data["Lo_m"], gps_data["La_m"]]).astype(float),
+        "gps_time_s": np.asarray(gps_data["timeGps"], dtype=float) / 1000.0,
+    }
+
+
+try:
+    vp = load_victoria_park_data()
+except FileNotFoundError:
+    vp = None
+
+
+def no_data(ax):
+    ax.text(0.5, 0.5, "Victoria Park data not downloaded:\nuv run python scripts/fetch_data.py victoria-park",
+            ha="center", va="center", transform=ax.transAxes)
+    ax.axis("off")
+```
+
+:::: {.columns}
+::: {.column width="47%"}
+::: {.incremental}
+- Australian Centre for Field Robotics: a utility vehicle, 26 minutes through a
+  park in Sydney
+- 7249 laser scans of 361 beams
+- 40 Hz rear-wheel encoder speed and steering
+- GPS from a failing receiver: gaps of up to a minute, dozens of jumps
+:::
+
+::: {.fragment}
+GPS is for plots, sanity checks, and evaluation after an SE(2) alignment. It is
+**not** truth.
+:::
+:::
+::: {.column width="53%"}
+```{python}
+fig, ax = plt.subplots(figsize=(6, 3.9), constrained_layout=True)
+if vp is None:
+    no_data(ax)
+else:
+    t_gps = vp["gps_time_s"]
+    gps_gaps = np.diff(t_gps)
+    ax.semilogy((t_gps[:-1] - vp["odom_time_s"][0]) / 60.0, gps_gaps, ".", color="C0", ms=4)
+    ax.axhline(1.0, color="C3", ls="--", lw=1.2)
+    ax.text(0.3, 1.3, "1 s", color="C3", fontsize=13)
+    ax.set_xlabel("time into the run [min]")
+    ax.set_ylabel("gap to the next fix [s]")
+    ax.set_title(f"{len(t_gps)} GPS fixes; longest gap {gps_gaps.max():.0f} s", fontsize=13)
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+Students download the data with `uv run python scripts/fetch_data.py
+victoria-park`; it is never committed. Besides the three .mat files the folder
+has info.txt and car.bmp (the vehicle and its dimensions) and the original ACFR
+tree detector and scan viewer. Book section: Victoria Park Dataset Primer.
+:::
+
+## Decoding the laser
+
+```{.python code-line-numbers="|1,7|2,9|1-10"}
+LASER_RANGE_MASK = 0x1FFF   # low 13 bits: range in cm; the top 3 bits are flags
+LASER_NO_RETURN_CM = 8000   # decoded values at or above this mean "no return"
+
+
+def decode_laser(raw):
+    """Raw LASER words -> ranges in meters, NaN where the scanner saw nothing."""
+    centimeters = (np.asarray(raw, dtype=np.int64) & LASER_RANGE_MASK).astype(float)
+    ranges = centimeters / 100.0
+    ranges[centimeters >= LASER_NO_RETURN_CM] = np.nan
+    return ranges
+```
+
+```{python}
+#| output: asis
+if vp is not None:
+    flagged = vp["laser_raw"] > LASER_RANGE_MASK
+    no_return = np.mean(np.isnan(vp["laser_m"]))
+    lo, hi = np.min(vp["laser_m"][flagged]), np.max(vp["laser_m"][flagged])
+    print(f"\n::: {{.fragment}}\n{no_return:.0%} of all beams return nothing: the park is mostly open "
+          f"grass. {np.count_nonzero(flagged)} words carry a flag; their ranges ({lo:.1f} to {hi:.1f} m) "
+          f"would decode as {lo + 81.92:.0f} to {hi + 81.92:.0f} m without the mask, and vanish.\n:::\n")
+```
+
+::: {.notes}
+"Skipping the mask is harmless for almost every word, and that is exactly what
+makes the bug hard to find." info.txt only says ranges above 8000 cm mean no
+reflection; the original viewer, viewLsr.m, shows the mask. A "no return" is
+information about space, not a fault. Book section: Laser Conventions.
+:::
+
+## Which way is $\beta$?
+
+:::: {.columns}
+::: {.column width="44%"}
+Beam $k$: scanner angle $A_k = k \times 0.5°$, with $A = 0$ to the vehicle's
+**right**.
+
+$$
+\beta = A - \frac{\pi}{2}, \qquad \beta \in \left[-\frac{\pi}{2}, \frac{\pi}{2}\right]
+$$
+
+::: {.incremental}
+- A trunk on the left has a positive bearing
+- A mirrored scan looks just as plausible. The turns settle it
+:::
+:::
+::: {.column width="56%"}
+```{python}
+fig, ax = plt.subplots(figsize=(6.6, 3.8), constrained_layout=True)
+ax.add_patch(plt.Rectangle((-4.6, -1.0), 4.7, 2.0, fill=False, lw=1.5))
+ax.plot(0.0, 0.0, "s", color="black", ms=9)
+for A_deg in (0, 45, 90, 135, 180):
+    beta = math.radians(A_deg) - math.pi / 2
+    end = 3.0 * np.array([math.cos(beta), math.sin(beta)])
+    ax.annotate("", xy=end, xytext=(0, 0), arrowprops=dict(arrowstyle="->", color="tab:blue", lw=1.5))
+ax.text(0.2, -3.1, "beam 0: $\\beta = -90°$ (right)", fontsize=13, va="center")
+ax.text(0.2, 3.1, "beam 360: $\\beta = +90°$ (left)", fontsize=13, va="center")
+ax.text(3.2, 0.0, "beam 180: $\\beta = 0$", fontsize=13, va="center")
+ax.text(2.25, -2.3, "$-45°$", fontsize=13, va="center")
+tree = 2.6 * np.array([math.cos(math.radians(30)), math.sin(math.radians(30))])
+ax.add_patch(plt.Circle(tree, 0.25, color="tab:green"))
+ax.plot([0, tree[0]], [0, tree[1]], ":", color="tab:green")
+ax.text(tree[0] + 0.35, tree[1] + 0.1, "trunk, $\\beta = +30°$", fontsize=13, color="tab:green")
+ax.text(-2.3, 0.0, "vehicle\n(drives right)", ha="center", va="center", fontsize=13)
+ax.set_xlim(-4.8, 7.6)
+ax.set_ylim(-3.5, 3.5)
+ax.set_aspect("equal")
+ax.axis("off")
+plt.show()
+```
+:::
+::::
+
+## From scan to trunk candidates
+
+```{python}
+#| include: false
+BEAM_STEP = math.radians(0.5)
+
+
+def extract_tree_landmarks(scan_m, pose_guess=(0.0, 0.0, 0.0), *, max_range_m=75.0, min_range_m=1.0,
+                           range_jump_m=1.5, max_gap_beams=10, edge_beams=6, min_points=2,
+                           max_chord_m=1.0):
+    """One decoded 361-beam scan -> range-bearing trunk candidates (the book's extractor)."""
+    scan_m = np.asarray(scan_m, dtype=float)
+    beams = np.arange(scan_m.size)
+    with np.errstate(invalid="ignore"):
+        valid = np.isfinite(scan_m) & (scan_m < max_range_m)
+    index, ranges = beams[valid], scan_m[valid]
+    if index.size < min_points:
+        return []
+    bearings = index * BEAM_STEP - math.pi / 2
+    breaks = np.flatnonzero((np.abs(np.diff(ranges)) > range_jump_m) | (np.diff(index) > max_gap_beams)) + 1
+    x, y, theta = pose_guess
+    observations = []
+    for segment in np.split(np.arange(index.size), breaks):
+        if segment.size < min_points:
+            continue
+        first, last = segment[0], segment[-1]
+        if index[first] < edge_beams or index[last] > beams[-1] - edge_beams:
+            continue
+        r0, r1 = ranges[first], ranges[last]
+        b0, b1 = bearings[first], bearings[last]
+        chord = math.hypot(r1 * math.cos(b1) - r0 * math.cos(b0), r1 * math.sin(b1) - r0 * math.sin(b0))
+        if chord >= max_chord_m or r0 <= min_range_m:
+            continue
+        diameter = (b1 - b0 + BEAM_STEP) * 0.5 * (r0 + r1)
+        if abs(r0 - r1) >= diameter / 3.0:
+            continue
+        middle = 0.5 * (first + last)
+        r_middle = 0.5 * (ranges[int(math.floor(middle))] + ranges[int(math.ceil(middle))])
+        range_to_center = float(r_middle + 0.5 * diameter)
+        bearing = float(0.5 * (b0 + b1))
+        observations.append({
+            "range": range_to_center,
+            "bearing": bearing,
+            "diameter": float(diameter),
+            "num_points": int(segment.size),
+            "center_world": np.array([x + range_to_center * math.cos(theta + bearing),
+                                      y + range_to_center * math.sin(theta + bearing)]),
+        })
+    return observations
+```
+
+:::: {.columns}
+::: {.column width="50%"}
+ACFR's `detectTreesI16.m`: one threshold per physical fact.
+
+::: {.incremental}
+- Under 75 m; split at range jumps over 1.5 m or gaps over 5°
+- Isolated, unoccluded, chord under 1 m
+- $d = (\Delta A + 0.5°)\,(R_\text{first} + R_\text{last})/2$: the half degree
+  is the beam width
+- Round, not receding: $|R_\text{first} - R_\text{last}| < d/3$. Range to the
+  **center**: add $d/2$
+:::
+:::
+::: {.column width="50%"}
+```{python}
+fig, ax = plt.subplots(figsize=(6, 4.3), constrained_layout=True)
+if vp is None:
+    no_data(ax)
+else:
+    scan_index = 760
+    scan = vp["laser_m"][scan_index]
+    beta_scan = np.arange(scan.size) * BEAM_STEP - math.pi / 2
+    ok = np.isfinite(scan) & (scan < 75.0)
+    forward, left = scan[ok] * np.cos(beta_scan[ok]), scan[ok] * np.sin(beta_scan[ok])
+    ax.scatter(-left, forward, s=9, color="0.35", label="laser returns")
+    for obs in extract_tree_landmarks(scan):
+        fx, lx = obs["range"] * math.cos(obs["bearing"]), obs["range"] * math.sin(obs["bearing"])
+        ax.add_patch(plt.Circle((-lx, fx), 1.6, fill=False, color="tab:red", lw=1.8))
+    ax.plot([], [], "o", mfc="none", color="tab:red", ms=10, label="trunk candidates")
+    ax.plot(0, 0, "^", color="black", ms=11, label="laser")
+    ax.set_xlabel("right of the vehicle [m]")
+    ax.set_ylabel("ahead [m]")
+    ax.set_title(f"scan {scan_index}, vehicle frame", fontsize=13)
+    ax.set_xlim(-48, 48)
+    ax.set_ylim(-3, 66)
+    ax.set_aspect("equal")
+    ax.legend(loc="upper right", fontsize=11)
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+The figure uses the book's extractor, which implements steps 1, 2, 5, 6, 7, and
+8 of the recipe and leaves out the isolation and occlusion tests (an exercise),
+so it finds more candidates than the original. The red circles are markers, not
+trunk sizes. Tune on the whole log, not one pretty scan, and
+track how many landmarks are born per meter: a detector that creates thousands
+of false trees makes any back end look worse than it is. Book section: From
+Laser Scan to Tree Candidates.
+:::
+
+## The encoder sees one wheel
+
+```{python}
+#| include: false
+L_WB, H_ENC, A_LAS, B_LAS = 2.83, 0.76, 3.78, 0.50
+
+
+def plot_vehicle_geometry():
+    delta = math.radians(18.0)
+    fig, ax = plt.subplots(figsize=(6.6, 4.0), constrained_layout=True)
+    ax.add_patch(plt.Rectangle((-0.9, -0.95), 4.75, 1.9, fill=False, lw=1.5))
+
+    def wheel(cx, cy, angle, color="0.3"):
+        c, s = math.cos(angle), math.sin(angle)
+        ends = np.array([[-0.35, 0.0], [0.35, 0.0]]) @ np.array([[c, s], [-s, c]]) + [cx, cy]
+        ax.plot(ends[:, 0], ends[:, 1], color=color, lw=6, solid_capstyle="butt")
+
+    wheel(0.0, H_ENC, 0.0, color="tab:orange")
+    wheel(0.0, -H_ENC, 0.0)
+    wheel(L_WB, H_ENC, delta)
+    wheel(L_WB, -H_ENC, delta)
+    for x_line in (0.0, L_WB):
+        ax.plot([x_line, x_line], [-1.3, 1.3], ":", color="0.5", lw=0.8)
+    ax.plot([-1.2, 4.4], [0, 0], ":", color="0.5", lw=0.8)
+    ax.plot(0, 0, "o", color="black")
+    ax.plot(A_LAS, B_LAS, "s", color="tab:blue", ms=10)
+    ax.text(A_LAS + 0.35, B_LAS + 0.35, "laser + GPS", fontsize=13, color="tab:blue")
+    ax.text(-0.75, H_ENC + 0.35, "encoder", fontsize=13, color="tab:orange")
+
+    def dimension(p, q, label, offset):
+        p, q = np.asarray(p, dtype=float), np.asarray(q, dtype=float)
+        ax.annotate("", xy=q, xytext=p, arrowprops=dict(arrowstyle="<->", lw=1))
+        ax.text(*(0.5 * (p + q) + offset), label, ha="center", va="center", fontsize=13)
+
+    dimension((0, -1.3), (L_WB, -1.3), "$L = 2.83$ m", (0, -0.25))
+    dimension((0, -1.9), (A_LAS, -1.9), "$a = 3.78$ m", (0, -0.25))
+    dimension((4.25, 0), (4.25, B_LAS), "$b$", (0.3, 0))
+    dimension((-1.1, 0), (-1.1, H_ENC), "$H$", (-0.3, 0))
+    ax.annotate("", xy=(0.0, 2.0), xytext=(0.0, 1.15),
+                arrowprops=dict(arrowstyle="-|>", color="0.4", ls="--"))
+    ax.text(0.15, 1.85, f"to the turn center, $L/\\tan\\delta$ = {L_WB / math.tan(delta):.1f} m",
+            fontsize=13, color="0.3")
+    ax.text(L_WB + 0.4, H_ENC + 0.15, "$\\delta$", fontsize=15)
+    ax.annotate("", xy=(1.3, 0), xytext=(0.05, 0),
+                arrowprops=dict(arrowstyle="-|>", color="tab:red", lw=1.5))
+    ax.text(0.6, 0.15, "$v_c$", color="tab:red", fontsize=14)
+    ax.set_xlim(-1.6, 6.3)
+    ax.set_ylim(-2.25, 2.2)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    plt.show()
+```
+
+:::: {.columns}
+::: {.column width="44%"}
+The vehicle turns about a point $L/\tan\delta$ from the rear-axle center:
+$\omega = (v_c/L)\tan\delta$.
+
+::: {.fragment}
+The rear-**left** encoder is $H$ closer to that point:
+
+$$
+v_c = \frac{v_e}{1 - \dfrac{H}{L}\tan\delta}
+$$
+:::
+
+::: {.fragment}
+At $\delta = 20°$ it reads 10% slow. That is how a loop becomes a spiral.
+:::
+:::
+::: {.column width="56%"}
+```{python}
+plot_vehicle_geometry()
+```
+:::
+::::
+
+::: {.notes}
+A navigation solution is a statement about one point on the vehicle, and on
+this vehicle the obvious point (the rear-axle center, where the bicycle model
+lives) is not where any sensor is. The figure is a redrawing of car.bmp with the
+numbers from info.txt. Derivation: the left rear wheel rolls at
+v_e = omega (R - H) = v_c (1 - H tan(delta)/L). Book section: The Victoria Park
+Vehicle.
+:::
+
+## The laser is on a lever arm
+
+Laser at $(a, b)$: $\mathbf{p}_L = \mathbf{p}_r + \mathbf{C}(\theta)\,[a,\; b]^T$.
+Differentiate (Guivant and Nebot):
+
+$$
+\begin{aligned}
+\dot x_L &= v_c\cos\theta - \omega\,(a\sin\theta + b\cos\theta)\\
+\dot y_L &= v_c\sin\theta + \omega\,(a\cos\theta - b\sin\theta)\\
+\dot\theta &= \omega
+\end{aligned}
+$$
+
+::: {.incremental}
+- The extra terms, $\omega\,\mathbf{C}(\theta)[-b,\; a]^T$: a point on a rotating
+  body
+- At $\omega = 0.3$ rad/s the laser slides sideways at over 1 m/s
+- A bow-mounted GNSS antenna does the same; a careless track plot shows the bow
+  "skidding"
+:::
+
+. . .
+
+State at the laser, $\mathbf{x} = [x_L, y_L, \theta]^T$: plain range-bearing,
+GPS antenna included.
+
+::: {.notes}
+The exact discrete step for constant controls: move back along the lever arm to
+the rear axle, follow the bicycle arc, move out again. The book checks it
+against a fine Euler integration of these rates. Book section: The Victoria Park
+Vehicle.
+:::
+
+## Checking against the data
+
+```{python}
+#| include: false
+def encoder_to_centerline_speed(v_e, steering, H=0.76, L=2.83):
+    return np.asarray(v_e) / (1.0 - (H / L) * np.tan(steering))
+
+
+def laser_pose_from_rear_axle(rear_pose, a=3.78, b=0.50):
+    pose = np.array(rear_pose, dtype=float, copy=True)
+    c, s = np.cos(pose[..., 2]), np.sin(pose[..., 2])
+    pose[..., 0] += a * c - b * s
+    pose[..., 1] += a * s + b * c
+    return pose
+
+
+def dead_reckon(t, v_e, steering, *, encoder_correction=True, lever_arm=True, L=2.83):
+    """Odometry-only track at the odometry timestamps, starting at (0, 0, 0)."""
+    v = encoder_to_centerline_speed(v_e, steering) if encoder_correction else np.asarray(v_e)
+    dt = np.diff(t)
+    dtheta = v[:-1] / L * np.tan(steering[:-1]) * dt
+    theta = np.concatenate([[0.0], np.cumsum(dtheta)])
+    chord = v[:-1] * dt * np.sinc(dtheta / (2.0 * math.pi))
+    mid = theta[:-1] + 0.5 * dtheta
+    rear = np.column_stack([np.concatenate([[0.0], np.cumsum(chord * np.cos(mid))]),
+                            np.concatenate([[0.0], np.cumsum(chord * np.sin(mid))]), theta])
+    return laser_pose_from_rear_axle(rear) if lever_arm else rear
+
+
+def align_se2(source, target):
+    """Rotation C and translation t minimizing sum ||target - (C source + t)||^2."""
+    mu_s, mu_t = source.mean(axis=0), target.mean(axis=0)
+    U, _, Vt = np.linalg.svd((source - mu_s).T @ (target - mu_t))
+    C = Vt.T @ np.diag([1.0, np.sign(np.linalg.det(Vt.T @ U.T))]) @ U.T
+    return C, mu_t - C @ mu_s
+
+
+dr_cases = {}
+if vp is not None:
+    t_odo = vp["odom_time_s"]
+    window = (vp["gps_time_s"] >= t_odo[0]) & (vp["gps_time_s"] <= t_odo[0] + 200.0)
+    gps_t, gps_xy = vp["gps_time_s"][window], vp["gps_xy_m"][window]
+    odo_window = t_odo <= t_odo[0] + 200.0
+    for name, (enc, lever) in {"no corrections": (False, False),
+                               "encoder correction": (True, False),
+                               "encoder correction + lever arm": (True, True)}.items():
+        track = dead_reckon(t_odo, vp["speed_mps"], vp["steering_rad"],
+                            encoder_correction=enc, lever_arm=lever)
+        est = np.column_stack([np.interp(gps_t, t_odo, track[:, 0]), np.interp(gps_t, t_odo, track[:, 1])])
+        C_al, t_al = align_se2(est, gps_xy)
+        err = np.linalg.norm(gps_xy - (est @ C_al.T + t_al), axis=1)
+        dr_cases[name] = {"xy": track[odo_window, :2] @ C_al.T + t_al, "err": err,
+                          "rmse": float(np.sqrt(np.mean(err**2)))}
+```
+
+```{python}
+fig, axes = plt.subplots(1, 2, figsize=(12, 3.2), gridspec_kw={"width_ratios": [1, 1.6]})
+if vp is None:
+    for ax in axes:
+        no_data(ax)
+else:
+    ax = axes[0]
+    ax.plot(gps_xy[:, 0], gps_xy[:, 1], ".", color="0.6", ms=3, label="GPS")
+    for name, color in [("no corrections", "C3"), ("encoder correction + lever arm", "C0")]:
+        ax.plot(dr_cases[name]["xy"][:, 0], dr_cases[name]["xy"][:, 1], color=color, lw=1.5)
+    ax.set_aspect("equal", adjustable="datalim")
+    ax.set_xlabel("east [m]")
+    ax.set_ylabel("north [m]")
+    ax.legend(loc="best", fontsize=11)
+    ax = axes[1]
+    for name, color in [("no corrections", "C3"), ("encoder correction + lever arm", "C0")]:
+        ax.plot(gps_t - t_odo[0], dr_cases[name]["err"], color=color,
+                label=f"{name}: RMSE {dr_cases[name]['rmse']:.1f} m")
+    ax.set_xlabel("time [s]")
+    ax.set_ylabel("error vs GPS [m]")
+    ax.set_ylim(0, 115)
+    ax.legend(loc="upper left", fontsize=11)
+fig.tight_layout()
+plt.show()
+```
+
+```{python}
+#| output: asis
+if vp is not None:
+    print(f"First 200 s, aligned to {len(gps_t)} GPS fixes. The encoder correction alone: "
+          f"{dr_cases['no corrections']['rmse']:.1f} m → {dr_cases['encoder correction']['rmse']:.1f} m.")
+```
+
+. . .
+
+The lever arm barely moves that number: GPS noise hides a half-meter offset.
+Look where it acts, in the turns.
+
+::: {.notes}
+The odometry is integrated sample by sample, each sample held over its 25 ms
+interval; poses at laser or GPS times come from interpolating that 40 Hz track,
+the simplest form of the event-driven synchronization the project asks for. The
+alignment is Kabsch, no scale. Book section: The Victoria Park Vehicle.
+:::
+
+## Conventions are hypotheses
+
+```{python}
+#| include: false
+def map_sharpness(track, laser_t, scans, t_odo, *, mirror=False, window=60, num_windows=12):
+    """Median distance between re-observed trees (m) over the sharpest turns; lower is sharper."""
+    theta_at_scan = np.interp(laser_t, t_odo, track[:, 2])
+    starts = np.arange(20, laser_t.size - window, window)
+    turns = np.abs(theta_at_scan[starts + window] - theta_at_scan[starts])
+    medians = []
+    for s in starts[np.argsort(turns)[-num_windows:]]:
+        points, times = [], []
+        for k in range(s, s + window):
+            pose = [np.interp(laser_t[k], t_odo, track[:, i]) for i in range(3)]
+            for obs in extract_tree_landmarks(scans[k]):
+                bearing = -obs["bearing"] if mirror else obs["bearing"]
+                points.append([pose[0] + obs["range"] * math.cos(pose[2] + bearing),
+                               pose[1] + obs["range"] * math.sin(pose[2] + bearing)])
+                times.append(laser_t[k])
+        points, times = np.array(points), np.array(times)
+        tree = cKDTree(points)
+        nearest = []
+        for p, t in zip(points, times):
+            others = [j for j in tree.query_ball_point(p, 3.0) if abs(times[j] - t) > 2.0]
+            if others:
+                nearest.append(np.min(np.linalg.norm(points[others] - p, axis=1)))
+        medians.append(np.median(nearest))
+    return float(np.mean(medians))
+
+
+sharpness = {}
+if vp is not None:
+    rear = dead_reckon(vp["odom_time_s"], vp["speed_mps"], vp["steering_rad"], lever_arm=False)
+    sharpness_cases = {
+        "β = A − π/2, laser at (3.78, +0.50)": (laser_pose_from_rear_axle(rear), False),
+        "laser on the wrong side, (3.78, −0.50)": (laser_pose_from_rear_axle(rear, b=-0.50), False),
+        "the drawing's a, (0.95, +0.50)": (laser_pose_from_rear_axle(rear, a=0.95), False),
+        "no lever arm (laser on the rear axle)": (rear, False),
+        "mirrored scan, β = π/2 − A": (laser_pose_from_rear_axle(rear), True),
+    }
+    for name, (track, mirror) in sharpness_cases.items():
+        sharpness[name] = map_sharpness(track, vp["laser_time_s"], vp["laser_m"], vp["odom_time_s"],
+                                        mirror=mirror)
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=(12, 2.9))
+if vp is None:
+    no_data(ax)
+else:
+    names = list(sharpness)[::-1]
+    values = [sharpness[n] for n in names]
+    colors = ["C0" if n.startswith("β = A") else "0.6" for n in names]
+    ax.barh(names, values, color=colors)
+    for y, v in enumerate(values):
+        ax.text(v + 0.02, y, f"{v:.2f} m", va="center", fontsize=12)
+    ax.set_xlabel("median distance between re-observations of a tree, 12 sharpest turns [m]")
+    ax.set_xlim(0, 1.75)
+    ax.grid(axis="y", visible=False)
+fig.tight_layout()
+plt.show()
+```
+
+Right poses and a right sensor model: a tree seen from many poses lands on one
+world point.
+
+. . .
+
+::: {.key}
+Conventions are hypotheses, and the data can test them.
+:::
+
+::: {.notes}
+Tree detections are projected along dead reckoning through the sharpest turns;
+for each detection, the distance to the nearest detection from a scan at least
+2 s away. The drawing is read as a top view with the front on the left, which
+puts both the encoder wheel and the laser on the left; the encoder correction
+(which only helps with the encoder on the left) and this test agree. Book
+section: The Victoria Park Vehicle.
+:::
+
+## Why the project uses landmarks
+
+:::: {.columns}
+::: {.column width="50%"}
+```{python}
+fig, ax = plt.subplots(figsize=(6, 4.3), constrained_layout=True)
+if vp is None:
+    no_data(ax)
+else:
+    t_odo, laser_t = vp["odom_time_s"], vp["laser_time_s"]
+    track = dead_reckon(t_odo, vp["speed_mps"], vp["steering_rad"])
+    scan_ids = np.arange(400, 520)
+    poses_vp = np.array([[np.interp(laser_t[k], t_odo, track[:, i]) for i in range(3)] for k in scan_ids])
+    vp_angles = np.arange(361) * BEAM_STEP - math.pi / 2
+    lo = poses_vp[:, :2].min(axis=0) - 32.0
+    vp_grid = OccupancyGrid(origin_xy=lo, size_xy=poses_vp[:, :2].max(axis=0) + 32.0 - lo, resolution=0.25)
+    for k, pose in zip(scan_ids, poses_vp):
+        ranges = vp["laser_m"][k]
+        keep = np.isfinite(ranges) & (ranges < 30.0)
+        vp_grid.integrate_scan(pose, ranges[keep], vp_angles[keep], 30.0)
+    extent = (vp_grid.origin[0], vp_grid.origin[0] + vp_grid.shape[0] * vp_grid.resolution,
+              vp_grid.origin[1], vp_grid.origin[1] + vp_grid.shape[1] * vp_grid.resolution)
+    ax.imshow(1.0 - vp_grid.probability().T, origin="lower", extent=extent, cmap="gray", vmin=0, vmax=1)
+    ax.plot(poses_vp[:, 0], poses_vp[:, 1], color="tab:blue", lw=2, label="laser track")
+    center = poses_vp[:, :2].mean(axis=0)
+    ax.set_xlim(center[0] - 30.0, center[0] + 30.0)
+    ax.set_ylim(center[1] - 21.0, center[1] + 21.0)
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    ax.set_title("120 real scans, 0.25 m cells", fontsize=13)
+    ax.legend(loc="upper right", fontsize=11)
+    ax.set_aspect("equal")
+    ax.grid(False)
+plt.show()
+```
+:::
+::: {.column width="50%"}
+::: {.incremental}
+- A trunk: a dark blob with a light shadow of free space, a handful of cells
+  among tens of thousands
+- The grid has no idea this blob is the one it saw ten seconds ago
+- A pose error simply paints the trunk twice
+- A landmark is [one point with a covariance]{.accent}: something a filter can
+  correct
+:::
+:::
+::::
+
+::: {.notes}
+About 25 s of scans placed along the corrected dead-reckoning track. Beams with
+no return are skipped rather than marked free to 80 m: in a park that would
+erase every trunk the neighboring beams just found behind a gap. Occupancy grids
+answer "where is space free?"; landmark maps answer "where are repeatable
+features?" FastSLAM uses the second. Book sections: Occupancy Grid From Real
+Scans, Occupancy Grids vs. Landmark Maps.
+:::
+
+# Simultaneous Localization and Mapping {#slam}
+
+When the map is unknown, it joins the state.
+
+[Chapter: Simultaneous Localization and Mapping](https://jbrodovsky.github.io/advanced_navigation/chapters/04-slam/slam.html)
+
+## The chicken and the egg
+
+[How do you localize without a map, or map without a location?]{.question}
+
+. . .
+
+**Full SLAM**: the whole trajectory and the map,
+
+$$
+p(\mathbf{x}_{1:k}, \mathbf{m} \mid \mathbf{z}_{1:k}, \mathbf{u}_{1:k})
+$$
+
+. . .
+
+**Online SLAM**: only the current pose, $p(\mathbf{x}_k, \mathbf{m} \mid \mathbf{z}_{1:k}, \mathbf{u}_{1:k})$.
+Filters are online, graphs are full. FastSLAM sits between: each particle
+carries a whole path, but only ever moves forward.
+
+. . .
+
+[Pose $\mathbf{x}_k = [x_k, y_k, \theta_k]^T$; landmarks $\boldsymbol{\ell}_j$;
+$N$ landmarks, so $M$ particles.]{.muted}
+
+::: {.notes}
+"The usual joke is that SLAM is a chicken-and-egg problem. The less funny
+version is that a wrong data association can quietly poison the map and then
+use that poisoned map to justify future wrong poses." Book sections: opening and
+Online SLAM and Full SLAM.
+:::
+
+## EKF-SLAM: one big Gaussian
+
+Robot and every landmark in one state, $3 + 2N$ entries:
+
+$$
+\mathbf{y} =
+\begin{bmatrix}
+\mathbf{x} \\ \boldsymbol{\ell}_1 \\ \vdots \\ \boldsymbol{\ell}_N
+\end{bmatrix},
+\qquad
+\mathbf{P} =
+\begin{bmatrix}
+\mathbf{P}_{xx} & \mathbf{P}_{xm} \\
+\mathbf{P}_{mx} & \mathbf{P}_{mm}
+\end{bmatrix}
+$$
+
+. . .
+
+::: {.incremental}
+- $\mathbf{P}$ is **dense**
+- The cross-correlations are not decorative: they remember that robot and
+  landmark uncertainty came from the same observations
+- Guivant and Nebot's compressed EKF (Victoria Park): this matrix was the
+  bottleneck
+:::
+
+## Where EKF-SLAM spends its time
+
+**Predict:** landmarks do not move; only the robot block and the cross terms change, $O(N)$
+
+$$
+\mathbf{P}_{xx} \leftarrow \mathbf{F}\mathbf{P}_{xx}\mathbf{F}^T + \mathbf{L}\mathbf{Q}_u\mathbf{L}^T,
+\qquad
+\mathbf{P}_{xm} \leftarrow \mathbf{F}\mathbf{P}_{xm},
+\qquad
+\mathbf{P}_{mm} \leftarrow \mathbf{P}_{mm}
+$$
+
+. . .
+
+**Update:** one landmark, so a sparse Jacobian
+
+$$
+\mathbf{H} =
+\begin{bmatrix}
+\mathbf{H}_x & \mathbf{0} & \cdots & \mathbf{0} & \mathbf{H}_\ell & \mathbf{0} & \cdots & \mathbf{0}
+\end{bmatrix}
+$$
+
+::: {.incremental}
+- $\mathbf{S}$ needs only $\mathbf{P}_{xx}$, $\mathbf{P}_{xj}$, $\mathbf{P}_{jj}$: cheap
+- $\mathbf{P}\mathbf{H}^T$ has every row nonzero: one tree nudges every
+  correlated landmark. That is how a loop closure propagates
+- $\mathbf{K}\mathbf{S}\mathbf{K}^T$ is a full $(3+2N)^2$ outer product:
+  $O(N^2)$ per observation, and $O(N^2)$ memory
+:::
+
+::: {.notes}
+A new landmark comes from the inverse observation g(x, z) and grows the state by
+two entries: P_ll = G_x P_xx G_x^T + G_z R G_z^T, P_lx = G_x P_xx,
+P_lm = G_x P_xm. It inherits the robot's uncertainty and, through it, a
+correlation with every landmark the robot is correlated with. "Dropping the
+cross terms would declare the new tree independent of the robot that just
+measured it, an overconfident lie that the filter would happily believe
+forever." Use the Joseph form. Book section: EKF-SLAM in One Page.
+:::
+
+## EKF-SLAM talks itself into knowing its heading
+
+::: {.incremental}
+- Julier and Uhlmann: a deceptively simple counterexample. The covariance
+  shrinks below anything the measurements justify, most visibly in heading
+- Huang, Mourikis, and Roumeliotis: planar SLAM cannot observe the global
+  position and orientation of the whole picture. Three unobservable directions
+- Jacobians evaluated at different estimates at different times make the
+  *linearized* system appear to observe global heading: information that does
+  not exist
+- First-estimates Jacobians (FEJ) and the observability-constrained EKF cost
+  almost nothing and fix most of it
+:::
+
+. . .
+
+$O(N^2)$ per observation plus linearization overconfidence: why EKF-SLAM is not
+the project back end.
+
+## FastSLAM: what to condition on {auto-animate=true}
+
+Rao-Blackwellization (Part 4), with **correspondences** $n_k$:
+
+::: {data-id="factorization"}
+$$
+p(\mathbf{x}_{1:k}, \mathbf{m} \mid \mathbf{z}_{1:k}, \mathbf{u}_{1:k}, n_{1:k})
+= p(\mathbf{x}_{1:k} \mid \mathbf{z}_{1:k}, \mathbf{u}_{1:k}, n_{1:k})
+\prod_{j=1}^{N} p(\boldsymbol{\ell}_j \mid \mathbf{x}_{1:k}, \mathbf{z}_{1:k}, n_{1:k})
+$$
+:::
+
+. . .
+
+Given the path, each measurement involves exactly **one** landmark:
+
+$$
+p(\mathbf{m} \mid \mathbf{x}_{1:k}, \mathbf{z}_{1:k}, n_{1:k})
+\propto
+\prod_{j=1}^{N} p(\boldsymbol{\ell}_j)
+\prod_{\tau=1}^{k} p(\mathbf{z}_\tau \mid \mathbf{x}_\tau, \boldsymbol{\ell}_{n_\tau})
+$$
+
+. . .
+
+One $2 \times 2$ EKF per tree: [$M \times N$ tiny filters, not one
+$(3+2N)^2$ covariance.]{.accent}
+
+::: {.notes}
+Each particle carries a pose, its trajectory, a dictionary of LandmarkEKFs
+(mean, covariance, hit count, last scan seen; tentative until confirmed), and a
+log weight. A landmark is born with P_l = G_z R G_z^T: no G_x term, because
+inside a particle the pose has no uncertainty to inherit. Book sections:
+FastSLAM: The Project Backend, Per-Landmark EKF.
+:::
+
+## FastSLAM: what to condition on {auto-animate=true}
+
+::: {data-id="factorization"}
+$$
+p(\mathbf{x}_{1:k}, \mathbf{m} \mid \mathbf{z}_{1:k}, \mathbf{u}_{1:k}, n_{1:k})
+= p(\mathbf{x}_{1:k} \mid \mathbf{z}_{1:k}, \mathbf{u}_{1:k}, n_{1:k})
+\prod_{j=1}^{N} p(\boldsymbol{\ell}_j \mid \mathbf{x}_{1:k}, \mathbf{z}_{1:k}, n_{1:k})
+$$
+:::
+
+Drop the correspondences, and each measurement becomes a mixture:
+
+$$
+p(\mathbf{z}_\tau \mid \mathbf{x}_\tau, \mathbf{m})
+= \sum_{j} P(n_\tau = j)\, p(\mathbf{z}_\tau \mid \mathbf{x}_\tau, \boldsymbol{\ell}_j)
+$$
+
+. . .
+
+A product of sums does not split: every landmark is coupled to every other.
+
+. . .
+
+::: {.key}
+Each particle carries its own correspondences $n_{1:k}^{[i]}$ along with its path.
+A wrong association is not fatal if some particle got it right.
+:::
+
+## Weighting a matched observation
+
+FastSLAM 1.0 samples poses from the motion model, so (bootstrap filter) the
+weight is the likelihood of the scan. Integrate the uncertain landmark out:
+
+$$
+\log \mathcal{N}(\boldsymbol{\nu}; \mathbf{0}, \mathbf{S})
+= -\tfrac{1}{2}\boldsymbol{\nu}^T\mathbf{S}^{-1}\boldsymbol{\nu}
+-\tfrac{1}{2}\log\det(2\pi\mathbf{S}),
+\qquad
+\mathbf{S} = \mathbf{H}_\ell\mathbf{P}_j\mathbf{H}_\ell^T + \mathbf{R}
+$$
+
+. . .
+
+::: {.incremental}
+- First term: rewards a small Mahalanobis distance
+- Second term: rewards a confident map. Of two particles that explain the data
+  equally well, the one with tighter landmarks is the better hypothesis
+- The bearing component of $\boldsymbol{\nu}$ wrapped to $[-\pi, \pi)$, always
+:::
+
+## The units trap
+
+```{python}
+#| include: false
+import collections
+
+from matplotlib.patches import Ellipse
+
+
+def predict_pose(pose, control, dt):
+    """Planar unicycle motion model; control = [v, omega]."""
+    x, y, theta = pose
+    v, omega = control
+    if abs(omega) < 1e-9:
+        x = x + v * math.cos(theta) * dt
+        y = y + v * math.sin(theta) * dt
+    else:
+        x = x + (v / omega) * (math.sin(theta + omega * dt) - math.sin(theta))
+        y = y + (v / omega) * (-math.cos(theta + omega * dt) + math.cos(theta))
+    theta = wrap_angle(theta + omega * dt)
+    return np.array([x, y, theta], dtype=float)
+
+
+def observe_landmark(pose, landmark_xy):
+    dx, dy = np.asarray(landmark_xy) - pose[:2]
+    return np.array([math.hypot(dx, dy), wrap_angle(math.atan2(dy, dx) - pose[2])])
+
+
+true_landmarks = np.array([[4.0, 1.0], [7.0, -1.5], [10.0, 2.0]])
+R = np.diag([0.25**2, np.deg2rad(2.0)**2])     # measurement noise: range [m], bearing [rad]
+Q_u = np.diag([0.05**2, np.deg2rad(1.0)**2])   # odometry noise on [v, omega] per 1 s step
+COMMAND = np.array([0.8, 0.05])                # commanded [m/s, rad/s]
+MIN_RANGE, MAX_RANGE = 1.0, 8.0
+
+
+def simulate_run(seed, *, steps=12, control_covariance=Q_u, measurement_covariance=R):
+    rng = np.random.default_rng(seed)
+    pose = np.zeros(3)
+    true_poses, scans = [], []
+    for _ in range(steps):
+        executed = COMMAND + rng.multivariate_normal(np.zeros(2), control_covariance)
+        pose = predict_pose(pose, executed, dt=1.0)
+        scan = []
+        for landmark_xy in true_landmarks:
+            z = observe_landmark(pose, landmark_xy)
+            if MIN_RANGE < z[0] < MAX_RANGE:
+                z = z + rng.multivariate_normal(np.zeros(2), measurement_covariance)
+                z[1] = wrap_angle(z[1])
+                scan.append(z)
+        true_poses.append(pose.copy())
+        scans.append(scan)
+    return np.array(true_poses), scans
+
+
+LOG_2PI = math.log(2.0 * math.pi)
+
+
+def gaussian_log_likelihood(nu, S):
+    _, logdet = np.linalg.slogdet(S)
+    return float(-0.5 * nu @ np.linalg.solve(S, nu) - 0.5 * (len(nu) * LOG_2PI + logdet))
+
+
+class LandmarkEKF:
+    """EKF for one 2D landmark, conditioned on one particle's path (immutable value)."""
+
+    __slots__ = ("mean", "covariance", "hits", "last_seen")
+
+    def __init__(self, mean, covariance, hits=0, last_seen=0):
+        self.mean = np.asarray(mean, dtype=float)
+        self.covariance = np.asarray(covariance, dtype=float)
+        self.hits = hits
+        self.last_seen = last_seen
+
+    @classmethod
+    def initialize(cls, pose, measurement, measurement_covariance, scan_index=0):
+        r, bearing = measurement
+        angle = pose[2] + bearing
+        mean = np.array([pose[0] + r * math.cos(angle), pose[1] + r * math.sin(angle)])
+        G_z = np.array([[math.cos(angle), -r * math.sin(angle)],
+                        [math.sin(angle), r * math.cos(angle)]])
+        return cls(mean, G_z @ measurement_covariance @ G_z.T, 0, scan_index)
+
+    def expected_measurement(self, pose):
+        dx, dy = self.mean - pose[:2]
+        q = dx * dx + dy * dy
+        r = math.sqrt(q)
+        z_hat = np.array([r, wrap_angle(math.atan2(dy, dx) - pose[2])])
+        H_l = np.array([[dx / r, dy / r], [-dy / q, dx / q]])
+        return z_hat, H_l
+
+    def innovation(self, pose, measurement, measurement_covariance):
+        z_hat, H_l = self.expected_measurement(pose)
+        nu = np.asarray(measurement, dtype=float) - z_hat
+        nu[1] = wrap_angle(nu[1])
+        S = H_l @ self.covariance @ H_l.T + measurement_covariance
+        return nu, H_l, S
+
+    def updated(self, pose, measurement, measurement_covariance, scan_index=0):
+        nu, H_l, S = self.innovation(pose, measurement, measurement_covariance)
+        K = np.linalg.solve(S, H_l @ self.covariance).T
+        I_KH = np.eye(2) - K @ H_l
+        covariance = I_KH @ self.covariance @ I_KH.T + K @ measurement_covariance @ K.T
+        return LandmarkEKF(self.mean + K @ nu, covariance, self.hits + 1, scan_index)
+
+
+p0_toy = 1.0 / (MAX_RANGE * 2.0 * math.pi)       # [1 / (m rad)]
+nu_m = np.array([0.30, np.deg2rad(1.5)])         # a typical matched innovation
+S_m = 2.0 * R                                    # roughly a young landmark
+to_cm = np.diag([100.0, 1.0])
+nu_cm, S_cm = to_cm @ nu_m, to_cm @ S_m @ to_cm.T
+units_rows = {
+    "d2": (nu_m @ np.linalg.solve(S_m, nu_m), nu_cm @ np.linalg.solve(S_cm, nu_cm)),
+    "logN": (gaussian_log_likelihood(nu_m, S_m), gaussian_log_likelihood(nu_cm, S_cm)),
+    "logp0": (math.log(p0_toy), math.log(p0_toy / 100.0)),
+}
+d2_crossover = -2.0 * math.log(2.0 * math.pi * p0_toy * math.sqrt(np.linalg.det(R)))
+```
+
+A new landmark has no prediction, so no innovation to score. Why not just leave
+its particle's weight alone?
+
+. . .
+
+```{python}
+#| output: asis
+d2m, d2c = units_rows["d2"]
+lnm, lnc = units_rows["logN"]
+lpm, lpc = units_rows["logp0"]
+print(f"""
+::: {{.smaller-text}}
+| One matched innovation | ranges in m | ranges in cm |
+|---|:---:|:---:|
+| Mahalanobis $d^2$ | {d2m:.2f} | {d2c:.2f} |
+| $\\log\\mathcal{{N}}(\\boldsymbol{{\\nu}}; \\mathbf{{0}}, \\mathbf{{S}})$ | {lnm:+.2f} | {lnc:+.2f} |
+| "leave it alone", $\\log 1$ | 0 | 0 |
+| $\\log p_0$ | {lpm:+.2f} | {lpc:+.2f} |
+:::
+""")
+```
+
+. . .
+
+::: {.key}
+Densities carry units. Against an implicit 1 this match wins in meters and loses
+in centimeters: a rule that flips with your units is not a rule.
+:::
+
+::: {.notes}
+Changing range from meters to centimeters divides every matched density by 100
+(the Jacobian of the unit change) and leaves every Mahalanobis distance alone.
+In meters the toy sensor's matched densities are mostly above one, so the
+implicit choice mildly penalizes particles that spawn landmarks; in centimeters
+the same code rewards particles for inventing trees. Book section: Weighting
+Particles.
+:::
+
+## $p_0$: a density in the same units
+
+A measurement from something **not** in the particle's map, uniform over the
+sensor footprint; and where a well-mapped landmark ($\mathbf{S} \approx \mathbf{R}$)
+stops beating it:
+
+$$
+p_0 = \frac{1}{r_{\max}\, \Delta\beta},
+\qquad
+d^2_\times = -2 \log\!\left(2\pi\, p_0 \sqrt{\det \mathbf{R}}\right)
+$$
+
+. . .
+
+```{python}
+#| output: asis
+print(f"Toy sensor (8 m, all the way around): $p_0 = {p0_toy:.3f}$ m⁻¹ rad⁻¹, divided by 100 in "
+      f"centimeters like every matched density; $d^2_\\times \\approx {d2_crossover:.1f}$, next to the "
+      f"99.9% birth gate of 13.82. The gate and $p_0$ are two views of one decision.")
+```
+
+. . .
+
+::: {.key}
+Every observation contributes exactly one factor to every particle's weight:
+$\mathcal{N}(\boldsymbol{\nu}; \mathbf{0}, \mathbf{S})$ if it updated a
+landmark, $p_0$ otherwise (new **or** discarded).
+:::
+
+::: {.notes}
+Because every particle receives the same number of factors, adding a constant to
+all the factors of one observation shifts every log weight equally and vanishes
+in normalization. One consequence: running without p0 with ranges in
+centimeters is exactly running with p0 = 100 per meter per radian in meters.
+For a different sensor, compute both the gate and p0 and check that they tell a
+consistent story.
+:::
+
+## The FastSLAM 1.0 loop
+
+For each scan, in every particle $i$:
+
+::: {.incremental}
+1. **Predict:** sample $\mathbf{x}_k^{[i]} \sim p(\mathbf{x}_k \mid \mathbf{x}_{k-1}^{[i]}, \mathbf{u}_k)$,
+   noise drawn from $\mathbf{Q}_u$
+2. **Associate** in the particle's own map: two gates, one observation per
+   landmark (next chapter)
+3. **Update and weight:** matched, the landmark EKF and $\mathcal{N}$; new or
+   discarded, $p_0$
+4. **Manage tracks:** tentative until three associations; stale tentatives deleted
+5. **Normalize** with log-sum-exp; **resample** (systematic) when
+   $N_\text{eff} < M/2$
+:::
+
+. . .
+
+Resample every step and diversity dies; resample only when $N_\text{eff}$ drops.
+
+::: {.notes}
+Remember the highest-weight particle before resampling: afterwards every weight
+is 1/M and argmax returns particle 0, "an arbitrary choice dressed up as a
+decision." Systematic resampling with the cumulative[-1] = 1 guard from Part 4.
+Book section: FastSLAM Algorithm.
+:::
+
+## FastSLAM on a toy world
+
+```{python}
+#| include: false
+CHI2_2DOF_95 = 5.991     # association gate
+CHI2_2DOF_999 = 13.816   # birth gate
+NEW, DISCARD = "new", "discard"
+
+
+def two_gate_decisions(d2, landmark_ids, associate_gate, birth_gate, mutual_exclusion=True):
+    num_obs = d2.shape[0]
+    decisions = [None] * num_obs
+    claimed = set()
+    for a, col in sorted(zip(*np.nonzero(d2 < associate_gate)), key=lambda ac: d2[ac]):
+        j = landmark_ids[col]
+        if decisions[a] is None and (j not in claimed or not mutual_exclusion):
+            decisions[a] = j
+            claimed.add(j)
+    for a in range(num_obs):
+        if decisions[a] is None:
+            far_from_all = d2.shape[1] == 0 or d2[a].min() > birth_gate
+            decisions[a] = NEW if far_from_all else DISCARD
+    return decisions
+
+
+class FastSLAMParticle:
+    __slots__ = ("pose", "trajectory", "landmarks", "log_weight")
+
+    def __init__(self, pose, trajectory=None, landmarks=None, log_weight=0.0):
+        self.pose = np.asarray(pose, dtype=float)
+        self.trajectory = [self.pose] if trajectory is None else trajectory
+        self.landmarks = {} if landmarks is None else landmarks
+        self.log_weight = log_weight
+
+    def copy(self):
+        return FastSLAMParticle(self.pose, list(self.trajectory), dict(self.landmarks), self.log_weight)
+
+
+class FastSLAM:
+    """FastSLAM 1.0 for range-bearing point landmarks with unknown association (the book's)."""
+
+    def __init__(self, num_particles, initial_pose, control_covariance, measurement_covariance, *,
+                 log_p0, associate_gate=CHI2_2DOF_95, birth_gate=CHI2_2DOF_999, confirm_hits=3,
+                 tentative_window=3, resample_fraction=0.5, mutual_exclusion=True, rng=None):
+        self.particles = [FastSLAMParticle(initial_pose) for _ in range(num_particles)]
+        self.control_covariance = np.asarray(control_covariance, dtype=float)
+        self.R = np.asarray(measurement_covariance, dtype=float)
+        self.log_p0 = log_p0
+        self.associate_gate = associate_gate
+        self.birth_gate = birth_gate
+        self.confirm_hits = confirm_hits
+        self.tentative_window = tentative_window
+        self.resample_fraction = resample_fraction
+        self.mutual_exclusion = mutual_exclusion
+        self.rng = np.random.default_rng(0) if rng is None else rng
+        self.scan_index = 0
+        self.next_landmark_id = 0
+        self.num_resamples = 0
+        self.ess_history = []
+        self.best_particle = self.particles[0]
+
+    def step(self, control, dt, scan):
+        self.predict(control, dt)
+        self.update(scan)
+
+    def predict(self, control, dt):
+        noise = self.rng.multivariate_normal(np.zeros(2), self.control_covariance, size=len(self.particles))
+        for particle, control_noise in zip(self.particles, noise):
+            particle.pose = predict_pose(particle.pose, control + control_noise, dt)
+            particle.trajectory.append(particle.pose)
+
+    def associate(self, particle, scan):
+        ids = list(particle.landmarks)
+        d2 = np.empty((len(scan), len(ids)))
+        cache = {}
+        for col, j in enumerate(ids):
+            for a, z in enumerate(scan):
+                nu, _, S = particle.landmarks[j].innovation(particle.pose, z, self.R)
+                d2[a, col] = nu @ np.linalg.solve(S, nu)
+                cache[a, j] = (nu, S)
+        decisions = two_gate_decisions(d2, ids, self.associate_gate, self.birth_gate, self.mutual_exclusion)
+        return decisions, cache
+
+    def update(self, scan):
+        self.scan_index += 1
+        for particle in self.particles:
+            decisions, cache = self.associate(particle, scan)
+            for a, (z, decision) in enumerate(zip(scan, decisions)):
+                if decision == NEW:
+                    particle.landmarks[self.next_landmark_id] = LandmarkEKF.initialize(
+                        particle.pose, z, self.R, self.scan_index)
+                    self.next_landmark_id += 1
+                    particle.log_weight += self.log_p0
+                elif decision == DISCARD:
+                    particle.log_weight += self.log_p0
+                else:
+                    nu, S = cache[a, decision]
+                    particle.log_weight += gaussian_log_likelihood(nu, S)
+                    particle.landmarks[decision] = particle.landmarks[decision].updated(
+                        particle.pose, z, self.R, self.scan_index)
+            self._delete_stale_tentative(particle)
+        self._finish_update()
+
+    def _delete_stale_tentative(self, particle):
+        stale = [j for j, lm in particle.landmarks.items()
+                 if lm.hits < self.confirm_hits and self.scan_index - lm.last_seen > self.tentative_window]
+        for j in stale:
+            del particle.landmarks[j]
+
+    def _finish_update(self):
+        log_w = np.array([p.log_weight for p in self.particles])
+        peak = log_w.max()
+        log_w = log_w - (peak + math.log(np.sum(np.exp(log_w - peak))))
+        for particle, lw in zip(self.particles, log_w):
+            particle.log_weight = float(lw)
+        weights = np.exp(log_w)
+        ess = 1.0 / np.sum(weights**2)
+        self.ess_history.append(ess)
+        self.best_particle = self.particles[int(np.argmax(weights))]
+        if ess < self.resample_fraction * len(self.particles):
+            self.resample(weights)
+
+    def resample(self, weights):
+        n = len(self.particles)
+        positions = (self.rng.random() + np.arange(n)) / n
+        cumulative = np.cumsum(weights)
+        cumulative[-1] = 1.0
+        indexes = np.searchsorted(cumulative, positions)
+        self.particles = [self.particles[i].copy() for i in indexes]
+        for particle in self.particles:
+            particle.log_weight = -math.log(n)
+        self.num_resamples += 1
+
+    def weights(self):
+        return np.exp([p.log_weight for p in self.particles])
+
+    def effective_sample_size(self):
+        return float(1.0 / np.sum(self.weights() ** 2))
+
+    def estimated_pose(self):
+        weights = self.weights()
+        poses = np.array([p.pose for p in self.particles])
+        xy = weights @ poses[:, :2]
+        theta = math.atan2(weights @ np.sin(poses[:, 2]), weights @ np.cos(poses[:, 2]))
+        return np.array([xy[0], xy[1], theta])
+
+    def best_map(self):
+        return {j: lm.mean.copy() for j, lm in self.best_particle.landmarks.items()
+                if lm.hits >= self.confirm_hits}
+
+
+def run_fastslam(filter_class, seed, num_particles=30, **options):
+    true_poses, scans = simulate_run(seed)
+    slam = filter_class(num_particles, np.zeros(3), options.pop("control_covariance", Q_u),
+                        options.pop("measurement_covariance", R),
+                        rng=np.random.default_rng(1000 + seed), **options)
+    for scan in scans:
+        slam.step(COMMAND, 1.0, scan)
+    return slam, true_poses
+
+
+LOG_P0 = math.log(1.0 / (MAX_RANGE * 2.0 * math.pi))
+slam_demo, true_poses_demo = run_fastslam(FastSLAM, seed=4, log_p0=LOG_P0)
+demo_error = np.linalg.norm(slam_demo.estimated_pose()[:2] - true_poses_demo[-1][:2])
+demo_misses = [np.min(np.linalg.norm(true_landmarks - xy, axis=1)) for xy in slam_demo.best_map().values()]
+
+
+def covariance_ellipse(mean, cov, n_sigma=2.0, **kwargs):
+    values, vectors = np.linalg.eigh(cov)
+    angle = math.degrees(math.atan2(vectors[1, 1], vectors[0, 1]))
+    width, height = 2.0 * n_sigma * np.sqrt(values[::-1])
+    return Ellipse(mean, width, height, angle=angle, **kwargs)
+```
+
+```{python}
+best = slam_demo.best_particle
+truth_path = np.vstack([np.zeros(3), true_poses_demo])
+best_path = np.array(best.trajectory)
+cloud = np.array([p.pose for p in slam_demo.particles])
+all_landmarks = np.array([lm.mean for p in slam_demo.particles for lm in p.landmarks.values()])
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 3.4), gridspec_kw={"width_ratios": [2.4, 1]})
+for ax in axes:
+    ax.plot(truth_path[:, 0], truth_path[:, 1], "k-", lw=2, label="true path")
+    ax.plot(best_path[:, 0], best_path[:, 1], "C0--", lw=1.5, label="best particle's path")
+    ax.plot(cloud[:, 0], cloud[:, 1], "C0.", ms=5, alpha=0.6, label="final particles")
+    ax.plot(all_landmarks[:, 0], all_landmarks[:, 1], ".", color="C1", ms=4, alpha=0.5,
+            label="landmarks, every particle")
+    for lm in best.landmarks.values():
+        ax.add_patch(covariance_ellipse(lm.mean, lm.covariance, fill=False, color="C3", lw=1.5))
+    ax.plot(true_landmarks[:, 0], true_landmarks[:, 1], "k*", mfc="none", ms=14, label="true trees")
+    ax.set_aspect("equal")
+    ax.set_xlabel("x [m]")
+axes[0].set_ylabel("y [m]")
+axes[0].set_ylim(-2.4, 4.6)
+axes[0].plot([], [], "-", color="C3", label="best particle, 2$\\sigma$")
+axes[0].legend(loc="upper left", fontsize=12, ncol=2)
+axes[1].set_xlim(9.4, 10.6)
+axes[1].set_ylim(1.4, 2.6)
+axes[1].set_title("the far tree, close up", fontsize=15)
+fig.tight_layout()
+plt.show()
+```
+
+```{python}
+#| output: asis
+print(f"30 particles, 12 unlabeled scans: three trees out, "
+      f"{min(demo_misses):.2f} to {max(demo_misses):.2f} m from the truth.")
+```
+
+. . .
+
+Right: the truth is **outside** the 2σ ellipse. Not a bug: the path drifted,
+map and all.
+
+::: {.notes}
+The path drifted about 15 cm to the left of the truth (left panel). Nothing in
+the measurements can detect a drift that moves the robot and every tree
+together: the map is only as well anchored as the first pose. The particle cloud
+is supposed to carry that uncertainty, and right after a resampling it carries
+very little of it. That is why the project aligns the trajectory to GPS before
+computing errors. The true robot executes the command plus noise; the sensor sees
+from 1 m to 8 m all the way around. Book sections: A Small Range-Bearing World,
+FastSLAM Algorithm.
+:::
+
+## What goes wrong without $p_0$
+
+```{python}
+#| include: false
+def landmark_count_table(variants, seeds=range(20)):
+    rows = []
+    for name, options in variants:
+        counts, errors = [], []
+        for seed in seeds:
+            slam, truth_poses = run_fastslam(FastSLAM, seed, **options)
+            counts.append(len(slam.best_map()))
+            errors.append(np.linalg.norm(slam.estimated_pose()[:2] - truth_poses[-1][:2]))
+        rows.append((name, collections.Counter(counts), float(np.mean(errors))))
+    return rows
+
+
+p0_variants = [
+    ("the full filter", {"log_p0": LOG_P0}),
+    ("no $p_0$, ranges in meters", {"log_p0": 0.0}),
+    ("no $p_0$, ranges in centimeters", {"log_p0": math.log(100.0)}),
+    ("one gate (spawn if $d^2 > 5.99$)", {"log_p0": LOG_P0, "birth_gate": CHI2_2DOF_95}),
+    ("none of the rules",
+     {"log_p0": 0.0, "birth_gate": CHI2_2DOF_95, "mutual_exclusion": False, "confirm_hits": 0}),
+]
+p0_table = landmark_count_table(p0_variants)
+```
+
+Five filters that differ in a line or two, twenty noisy runs each. Confirmed trees
+in the best particle (the truth is 3):
+
+```{python}
+#| output: asis
+lines = ["", "::: {.smaller-text}", "| Filter | fewer than 3 | exactly 3 | more than 3 | final error [m] |",
+         "|---|:---:|:---:|:---:|:---:|"]
+for name, counter, error in p0_table:
+    fewer = sum(v for k, v in counter.items() if k < 3)
+    more = sum(v for k, v in counter.items() if k > 3)
+    lines.append(f"| {name} | {fewer} | {counter.get(3, 0)} | {more} | {error:.2f} |")
+print("\n".join(lines) + "\n:::\n")
+```
+
+. . .
+
+::: {.key}
+Every bookkeeping rule is there because its absence shows up in this table. In
+row 3 nothing about the physics changed; the parser did.
+:::
+
+::: {.notes}
+"No p0" in meters is the implicit choice p0 = 1, fifty times the footprint
+value; in centimeters it is p0 = 100, and a particle that fails to match
+outscores one that matches: the weights favor particles whose pose disagrees
+with their own map. With one 95% gate, about one correct re-observation in
+twenty spawns a duplicate. "None of the rules" is the book's old demo: no p0,
+one gate, no mutual exclusion, no tentative stage. The full filter is not perfect: over 200 seeds five
+runs (2.5%) keep a duplicate, when a correct re-observation lands beyond the
+birth gate in every particle at once. Book section: What Goes Wrong Without p0.
+:::
+
+## Why "Fast": share, do not copy
+
+::: {.incremental}
+- Naive resampling deep-copies maps, $O(MN)$: 100 particles and 1,000 trees is
+  100,000 landmark filters every time $N_\text{eff}$ dips
+- Montemerlo et al.: a balanced binary tree per particle, $O(M \log N)$
+- Python: **copy-on-write**. Landmarks are immutable; a copy shares them
+:::
+
+. . .
+
+```{.python code-line-numbers="|1-3|5-6|1-6"}
+def copy(self):                      # FastSLAMParticle: new containers, shared landmarks
+    return FastSLAMParticle(self.pose, list(self.trajectory),
+                            dict(self.landmarks), self.log_weight)
+
+# updated() returns a NEW LandmarkEKF; nothing is ever modified in place
+particle.landmarks[j] = particle.landmarks[j].updated(particle.pose, z, R, scan_index)
+```
+
+. . .
+
+[The 2 a.m. rule: never modify a landmark in place. Every particle sharing it
+silently gets the update, and the filter still runs, just wrongly.]{.accent}
+
+::: {.notes}
+The logarithm is what let FastSLAM scale, in simulation, to tens of thousands of
+landmarks, far beyond a dense covariance at the time. Copying a dictionary is
+still O(N), but of pointers rather than NumPy arrays: about three orders of
+magnitude faster than copy.deepcopy for a 500-landmark particle. A persistent
+map (a hash array mapped trie) would give true O(log N). Book section: Why
+"Fast".
+:::
+
+## FastSLAM 2.0: let the proposal see the scan
+
+1.0 samples blind to the scan. 2.0 samples
+$\mathbf{x}_k^{[i]} \sim p(\mathbf{x}_k \mid \mathbf{x}_{k-1}^{[i]}, \mathbf{u}_k, \mathbf{z}_k, \mathbf{m}^{[i]}, n_k^{[i]})$,
+approximated by an EKF update of the pose:
+
+$$
+\boldsymbol{\Sigma}_x = \left(\mathbf{H}_x^T\mathbf{S}_\ell^{-1}\mathbf{H}_x + \mathbf{Q}_x^{-1}\right)^{-1},
+\qquad
+\boldsymbol{\mu}_x = \bar{\mathbf{x}} + \boldsymbol{\Sigma}_x\mathbf{H}_x^T\mathbf{S}_\ell^{-1}\left(\mathbf{z} - \hat{\mathbf{z}}\right)
+$$
+
+. . .
+
+Weighted **before** the pose is sampled, so pose uncertainty is in the weight:
+
+$$
+w_k^{[i]} \propto w_{k-1}^{[i]}\,
+\mathcal{N}\left(\mathbf{z};\ \hat{\mathbf{z}},\ \mathbf{H}_x\mathbf{Q}_x\mathbf{H}_x^T + \mathbf{S}_\ell\right)
+$$
+
+. . .
+
+::: {.aside-box}
+The papers (and Thrun, Burgard, and Fox) swap the letters: $\mathbf{R}$ for
+motion, $\mathbf{Q}$ for measurement. Here $\mathbf{Q}$ is always process noise.
+Translate before you copy.
+:::
+
+::: {.notes}
+Q_x = L Q_u L^T is 3 x 3 with rank 2 for a unicycle, so use the equivalent
+Kalman form K = Q_x H_x^T (H_x Q_x H_x^T + S_l)^-1. Fold matched observations
+in one at a time; associate at x-bar with the pose uncertainty in S; new or
+discarded observations leave the proposal alone and are charged p0; after
+sampling, the landmark updates are exactly FastSLAM 1.0's. Book section:
+FastSLAM 2.0.
+:::
+
+## 1.0 vs 2.0: a sharp sensor on sloppy odometry
+
+```{python}
+#| include: false
+def control_jacobian(pose, control, dt, step=1e-6):
+    L = np.zeros((3, 2))
+    for k in range(2):
+        du = np.zeros(2)
+        du[k] = step
+        diff = predict_pose(pose, control + du, dt) - predict_pose(pose, control - du, dt)
+        diff[2] = wrap_angle(diff[2])
+        L[:, k] = diff / (2.0 * step)
+    return L
+
+
+def pose_jacobian(H_l):
+    return np.hstack([-H_l, np.array([[0.0], [-1.0]])])
+
+
+class FastSLAM2(FastSLAM):
+    """FastSLAM 2.0: sample each pose from a Gaussian proposal that sees the scan (the book's)."""
+
+    def step(self, control, dt, scan):
+        self.scan_index += 1
+        for particle in self.particles:
+            x_bar = predict_pose(particle.pose, control, dt)
+            L = control_jacobian(particle.pose, control, dt)
+            Sigma = L @ self.control_covariance @ L.T
+            ids = list(particle.landmarks)
+            d2 = np.empty((len(scan), len(ids)))
+            for col, j in enumerate(ids):
+                lm = particle.landmarks[j]
+                z_hat, H_l = lm.expected_measurement(x_bar)
+                H_x = pose_jacobian(H_l)
+                S_full = H_x @ Sigma @ H_x.T + H_l @ lm.covariance @ H_l.T + self.R
+                for a, z in enumerate(scan):
+                    nu = z - z_hat
+                    nu[1] = wrap_angle(nu[1])
+                    d2[a, col] = nu @ np.linalg.solve(S_full, nu)
+            decisions = two_gate_decisions(d2, ids, self.associate_gate, self.birth_gate,
+                                           self.mutual_exclusion)
+            x_hat = x_bar.copy()
+            for z, j in zip(scan, decisions):
+                if j in (NEW, DISCARD):
+                    particle.log_weight += self.log_p0
+                    continue
+                lm = particle.landmarks[j]
+                z_hat, H_l = lm.expected_measurement(x_hat)
+                H_x = pose_jacobian(H_l)
+                S_full = H_x @ Sigma @ H_x.T + H_l @ lm.covariance @ H_l.T + self.R
+                nu = z - z_hat
+                nu[1] = wrap_angle(nu[1])
+                particle.log_weight += gaussian_log_likelihood(nu, S_full)
+                K = np.linalg.solve(S_full, H_x @ Sigma).T
+                x_hat = x_hat + K @ nu
+                x_hat[2] = wrap_angle(x_hat[2])
+                Sigma = (np.eye(3) - K @ H_x) @ Sigma
+                Sigma = 0.5 * (Sigma + Sigma.T)
+            pose = self.rng.multivariate_normal(x_hat, Sigma)
+            pose[2] = wrap_angle(pose[2])
+            particle.pose = pose
+            particle.trajectory.append(pose)
+            for z, j in zip(scan, decisions):
+                if j == NEW:
+                    particle.landmarks[self.next_landmark_id] = LandmarkEKF.initialize(
+                        pose, z, self.R, self.scan_index)
+                    self.next_landmark_id += 1
+                elif j != DISCARD:
+                    particle.landmarks[j] = particle.landmarks[j].updated(pose, z, self.R, self.scan_index)
+            self._delete_stale_tentative(particle)
+        self._finish_update()
+
+
+R_lidar = np.diag([0.05**2, np.deg2rad(0.5)**2])     # a sharp sensor ...
+Q_sloppy = np.diag([0.10**2, np.deg2rad(3.0)**2])    # ... on sloppy odometry
+proposal_rows, histories = [], {}
+for name, filter_class, num_particles in [("FastSLAM 1.0", FastSLAM, 30), ("FastSLAM 2.0", FastSLAM2, 30),
+                                          ("FastSLAM 1.0", FastSLAM, 5), ("FastSLAM 2.0", FastSLAM2, 5)]:
+    exact, resamples, ancestors, distinct = 0, [], [], []
+    for seed in range(20):
+        _, scans_s = simulate_run(seed, control_covariance=Q_sloppy, measurement_covariance=R_lidar)
+        slam_s = filter_class(num_particles, np.zeros(3), Q_sloppy, R_lidar, log_p0=LOG_P0,
+                              rng=np.random.default_rng(1000 + seed))
+        for scan in scans_s:
+            slam_s.step(COMMAND, 1.0, scan)
+        exact += len(slam_s.best_map()) == 3
+        resamples.append(slam_s.num_resamples)
+        ancestors.append(len({id(p.trajectory[1]) for p in slam_s.particles}))
+        distinct.append([len({id(p.trajectory[t]) for p in slam_s.particles}) for t in range(1, 13)])
+    proposal_rows.append((name, num_particles, exact, np.mean(resamples), np.mean(ancestors)))
+    if num_particles == 30:
+        histories[name] = np.mean(distinct, axis=0)
+```
+
+:::: {.columns}
+::: {.column width="48%"}
+Sensor 5 cm and 0.5°; odometry noise doubled (speed) and tripled (turn rate).
+Twenty runs each:
+
+```{python}
+#| output: asis
+lines = ["", "::: {.smaller-text}", "| | $M$ | 3 trees | resamples | scan-1 ancestors |",
+         "|---|:---:|:---:|:---:|:---:|"]
+for name, m, exact, resamples, ancestors in proposal_rows:
+    lines.append(f"| {name.replace('FastSLAM ', '')} | {m} | {exact} / 20 | {resamples:.1f} | {ancestors:.1f} |")
+print("\n".join(lines) + "\n:::\n")
+```
+:::
+::: {.column width="52%"}
+```{python}
+fig, ax = plt.subplots(figsize=(6.2, 3.9), constrained_layout=True)
+steps_axis = np.arange(1, 13)
+for (name, values), color in zip(histories.items(), ["C3", "C0"]):
+    ax.plot(steps_axis, values, "o-", color=color, label=name)
+ax.set_xlabel("scan index $t$")
+ax.set_ylabel("distinct versions of pose $t$")
+ax.set_title("path histories alive at the end ($M = 30$)", fontsize=16)
+ax.set_ylim(0, 31)
+ax.legend(loc="upper left")
+plt.show()
+```
+:::
+::::
+
+. . .
+
+$M = 1$: 2.0 provably converges in the linear-Gaussian case (Montemerlo et al.);
+1.0 is dead reckoning with a map attached.
+
+::: {.notes}
+FastSLAM 1.0 resamples at nearly every scan and ends with every particle
+descended from one ancestor: thirty particles, one path hypothesis. When every
+particle is a copy of the same slightly-off pose, a correct re-observation can
+fail the birth gate in all of them at once. Position error is left out on
+purpose: with sloppy odometry the heading error before the first trees rotates
+the whole map, and no SLAM algorithm can observe that. For the project, a solid
+FastSLAM 1.0 with honest diagnostics is the baseline; 2.0 is an extension.
+:::
+
+## GraphSLAM: keep the past
+
+Poses and landmarks as variables of one nonlinear least-squares problem:
+
+$$
+\hat{\mathbf{X}} = \arg\min_{\mathbf{X}} \sum_i \left\|\mathbf{e}_i(\mathbf{X})\right\|_{\boldsymbol{\Omega}_i}^2,
+\qquad
+\|\mathbf{e}\|_{\boldsymbol{\Omega}}^2 = \mathbf{e}^T\boldsymbol{\Omega}\,\mathbf{e}
+$$
+
+. . .
+
+::: {.incremental}
+- Residuals: motion, landmarks, GPS priors, loop closures; $\boldsymbol{\Omega}_i$
+  is each one's information matrix
+- **Sparse**: each measurement touches a few variables
+- Past poses stay variables, relinearized at every iteration
+- Pose graphs, bundle adjustment; GTSAM, Ceres, g2o
+:::
+
+. . .
+
+Part 4's thread, tied off: keep the past poses and the information form stays
+sparse.
+
+::: {.notes}
+Filters marginalize the past instead. EKF-SLAM keeps the past's influence in its
+covariance and does propagate a loop correction, but cannot relinearize old
+poses. FastSLAM keeps whole paths, but only the ones its particles still carry.
+The Durrant-Whyte and Bailey tutorial bridges the filtering and graph views.
+Book section: GraphSLAM in One Page.
+:::
+
+## Three ways to do SLAM
+
+::: {.smaller-text}
+| | EKF-SLAM | FastSLAM | GraphSLAM |
+|---|---|---|---|
+| State | one joint Gaussian | particles plus landmark EKFs | graph of variables and factors |
+| Landmark correlations | explicit dense covariance | independent within a particle | implicit in the graph solution |
+| Data association | one decision per measurement | per-particle hypotheses | front end plus robust optimization |
+| Loop closure | propagates through the correlations; $O(N^2)$, overconfident | possible, if a particle with the right history survived | natural: the trajectory is re-solved |
+| Scaling concern | $O(N^2)$ per update and in memory | particle count; map copies, $O(M\log N)$ with sharing | sparse linear algebra |
+| Project role | compare | **implement** | compare |
+:::
+
+. . .
+
+Use it to interpret your Victoria Park results; you implement only one.
+
+## How FastSLAM fails
+
+::: {.incremental}
+- **Particle depletion:** $N_\text{eff}$ stays low; resampling fires every scan
+- **Path degeneracy:** one ancestor a few dozen scans back; FastSLAM 1.0 is
+  inconsistent over long runs, whatever $M$ (Bailey, Nieto, and Nebot)
+- **Duplicate landmarks:** gate too tight, pose too uncertain, no $p_0$, one gate
+- **Merged landmarks:** gate too loose, or $\mathbf{R}$ too optimistic
+- **Outlier landmarks:** moving objects, non-trees; the tentative stage keeps
+  them out of the map
+- **Delayed loop closure:** the right revisited-place hypothesis no longer exists
+:::
+
+. . .
+
+No magic parameter: measurement modeling, feature filtering, enough particles,
+careful resampling, and diagnostic plots.
+
+# Data Association {#association}
+
+Which tree is this? The hinge between perception and estimation.
+
+[Chapter: Data Association for Landmark SLAM](https://jbrodovsky.github.io/advanced_navigation/chapters/04-slam/data-association.html)
+
+## Three possible answers
+
+[Which landmark produced this measurement?]{.question}
+
+. . .
+
+For each observation in $Z_k = \{\mathbf{z}_k^1, \ldots, \mathbf{z}_k^K\}$ and a
+map $\mathbf{m} = \{\boldsymbol{\ell}_1, \ldots, \boldsymbol{\ell}_N\}$:
+
+::: {.incremental}
+1. it came from an existing landmark
+2. it is a new landmark
+3. it is an outlier: a moving object, a partial trunk, a sign, or numerical
+   nonsense wearing a convincing little hat
+:::
+
+. . .
+
+Get it wrong and the filter confidently updates the wrong object. Confidence is
+not correctness; it just makes the mistake look tidy.
+
+::: {.notes}
+This chapter is the book's canonical treatment of gating; the sensing chapter's
+overview defers to it. Notation as in the SLAM chapter: z = [r, beta]^T,
+measurement noise R, particle index [i].
+:::
+
+## Innovations, wrapped
+
+$$
+\boldsymbol{\nu}_j = \mathbf{z} - \hat{\mathbf{z}}_j,
+\qquad
+\hat{\mathbf{z}}_j = h(\mathbf{x}, \boldsymbol{\ell}_j)
+$$
+
+. . .
+
+A tree almost directly behind the robot: predicted at $+179°$, measured at
+$-179°$ (0.1 m of range residual, $\mathbf{S} = \operatorname{diag}(0.5^2, 5°^2)$):
+
+| Bearing residual | $d^2$ |
+|---|---:|
+| raw: $-358°$ | 5126.6 |
+| wrapped: $+2°$ | 0.20 |
+
+. . .
+
+::: {.key}
+An unwrapped residual turns a perfect match into a confident rejection. Wrap
+every bearing residual before it is used anywhere: in the gate, in the
+likelihood, and in the update.
+:::
+
+## What goes into $\mathbf{S}$ depends on what is uncertain
+
+Inside a FastSLAM particle the pose is known:
+
+$$
+\mathbf{S}_j = \mathbf{H}_\ell \mathbf{P}_j \mathbf{H}_\ell^T + \mathbf{R}
+$$
+
+. . .
+
+In EKF-SLAM the pose is uncertain and correlated with the map:
+
+$$
+\mathbf{S}_j = \mathbf{H}\mathbf{P}\mathbf{H}^T + \mathbf{R},
+\qquad
+\mathbf{H} = [\mathbf{H}_x\ \mathbf{0} \cdots \mathbf{H}_\ell \cdots \mathbf{0}]
+$$
+
+. . .
+
+Either way, $d_j^2 = \boldsymbol{\nu}_j^T \mathbf{S}_j^{-1} \boldsymbol{\nu}_j$.
+A one-meter residual is severe for a well-mapped landmark and unremarkable for a
+weakly initialized one.
+
+## Chi-square gates
+
+:::: {.columns}
+::: {.column width="48%"}
+Model right: $d^2 \sim \chi^2_2$, and in 2D
+
+$$
+P(d^2 \le \gamma) = 1 - e^{-\gamma/2}
+$$
+
+so $\gamma = -2\ln(1 - P)$:
+
+| $P$ | Gate | Role |
+|---:|---:|---|
+| 90% | 4.61 | |
+| 95% | 5.99 | association |
+| 99% | 9.21 | |
+| 99.9% | 13.82 | birth |
+:::
+::: {.column width="52%"}
+```{python}
+x_chi = np.linspace(0.0, 16.0, 400)
+fig, ax = plt.subplots(figsize=(6, 3.9), constrained_layout=True)
+ax.plot(x_chi, 1.0 - np.exp(-x_chi / 2.0), color="C0", lw=2.5)
+for gamma, prob, label in [(4.61, 0.90, "4.61"), (5.99, 0.95, "5.99: match"), (9.21, 0.99, "9.21"),
+                           (13.82, 0.999, "13.82: birth")]:
+    ax.plot([gamma, gamma], [0.0, prob], "--", color="0.4", lw=1)
+    ax.plot(gamma, prob, "o", color="C3", ms=7)
+    ax.text(gamma + 0.2, 0.04, label, rotation=90, va="bottom", fontsize=14)
+ax.set_xlabel("gate $\\gamma$ on $d^2$")
+ax.set_ylabel("correct matches kept")
+ax.set_ylim(0, 1.05)
+plt.show()
+```
+:::
+::::
+
+. . .
+
+A 95% gate is a start, not a law of nature: it rejects one correct match in
+twenty.
+
+## Nearest neighbor, maximum likelihood
+
+Nearest neighbor: $j^* = \arg\min_j d_j^2$; accept it if it passes the gate.
+
+. . .
+
+Maximum likelihood keeps the normalizing constant:
+
+$$
+p(\mathbf{z} \mid \boldsymbol{\ell}_j, \mathbf{x}) =
+\frac{1}{\sqrt{(2\pi)^2 \det \mathbf{S}_j}}
+\exp\left(-\frac{1}{2} d_j^2 \right)
+$$
+
+. . .
+
+::: {.incremental}
+- Similar $\mathbf{S}_j$ for all candidates: usually the same answer
+- Very different $\mathbf{S}_j$: a vague landmark gets a small $d^2$ from almost
+  anything
+- The determinant is what keeps it from winning every argument
+:::
+
+## Two trees 80 cm apart
+
+```{python}
+#| include: false
+R_toy = np.diag([0.25**2, np.deg2rad(2.0)**2])   # the toy sensor of the SLAM chapter
+P_tree = 0.15**2 * np.eye(2)                      # each tree mapped to about 15 cm
+tree_a = np.array([6.0, 0.0])
+tree_b = np.array([6.0, 0.8])
+
+
+def range_bearing(pose, landmark):
+    """Range and bearing from pose(s) to landmark(s); broadcasts over rows."""
+    pose = np.atleast_2d(pose)
+    d = np.atleast_2d(landmark) - pose[:, :2]
+    return np.column_stack([np.hypot(d[:, 0], d[:, 1]),
+                            wrap_angle(np.arctan2(d[:, 1], d[:, 0]) - pose[:, 2])])
+
+
+def landmark_jacobian(pose, landmark):
+    dx, dy = landmark - pose[:2]
+    q = dx * dx + dy * dy
+    r = math.sqrt(q)
+    return np.array([[dx / r, dy / r], [-dy / q, dx / q]])
+
+
+def gated_d2(z, pose, landmark, P_landmark):
+    H = landmark_jacobian(pose, landmark)
+    S = H @ P_landmark @ H.T + R_toy
+    nu = np.atleast_2d(z) - range_bearing(pose, landmark)
+    nu[:, 1] = wrap_angle(nu[:, 1])
+    return np.einsum("ni,ni->n", nu, np.linalg.solve(S, nu.T).T)
+
+
+rng = np.random.default_rng(7)
+pose0 = np.zeros(3)
+n_views = 20_000
+true_a = tree_a + rng.multivariate_normal(np.zeros(2), P_tree, n_views)   # map error
+z_views = range_bearing(pose0, true_a) + rng.multivariate_normal(np.zeros(2), R_toy, n_views)
+d2_a = gated_d2(z_views, pose0, tree_a, P_tree)
+d2_b = gated_d2(z_views, pose0, tree_b, P_tree)
+d2_b_perfect = gated_d2(range_bearing(pose0, tree_b), pose0, tree_a, P_tree)[0]
+
+gate_rows = []
+for gate in (4.61, 5.99, 9.21, 13.82):
+    a_in, b_in = d2_a < gate, d2_b < gate
+    wrong = b_in & (~a_in | (d2_b < d2_a))
+    gate_rows.append((f"{gate:.2f}", np.mean(~a_in), np.mean(b_in), np.mean(wrong), np.mean(~a_in & ~b_in)))
+a_in, b_in = d2_a < 5.99, d2_b < 5.99
+wrong = b_in & (~a_in | (d2_b < d2_a))
+gate_rows.append(("5.99 / 13.82", np.mean(~a_in), np.mean(b_in), np.mean(wrong),
+                  np.mean((d2_a > 13.82) & (d2_b > 13.82))))
+
+
+def gate_contour(tree, gamma, num=200):
+    """World points where d^2 = gamma around a tree's predicted measurement."""
+    z_hat = range_bearing(pose0, tree)[0]
+    H = landmark_jacobian(pose0, tree)
+    L = np.linalg.cholesky(H @ P_tree @ H.T + R_toy)
+    t = np.linspace(0.0, 2.0 * np.pi, num)
+    z = z_hat[:, None] + math.sqrt(gamma) * L @ np.vstack([np.cos(t), np.sin(t)])
+    return z[0] * np.cos(z[1]), z[0] * np.sin(z[1])
+```
+
+:::: {.columns}
+::: {.column width="52%"}
+```{python}
+fig, ax = plt.subplots(figsize=(6, 4.0), constrained_layout=True)
+right, ahead = -z_views[:3000, 0] * np.sin(z_views[:3000, 1]), z_views[:3000, 0] * np.cos(z_views[:3000, 1])
+ax.plot(right, ahead, ".", color="0.65", ms=2, label="views of tree A")
+for tree, color, name in [(tree_a, "C0", "A"), (tree_b, "C1", "B")]:
+    for gamma, ls in [(5.99, "-"), (13.82, "--")]:
+        gx, gy = gate_contour(tree, gamma)
+        ax.plot(-gy, gx, ls, color=color, lw=2)
+    ax.plot(-tree[1], tree[0], "^", color=color, ms=12)
+    ax.text(-tree[1] + 0.06, tree[0] + 0.1, name, color=color, fontsize=18, fontweight="bold")
+ax.set_xlim(-2.1, 1.3)
+ax.set_ylim(5.0, 7.0)
+ax.set_aspect("equal")
+ax.set_xlabel("right of the robot [m]")
+ax.set_ylabel("ahead [m]")
+plt.show()
+```
+:::
+::: {.column width="48%"}
+::: {.incremental}
+- Two trees 6 m ahead, each mapped to about 15 cm
+- The toy sensor: 25 cm in range, 2° in bearing
+- Twenty thousand noisy views of tree A (gray)
+- Gates: 5.99 solid, 13.82 dashed
+:::
+
+```{python}
+#| output: asis
+print(f"\n::: {{.fragment}}\nA perfect view of tree B sits at $d^2 = {d2_b_perfect:.1f}$ from tree A: "
+      f"outside A's 95% gate, inside its 99.9% gate.\n:::\n")
+```
+:::
+::::
+
+::: {.notes}
+Gates are ellipses in measurement space (range, bearing); here they are drawn in
+the world, which is why they are long across the line of sight: two degrees at
+6 m is 21 cm. Book section: Choosing the Gate.
+:::
+
+## The gate trade-off in numbers
+
+```{python}
+#| output: asis
+lines = ["", "::: {.smaller-text}", "| Gate | A rejected | B in the gate | wrong match | spawns a duplicate |",
+         "|---|:---:|:---:|:---:|:---:|"]
+for gate, rej, b_in, wrong, dup in gate_rows:
+    lines.append(f"| {gate} | {rej:.1%} | {b_in:.1%} | {wrong:.1%} | {dup:.2%} |")
+print("\n".join(lines) + "\n:::\n")
+```
+
+::: {.incremental}
+- **Too tight** is a duplicate factory: at 4.61, one view of A in ten fails
+- **Too loose** makes ambiguity routine: at 13.82, B is a candidate for most
+  views of A
+- **Wrong matches** barely move: geometry sets them, and no threshold fixes that
+:::
+
+::: {.notes}
+"Wrong match" means nearest neighbor picks B; "spawns a duplicate" means neither
+tree passes, so a one-gate filter makes a new tree. The fixes for the wrong-match
+rate are better hypotheses (joint compatibility) and multiple hypotheses
+(particles). For the report: a gate-sensitivity study near 4.61, 5.99, and 9.21.
+:::
+
+## Two gates
+
+::: {.incremental}
+1. **Match** if $d^2 < \chi^2_{2,0.95} = 5.99$: smallest $d^2$ first, at most one
+   observation per landmark per scan
+2. **Spawn** a *tentative* landmark only if $d^2 > \chi^2_{2,0.999} = 13.82$ for
+   **every** landmark in the particle, tentative ones included
+3. **Otherwise** the observation is ambiguous: discard it, and leave the map alone
+:::
+
+. . .
+
+The last row of the table: the matching of the 5.99 gate, the duplicates of the
+13.82 gate.
+
+. . .
+
+::: {.key}
+The band between the gates is where an honest filter says "I am not sure" and
+declines to touch the map. It costs a little information and saves a lot of map.
+:::
+
+## Joint compatibility
+
+When innovations share a pose error, test **hypotheses**, not pairings. Stack a
+hypothesis $\mathcal{H} = \{(a_1, j_1), \ldots, (a_p, j_p)\}$:
+
+$$
+\mathbf{S}_{\mathcal{H}} = \mathbf{H}_{\mathcal{H}} \mathbf{P} \mathbf{H}_{\mathcal{H}}^T + \mathbf{R}_{\mathcal{H}},
+\qquad
+D^2_{\mathcal{H}} = \boldsymbol{\nu}_{\mathcal{H}}^T \mathbf{S}_{\mathcal{H}}^{-1} \boldsymbol{\nu}_{\mathcal{H}} < \chi^2_{2p,\,\alpha}
+$$
+
+. . .
+
+::: {.incremental}
+- Off-diagonal blocks $\mathbf{H}_{x,a}\mathbf{P}_{xx}\mathbf{H}_{x,b}^T$: every
+  innovation shares the robot's pose error
+- Heading off by degrees: individual gates are wide, each observation finds
+  *some* tree
+- "Heading off by $+8°$" and "heading fine" cannot both be right. Only the joint
+  test asks
+- JCBB (Neira and Tardós): branch and bound; most pairings wins
+:::
+
+::: {.notes}
+Maximizing the number of pairings is what keeps JCBB from cheerfully explaining
+everything as clutter. The search is exponential in the worst case, but the
+joint test prunes hard, and Neira and Tardós update the inverse of S_H
+incrementally. Book section: Individual and Joint Compatibility.
+:::
+
+## Nearest neighbor vs JCBB
+
+```{python}
+#| include: false
+from scipy.stats import chi2
+
+
+def pose_and_landmark_jacobians(pose, landmark):
+    H_l = landmark_jacobian(pose, landmark)
+    return np.hstack([-H_l, np.array([[0.0], [-1.0]])]), H_l
+
+
+def stacked_innovation(pairs, scan, y_hat, P, R_meas):
+    pose = y_hat[:3]
+    nus, Hs = [], []
+    for a, j in pairs:
+        landmark = y_hat[3 + 2 * j: 5 + 2 * j]
+        nu = scan[a] - range_bearing(pose, landmark)[0]
+        nu[1] = wrap_angle(nu[1])
+        H_x, H_l = pose_and_landmark_jacobians(pose, landmark)
+        H = np.zeros((2, len(y_hat)))
+        H[:, :3], H[:, 3 + 2 * j: 5 + 2 * j] = H_x, H_l
+        nus.append(nu)
+        Hs.append(H)
+    H = np.vstack(Hs)
+    S = H @ P @ H.T + np.kron(np.eye(len(pairs)), R_meas)
+    return np.concatenate(nus), H, S
+
+
+def joint_d2(pairs, scan, y_hat, P, R_meas):
+    nu, _, S = stacked_innovation(pairs, scan, y_hat, P, R_meas)
+    return float(nu @ np.linalg.solve(S, nu))
+
+
+def nearest_neighbor(D, gate=5.99):
+    return [(a, int(np.argmin(row))) for a, row in enumerate(D) if row.min() < gate]
+
+
+def jcbb(scan, y_hat, P, R_meas, D, gate=5.99, alpha=0.95):
+    best = {"pairs": [], "d2": np.inf}
+    num_obs = len(scan)
+
+    def search(a, pairs, d2, used):
+        if a == num_obs:
+            if (len(pairs), -d2) > (len(best["pairs"]), -best["d2"]):
+                best["pairs"], best["d2"] = pairs, d2
+            return
+        for j in np.flatnonzero(D[a] < gate):
+            if j in used:
+                continue
+            trial = pairs + [(a, int(j))]
+            trial_d2 = joint_d2(trial, scan, y_hat, P, R_meas)
+            if trial_d2 < chi2.ppf(alpha, 2 * len(trial)):
+                search(a + 1, trial, trial_d2, used | {int(j)})
+        if len(pairs) + (num_obs - a - 1) >= len(best["pairs"]):
+            search(a + 1, pairs, d2, used)
+
+    search(0, [], 0.0, frozenset())
+    return best["pairs"]
+
+
+def ekf_update(pairs, scan, y_hat, P, R_meas):
+    nu, H, S = stacked_innovation(pairs, scan, y_hat, P, R_meas)
+    K = np.linalg.solve(S, H @ P).T
+    y = y_hat + K @ nu
+    y[2] = wrap_angle(y[2])
+    return y
+
+
+rng = np.random.default_rng(33)
+num_trees = 8
+trees = np.column_stack([rng.uniform(5, 10, num_trees), rng.uniform(-4, 4, num_trees)])
+y_hat = np.concatenate([[0.0, 0.0, 0.0], trees.ravel()])
+P_jc = np.zeros((len(y_hat), len(y_hat)))
+P_jc[:3, :3] = np.diag([0.3**2, 0.3**2, np.deg2rad(6.0)**2])
+P_jc[3:, 3:] = 0.05**2 * np.eye(2 * num_trees)
+true_pose_jc = np.array([0.1, -0.1, np.deg2rad(8.0)])
+seen = [0, 1, 2, 4, 5]
+scan_jc = [range_bearing(true_pose_jc, trees[j])[0] + rng.multivariate_normal(np.zeros(2), R_toy)
+           for j in seen]
+scan_jc.append(np.array([rng.uniform(5, 10), rng.uniform(-0.5, 0.5)]))   # one clutter return
+truth_pairs = dict(enumerate(seen))
+
+D_jc = np.array([[joint_d2([(a, j)], scan_jc, y_hat, P_jc, R_toy) for j in range(num_trees)]
+                 for a in range(len(scan_jc))])
+nn_pairs = nearest_neighbor(D_jc)
+jc_pairs = jcbb(scan_jc, y_hat, P_jc, R_toy, D_jc)
+jc_summary = {}
+for name, pairs in [("nn", nn_pairs), ("jcbb", jc_pairs)]:
+    y = ekf_update(pairs, scan_jc, y_hat, P_jc, R_toy)
+    jc_summary[name] = {
+        "wrong": sum(truth_pairs.get(a) != j for a, j in pairs),
+        "d2": joint_d2(pairs, scan_jc, y_hat, P_jc, R_toy),
+        "bound": chi2.ppf(0.95, 2 * len(pairs)),
+        "heading": np.rad2deg(true_pose_jc[2] - y[2]),
+    }
+
+
+def place_measurement(pose, z):
+    """Where a range-bearing measurement lands if the robot is at `pose`."""
+    angle = pose[2] + z[1]
+    return pose[:2] + z[0] * np.array([math.cos(angle), math.sin(angle)])
+```
+
+```{python}
+fig, axes = plt.subplots(1, 2, figsize=(12, 3.7), sharey=True)
+for ax, (title, pairs) in zip(axes, [("nearest neighbor", nn_pairs), ("JCBB", jc_pairs)]):
+    ax.plot(trees[:, 0], trees[:, 1], "^", color="C2", ms=10, label="mapped trees")
+    seen_from_estimate = np.array([place_measurement(y_hat[:3], z) for z in scan_jc])
+    ax.plot(seen_from_estimate[:, 0], seen_from_estimate[:, 1], "kx", ms=9, mew=2,
+            label="observations, placed\nfrom the estimated pose")
+    for a, j in pairs:
+        color = "C0" if truth_pairs.get(a) == j else "C3"
+        ax.plot([seen_from_estimate[a, 0], trees[j, 0]], [seen_from_estimate[a, 1], trees[j, 1]],
+                "-", color=color, lw=2.5)
+    for pose_, color, label in [(y_hat[:3], "k", "estimated pose"), (true_pose_jc, "C7", "true pose")]:
+        tip = pose_[:2] + 3.0 * np.array([math.cos(pose_[2]), math.sin(pose_[2])])
+        ax.annotate("", xy=tip, xytext=pose_[:2], arrowprops=dict(arrowstyle="->", color=color, lw=2))
+        ax.plot(*pose_[:2], "o", color=color, ms=6, label=label)
+    ax.plot([], [], "-", color="C0", lw=2.5, label="correct pairing")
+    ax.plot([], [], "-", color="C3", lw=2.5, label="wrong pairing")
+    ax.set_title(title)
+    ax.set_aspect("equal")
+    ax.set_xlabel("x [m]")
+axes[0].set_ylabel("y [m]")
+handles, labels = axes[0].get_legend_handles_labels()
+fig.legend(handles, labels, loc="center right", fontsize=13, frameon=False)
+fig.tight_layout(rect=(0, 0, 0.70, 1))
+plt.show()
+```
+
+```{python}
+#| output: asis
+nn, jc = jc_summary["nn"], jc_summary["jcbb"]
+print(f"8° of heading error, one clutter return. Nearest neighbor: {nn['wrong']} wrong, "
+      f"$D^2 = {nn['d2']:.1f}$ against {nn['bound']:.1f}, {nn['heading']:.1f}° left. "
+      f"JCBB: {jc['wrong']} wrong, {jc['heading']:.1f}° left.")
+```
+
+. . .
+
+JCBB removes *inconsistent* mistakes, not *consistent* ones: an orchard row.
+
+## Inside FastSLAM, one particle at a time
+
+::: {.incremental}
+- $\mathbf{P}_{xx} = \mathbf{0}$: joint compatibility reduces to individual
+- Different pose errors live in **different particles**; weights sort them out
+- One coupling survives: two observations cannot both be the same tree
+:::
+
+. . .
+
+Greedy matching can get that wrong. Two trees 80 cm apart, a particle 0.45 m
+off:
+
+::: {.smaller-text}
+| Rule | Pairings | $-2\log$-likelihood |
+|---|---|:---:|
+| Greedy, smallest $d^2$ first | obs 1 → tree 1; obs 0 discarded | 4.6 |
+| Hungarian (global nearest neighbor) | obs 0 → tree 1, obs 1 → tree 2: the truth | −4.1 |
+:::
+
+. . .
+
+Sparse map: they nearly always agree, so greedy is the project default. In a
+grove, try both.
+
+::: {.notes}
+Greedy grabs the single smallest distance (observation 1 with tree 1), which
+leaves observation 0 with no tree inside its gate, so it is discarded and its
+information lost; and observation 1 was paired with the wrong tree. The
+Hungarian solution minimizes the total negative log-likelihood, with one
+"unmatched" option per observation priced at -2 log p0; SciPy's
+linear_sum_assignment does it in one call.
+:::
+
+## Scoring particles on a common scale
+
+One observation, three particles, one young landmark ($\mathbf{S} = 2\mathbf{R}$):
+
+| Particle's hypothesis | log factor |
+|---|:---:|
+| A: matched to tree 42, $d^2 = 1$ | $+1.71$ |
+| A: matched to tree 42, $d^2 = 4$ | $+0.21$ |
+| B: a new tree, $\log p_0$ | $-3.92$ |
+| C: an outlier, the same constant | $-3.92$ |
+
+. . .
+
+::: {.incremental}
+- A good match beats B and C by $e^{5.6} \approx 280$ on this one observation
+- B and C tie, as they should: on a first sighting a new tree and clutter look
+  the same
+- A real tree is seen again; clutter is not. The tentative stage waits for that
+:::
+
+::: {.notes}
+Association sampling (Thrun et al.'s FastSLAM with unknown data association):
+draw the correspondence with probability proportional to its likelihood, p0 for
+"new", and weight by the total likelihood over all options, not the option
+chosen. Halfway between two trees, 1000 particles split 498, 498, and 4 for a
+new tree; later scans sort them out. Book section: Per-Particle Association.
+:::
+
+## Landmark birth: where does the pose uncertainty go?
+
+:::: {.columns}
+::: {.column width="50%"}
+**FastSLAM particle**
+
+$$
+\mathbf{P}_\ell = \mathbf{G}_z \mathbf{R} \mathbf{G}_z^T
+$$
+:::
+::: {.column width="50%"}
+**EKF-SLAM**
+
+$$
+\mathbf{P}_{\ell\ell} = \mathbf{G}_x\mathbf{P}_{xx}\mathbf{G}_x^T + \mathbf{G}_z\mathbf{R}\mathbf{G}_z^T
+$$
+:::
+::::
+
+. . .
+
+A tree 20 m away; $\sigma_r = 0.3$ m, $\sigma_\beta = 1°$; an uncertain vehicle
+with $2°$ of heading uncertainty (0.7 m across the line of sight at 20 m):
+
+::: {.incremental}
+- Across-track σ of the new tree: **0.35 m** in a particle, **0.93 m** in EKF-SLAM
+- EKF-SLAM: correlation 0.75 between that error and the robot's heading
+:::
+
+. . .
+
+The particle's tree is not "more accurate". Its pose uncertainty lives in the
+spread of the particle cloud, and each particle places the tree from its own
+pose.
+
+::: {.notes}
+The 0.75 correlation is the EKF remembering that if it later learns the heading
+was off, this tree moves too. Book section: Landmark Birth.
+:::
+
+## Tentative, confirmed, deleted
+
+:::: {.columns}
+::: {.column width="52%"}
+| State | Meaning |
+|---|---|
+| tentative | just born; used for association, not reported |
+| confirmed | associated $k = 3$ times; used and reported |
+| inactive | not used for updates or reporting |
+
+Deletion is not memory cleanup. It is **outlier control**.
+:::
+::: {.column width="48%"}
+Be skeptical of the detector too:
+
+::: {.incremental}
+- A minimum number of scan points per segment
+- Reject implausible trunk diameters
+- Reject "trees" in free space along the path
+- Cap the new landmarks per scan
+- Tune $\mathbf{R}$ honestly, never artificially tiny
+:::
+:::
+::::
+
+. . .
+
+The fastest way to make FastSLAM fail is to feed it overconfident outliers.
+
+## Diagnostics that tell the truth
+
+::: {.incremental}
+- Features per scan; matched, discarded, and new observations per scan
+- Confirmed landmarks against distance travelled
+- $N_\text{eff}$ over time
+- The final map, colored by observation count or landmark age
+- The distribution of accepted $d^2$: if $\mathbf{R}$ is honest, it looks like
+  $\chi^2_2$, mean near 2
+:::
+
+. . .
+
+::: {.key}
+These are not extra polish. They are how you find out whether the system is
+doing SLAM or merely drawing increasingly confident nonsense.
+:::
+
+# Visual Navigation and Visual SLAM {#visual}
+
+Same architecture, different sensor. A survey, not a project recipe.
+
+[Chapter: Visual Navigation and Visual SLAM](https://jbrodovsky.github.io/advanced_navigation/chapters/04-slam/visual-navigation.html)
+
+## Same pipeline, different sensor
+
+[What changes when the laser becomes a camera?]{.question}
+
+. . .
+
+::: {.incremental}
+1. Extract repeatable measurements
+2. Associate them across time
+3. Estimate motion and structure
+4. Control drift with loop closure or global measurements
+:::
+
+. . .
+
+The sensor changes. The estimation themes do not.
+
+::: {.notes}
+Project 2 uses a 2D laser, not a camera, so this chapter is survey context: do
+not turn it into a second implementation burden. One section is hands-on, the
+two-view visual odometry example on synthetic data. Builds on the camera model
+of the PnP chapter (Part 3).
+:::
+
+## A camera: range-bearing, minus the range
+
+$$
+s
+\begin{bmatrix} u \\ v \\ 1 \end{bmatrix}
+=
+\mathbf{K}
+\begin{bmatrix}
+\mathbf{C}_w^c & \mathbf{r}_{cw}^c
+\end{bmatrix}
+\begin{bmatrix} \mathbf{p}^w \\ 1 \end{bmatrix},
+\qquad
+s = Z_c
+$$
+
+. . .
+
+::: {.incremental}
+- $[\mathbf{C}_w^c\ \ \mathbf{r}_{cw}^c]$ is the **world-to-camera** transform
+  (OpenCV's `rvec`, `tvec`); the camera's pose is its inverse
+- Dividing by the depth $Z_c$ makes vision nonlinear, and hides absolute scale
+- Normalized coordinates
+  $\bar{\mathbf{x}} = \mathbf{K}^{-1}[u, v, 1]^T = \mathbf{p}^c / Z_c$ strip out
+  the intrinsics
+:::
+
+. . .
+
+Still a prediction, a residual, a Jacobian, and a covariance.
+
+## Features: match them, or track them
+
+:::: {.columns}
+::: {.column width="50%"}
+**Detect, describe, match**
+
+::: {.incremental}
+- Detector: corners, blobs, textured patches
+- Descriptor: local appearance; matcher: nearest neighbor, Lowe's ratio test,
+  mutual check
+- SIFT (patent expired 2020), SURF (still "nonfree" in OpenCV), ORB (FAST plus
+  binary BRIEF, Hamming distance; ORB-SLAM's default)
+:::
+:::
+::: {.column width="50%"}
+**Track** (Lucas-Kanade)
+
+$$
+\Big(\sum_{W} \nabla I\,\nabla I^T\Big)\,\mathbf{d} = -\sum_{W} \nabla I\, I_t
+$$
+
+::: {.incremental}
+- Well conditioned only with gradients in two directions: a corner (Shi-Tomasi)
+- Along an edge, only the perpendicular motion: the aperture problem
+- Fast, but drifts, and cannot recognize a place seen an hour ago
+:::
+:::
+::::
+
+::: {.notes}
+Brightness constancy, I_{k+1}(u + d) = I_k(u), linearized to grad(I)^T d + I_t
+= 0: one equation in two unknowns. Over an image pyramid, the KLT tracker is the
+front end of VINS-Mono and many other visual-inertial systems. Recognizing a
+place is still a job for descriptors.
+:::
+
+## The epipolar constraint
+
+Relative pose, camera 1 as the reference:
+$\mathbf{p}^{c_2} = \mathbf{C}\,\mathbf{p}^{c_1} + \mathbf{r}$. The point and
+both camera centers are coplanar:
+
+$$
+\bar{\mathbf{x}}_2^T\,\mathbf{E}\,\bar{\mathbf{x}}_1 = 0,
+\qquad
+\mathbf{E} = [\mathbf{r}]_\times\,\mathbf{C}
+$$
+
+. . .
+
+::: {.incremental}
+- Five degrees of freedom: three of rotation, two for the direction of
+  $\mathbf{r}$. Rank two, two equal singular values
+- In pixels: $\tilde{\mathbf{u}}_2^T\mathbf{F}\tilde{\mathbf{u}}_1 = 0$ with
+  $\mathbf{F} = \mathbf{K}^{-T}\mathbf{E}\mathbf{K}^{-1}$, when the intrinsics
+  are unknown
+- A point in image 1 confines its match to a **line** in image 2. A
+  one-dimensional check: a wrong match near the line passes
+:::
+
+## Why five points beat eight
+
+:::: {.columns}
+::: {.column width="48%"}
+Samples for one all-inlier set of size $m$ (fraction $\varepsilon$ wrong):
+
+$$
+N = \frac{\log(1 - p)}{\log\left(1 - (1 - \varepsilon)^m\right)}
+$$
+
+::: {.incremental}
+- Half wrong, $p = 0.99$: **145** five-point samples vs **1200** eight-point
+- Eight-point (Longuet-Higgins): linear; normalize the pixels
+- Five-point (Nistér): fine on planar scenes
+:::
+:::
+::: {.column width="52%"}
+```{python}
+eps = np.linspace(0.0, 0.7, 200)
+fig, ax = plt.subplots(figsize=(6, 4.0), constrained_layout=True)
+for m, color, label in [(2, "C2", "m = 2: two trees (planar)"),
+                        (5, "C0", "m = 5: five-point"), (8, "C3", "m = 8: eight-point")]:
+    with np.errstate(divide="ignore"):
+        n_iter = np.log(1 - 0.99) / np.log(1 - (1 - eps) ** m)
+    ax.semilogy(eps, n_iter, color=color, lw=2.2, label=label)
+    n_half = math.log(0.01) / math.log(1 - 0.5**m)
+    ax.plot(0.5, n_half, "o", color=color)
+    ax.annotate(f"{n_half:.0f}", (0.5, n_half), textcoords="offset points", xytext=(-30, 6),
+                fontsize=14, color=color)
+ax.set_xlabel("outlier fraction $\\varepsilon$")
+ax.set_ylabel("RANSAC samples, $p = 0.99$")
+ax.legend(loc="upper left", fontsize=13)
+plt.show()
+```
+:::
+::::
+
+## Two-view visual odometry by hand
+
+```{python}
+#| include: false
+import cv2
+
+K_cam = np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
+WIDTH, HEIGHT = 640, 480
+
+
+def project_pinhole(K, p_c):
+    uvw = (K @ p_c.T).T
+    return uvw[:, :2] / uvw[:, 2:3]
+
+
+def in_image(uv):
+    return np.all((uv > 0) & (uv < [WIDTH, HEIGHT]), axis=1)
+
+
+rng = np.random.default_rng(11)
+n_points = 200
+p_c1 = np.column_stack([rng.uniform(-5.0, 5.0, n_points), rng.uniform(-3.0, 3.0, n_points),
+                        rng.uniform(4.0, 12.0, n_points)])
+r_c1c2_c1 = np.array([1.5, -0.1, 0.3])
+C_c2_c1, _ = cv2.Rodrigues(np.deg2rad(np.array([1.0, -4.0, 0.5])))
+C_c1_c2 = C_c2_c1.T
+r_c2c1_c2 = -C_c1_c2 @ r_c1c2_c1
+p_c2 = (C_c1_c2 @ p_c1.T).T + r_c2c1_c2
+
+uv1_true, uv2_true = project_pinhole(K_cam, p_c1), project_pinhole(K_cam, p_c2)
+visible = in_image(uv1_true) & in_image(uv2_true)
+p_c1, uv1_true, uv2_true = p_c1[visible], uv1_true[visible], uv2_true[visible]
+n_match = len(p_c1)
+uv1 = uv1_true + rng.normal(0.0, 0.5, (n_match, 2))
+uv2 = uv2_true + rng.normal(0.0, 0.5, (n_match, 2))
+bad_match = rng.random(n_match) < 0.2
+uv2[bad_match] = rng.uniform([0, 0], [WIDTH, HEIGHT], (bad_match.sum(), 2))
+
+E, ransac_mask = cv2.findEssentialMat(uv1, uv2, K_cam, method=cv2.USAC_ACCURATE, prob=0.999, threshold=1.5)
+inlier = ransac_mask.ravel().astype(bool)
+_, C_est, t_est, _ = cv2.recoverPose(E, uv1, uv2, K_cam, mask=ransac_mask.copy())
+t_est = t_est.ravel()
+rotation_error = np.rad2deg(np.linalg.norm(cv2.Rodrigues(C_est @ C_c1_c2.T)[0]))
+t_true_unit = r_c2c1_c2 / np.linalg.norm(r_c2c1_c2)
+direction_error = np.rad2deg(np.arccos(np.clip(t_est @ t_true_unit, -1.0, 1.0)))
+
+
+def triangulate(C, t, uv_a, uv_b):
+    P1 = K_cam @ np.hstack([np.eye(3), np.zeros((3, 1))])
+    P2 = K_cam @ np.column_stack([C, t])
+    p_h = cv2.triangulatePoints(P1, P2, uv_a.T.astype(float), uv_b.T.astype(float))
+    return (p_h[:3] / p_h[3]).T
+
+
+C_a, C_b, t_svd = cv2.decomposeEssentialMat(E)
+cheirality = []
+for C_cand, t_cand in [(C_a, t_svd), (C_a, -t_svd), (C_b, t_svd), (C_b, -t_svd)]:
+    p = triangulate(C_cand, t_cand.ravel(), uv1[inlier], uv2[inlier])
+    depth_1, depth_2 = p[:, 2], (p @ C_cand.T + t_cand.ravel())[:, 2]
+    cheirality.append(int(np.sum((depth_1 > 0) & (depth_2 > 0))))
+
+p_est = triangulate(C_est, t_est, uv1[inlier], uv2[inlier])
+p_true = p_c1[inlier]
+baseline = np.linalg.norm(r_c2c1_c2)
+lam = 3.0
+uv2_big = project_pinhole(K_cam, (C_c1_c2 @ (lam * p_c1).T).T + lam * r_c2c1_c2)
+scale_pixel_change = np.abs(uv2_big - uv2_true).max()
+```
+
+```{python}
+fig, axes = plt.subplots(1, 2, figsize=(12, 3.6), gridspec_kw={"width_ratios": [1, 1.25]})
+ax = axes[0]
+flow = uv2 - uv1
+ax.quiver(uv1[inlier, 0], uv1[inlier, 1], flow[inlier, 0], flow[inlier, 1], angles="xy",
+          scale_units="xy", scale=1, color="C0", width=0.003, label="kept by RANSAC")
+ax.quiver(uv1[~inlier, 0], uv1[~inlier, 1], flow[~inlier, 0], flow[~inlier, 1], angles="xy",
+          scale_units="xy", scale=1, color="C3", width=0.002, alpha=0.6, label="rejected")
+ax.set_xlim(0, WIDTH)
+ax.set_ylim(HEIGHT, 0)
+ax.set_aspect("equal")
+ax.set_xlabel("u [px]")
+ax.set_ylabel("v [px]")
+ax.set_title("feature motion, image 1 to 2", fontsize=16)
+ax.legend(loc="lower left", fontsize=13)
+ax = axes[1]
+camera2_unit = -C_est.T @ t_est
+ax.scatter(p_true[:, 0], p_true[:, 2], s=30, facecolors="none", edgecolors="0.55", label="truth")
+ax.scatter(p_est[:, 0], p_est[:, 2], s=10, color="C1", label="triangulated, |t| = 1")
+ax.scatter(baseline * p_est[:, 0], baseline * p_est[:, 2], s=10, color="C0", label="scaled by the true baseline")
+ax.plot([0.0, camera2_unit[0], baseline * camera2_unit[0]], [0.0, camera2_unit[2], baseline * camera2_unit[2]],
+        "^", color="black", markersize=9)
+ax.set_aspect("equal")
+ax.set_xlabel("x (right) [m]")
+ax.set_ylabel("z (forward) [m]")
+ax.set_title("reconstruction, top view", fontsize=16)
+ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=13)
+fig.tight_layout()
+plt.show()
+```
+
+```{python}
+#| output: asis
+print(f"{n_match} matches, {bad_match.sum()} garbage. Five-point RANSAC keeps {inlier.sum()}, "
+      f"{np.sum(inlier & bad_match)} bad: rotation off by {rotation_error:.2f}°, direction by "
+      f"{direction_error:.2f}°. But $|\\mathbf{{t}}| = 1$; the true baseline is {baseline:.2f} m.")
+```
+
+::: {.notes}
+A camera at the origin and a second one 1.5 m to its right, a little forward and
+slightly rotated (a survey drone sliding along a facade), both looking at points
+4 to 12 m away. OpenCV's USAC_ACCURATE adds a local-optimization re-fit to
+RANSAC; plain cv2.RANSAC is noticeably less accurate here. Book section:
+Two-View Visual Odometry by Hand.
+:::
+
+## Four candidates, and one scale too many
+
+$\mathbf{E} = \mathbf{U}\operatorname{diag}(1, 1, 0)\mathbf{V}^T$ gives
+$\mathbf{C} \in \{\mathbf{U}\mathbf{W}\mathbf{V}^T, \mathbf{U}\mathbf{W}^T\mathbf{V}^T\}$
+and $\mathbf{r} \propto \pm\mathbf{u}_3$: four candidate poses.
+
+```{python}
+#| output: asis
+print(f"\n::: {{.fragment}}\n**Cheirality:** triangulate with each and count the points in front of both "
+      f"cameras: {', '.join(str(c) for c in cheirality)} of {inlier.sum()}. The wrong candidates fit "
+      f"the epipolar constraint exactly as well; only the depth signs tell them apart.\n:::\n")
+```
+
+. . .
+
+**Scale:** $\mathbf{C}(\lambda\mathbf{p}^{c_1}) + \lambda\mathbf{r} = \lambda\,\mathbf{p}^{c_2}$,
+and projection divides by depth, so every pixel is unchanged.
+
+```{python}
+#| output: asis
+print(f"Scene and baseline three times larger: the largest pixel change is "
+      f"{scale_pixel_change:.1e} px.")
+```
+
+. . .
+
+A single camera cannot tell a model railway filmed from 30 cm away from the real
+railway filmed from a helicopter.
+
+## Keyframes and bundle adjustment
+
+Chaining two-view estimates drifts fast. Keep sparse **keyframes**, inserted for
+parallax ($\sigma_Z \approx Z^2\sigma_d / (f b)$), and refine them jointly:
+
+$$
+\min_{\{\mathbf{C}_w^{c_j},\,\mathbf{r}_{c_j w}^{c_j}\},\,\{\mathbf{p}_i^w\}}
+\sum_{j}\sum_{i \in \mathcal{V}(j)}
+\rho\left(\mathbf{e}_{ij}^T\boldsymbol{\Sigma}_u^{-1}\mathbf{e}_{ij}\right),
+\qquad
+\mathbf{e}_{ij} = \mathbf{u}_{ij} - \pi\left(\mathbf{K},\ \mathbf{C}_w^{c_j}\mathbf{p}_i^w + \mathbf{r}_{c_j w}^{c_j}\right)
+$$
+
+. . .
+
+Each residual touches one camera and one point, so $\mathbf{H}_{cc}$ and
+$\mathbf{H}_{pp}$ are block diagonal. Eliminate the points (a Schur complement,
+as in Part 4's marginalization):
+
+$$
+\left(\mathbf{H}_{cc} - \mathbf{H}_{cp}\mathbf{H}_{pp}^{-1}\mathbf{H}_{pc}\right)\Delta\mathbf{c}
+= -\mathbf{g}_c + \mathbf{H}_{cp}\mathbf{H}_{pp}^{-1}\mathbf{g}_p
+$$
+
+. . .
+
+500 keyframes and 50,000 points: a $3000 \times 3000$ system instead of
+$153{,}000 \times 153{,}000$.
+
+::: {.notes}
+Depth error grows with the square of the range and shrinks only linearly with
+the baseline, which is why keyframes are chosen for parallax. PTAM introduced the
+split between a fast tracking thread and a slower mapping thread. Real-time
+systems run local BA over a sliding window and marginalize older keyframes;
+global BA or a pose graph runs after a loop closure. Book section: Keyframes and
+Bundle Adjustment.
+:::
+
+## Monocular scale drift
+
+::: {.incremental}
+- The scale is fixed arbitrarily at initialization: first baseline, or median
+  depth, equal to one
+- Later frames inherit it through the map: PnP against old points, triangulation
+  from old poses
+- Hand-off errors compound multiplicatively: the scale itself random-walks
+- After a long excursion: a good shape, several percent too small or too large.
+  A loop closure must correct a **similarity**, Sim(3), seven degrees of freedom
+:::
+
+. . .
+
+Every practical fix brings a metric measurement from outside the images: stereo,
+an IMU, wheel odometry, a known camera height, an altimeter, GNSS, an object of
+known size. Project 1 got scale from the AprilTags.
+
+::: {.notes}
+Monocular ORB-SLAM closes loops in Sim(3) for exactly this reason (Strasdat,
+Montiel, and Davison on scale-drift-aware SLAM).
+:::
+
+## Visual-inertial odometry
+
+:::: {.columns}
+::: {.column width="50%"}
+**MSCKF**: IMU state plus a window of camera-pose clones; features are **not**
+in the state.
+
+$$
+\mathbf{r} \approx \mathbf{H}_x\,\delta\mathbf{x} + \mathbf{H}_f\,\delta\mathbf{p}_f + \mathbf{n}
+$$
+
+With $\mathbf{N}^T\mathbf{H}_f = \mathbf{0}$:
+
+$$
+\mathbf{r}_o = \mathbf{N}^T\mathbf{r} \approx \mathbf{N}^T\mathbf{H}_x\,\delta\mathbf{x} + \mathbf{N}^T\mathbf{n}
+$$
+
+The feature is gone; cost linear in features.
+:::
+::: {.column width="50%"}
+**Preintegration**: hundreds of IMU samples between keyframes, integrated
+**once**, in keyframe $i$'s body frame:
+
+::: {.incremental}
+- Relative increments $\Delta\mathbf{C}_{ij}$, $\Delta\mathbf{v}_{ij}$,
+  $\Delta\mathbf{p}_{ij}$, independent of the global state
+- One factor between keyframes $i$ and $j$
+- Bias changes: first-order corrections, not reintegration
+- Lupton and Sukkarieh, at ACFR: the lab that recorded Victoria Park
+:::
+:::
+::::
+
+::: {.notes}
+Cameras and IMUs fail in complementary ways: the IMU carries the estimate
+through blur, darkness, and fast motion but its biases drift; the camera bounds
+that drift. Together they make scale observable, and gravity gives roll and
+pitch. The MSCKF (Mourikis and Roumeliotis) is an error-state EKF; the null
+space N has 2M - 3 columns for a feature seen M times.
+:::
+
+## What VIO cannot see
+
+::: {.incremental}
+- Shift the trajectory and every landmark, or rotate it all about gravity:
+  every image and every IMU sample is unchanged
+- **Four unobservable directions:** global position (three) and yaw (one)
+- Roll and pitch: observable through gravity. Scale: through the
+  accelerometers, given excitation; constant velocity hides it again
+- An EKF that relinearizes at changing estimates gains spurious yaw
+  information. First-estimates Jacobians and observability-constrained EKFs
+  restore the null space: EKF-SLAM's story again
+- VINS-Mono's loop-closure pose graph: four degrees of freedom per keyframe
+:::
+
+. . .
+
+Over the long term, VIO needs GNSS, a map, or a magnetometer to fix what it
+cannot see. Part 6 picks that up.
+
+## Systems worth knowing by name
+
+Visual odometry drifts; visual SLAM keeps a map and closes loops. Many impressive
+demos are odometry demos.
+
+::: {.incremental}
+- **ORB-SLAM:** tracking, local mapping, loop closing; ORB-SLAM3 adds stereo,
+  RGB-D, visual-inertial, and an atlas of maps
+- **Direct:** LSD-SLAM, DSO, SVO: photometric error instead of features
+- **VINS-Mono** (KLT, sliding window); **OpenVINS** (MSCKF, easiest to read)
+- **Learned front ends:** SuperPoint, LightGlue, DROID-SLAM
+:::
+
+. . .
+
+::: {.key}
+The networks produce correspondences. Geometry still turns them into
+navigation.
+:::
+
+## What carries over to Victoria Park
+
+ORB-SLAM's threads mirror the project: feature extraction (from laser scans),
+local association (against tree landmarks), a back end (FastSLAM), and an
+analysis of loop closure.
+
+. . .
+
+::: {.incremental}
+- Front-end quality controls back-end quality
+- Association failures are estimator failures
+- Outlier rejection is not optional
+- Loop closure needs both recognition and geometric consistency
+- Diagnostic plots matter more than a pretty final map
+:::
+
+# Loop Closure {#loop}
+
+Using your own old, imperfect map as the chart.
+
+[Chapter: Loop Closure and Long-Term Consistency](https://jbrodovsky.github.io/advanced_navigation/chapters/04-slam/loop-closure.html)
+
+## The dawn fix
+
+[What should a robot believe when it comes back?]{.question}
+
+. . .
+
+A ship's officer has run on dead reckoning all night. At dawn, a bearing on a
+charted lighthouse: the ship is two miles from where the plot says. That fix is
+**absolute**, because the lighthouse is on the chart.
+
+. . .
+
+A SLAM robot has no chart. Its lighthouse is a piece of its own map, built
+earlier from the same drifting estimate.
+
+. . .
+
+::: {.key}
+That is why loop closure is powerful, and why it is dangerous.
+:::
+
+## Why drift accumulates
+
+::: {.incremental}
+- A constant heading error $\delta\psi$: cross-track error about $d\,\delta\psi$
+  after $d$ meters
+- A heading error that random-walks: position error grows like $d^{3/2}$, because
+  every heading error is integrated twice
+:::
+
+. . .
+
+The pattern:
+
+::: {.incremental}
+1. The robot revisits an old place
+2. The front end proposes a match to old map structure
+3. The system verifies it geometrically
+4. The back end uses the constraint to cut the accumulated drift
+:::
+
+. . .
+
+[A false loop closure can be worse than no loop closure.]{.accent}
+
+## Recognize, then verify
+
+:::: {.columns}
+::: {.column width="52%"}
+**Recognize**: "which old place does this look like?"
+
+::: {.incremental}
+- Searching the pose uncertainty fails after long excursions
+- Appearance: bags of words (DBoW2), NetVLAD
+- Geometry: Scan Context; for trees, the **constellation**, like a star tracker
+:::
+:::
+::: {.column width="48%"}
+**Verify**: a candidate is only a hypothesis
+
+::: {.incremental}
+- RANSAC on minimal sets: two tree pairs, five points, PnP
+- Too few inliers: reject
+- Refine by ICP or reprojection error; that also gives the covariance
+:::
+:::
+::::
+
+. . .
+
+::: {.key}
+A verified loop closure is a measurement like any other: a relative pose with
+an information matrix.
+:::
+
+::: {.notes}
+Practical systems recognize places from what the sensor sees, independently of
+the estimate, and use the estimate only to rank or sanity-check candidates.
+DBoW2 quantizes binary descriptors into a hierarchical vocabulary, uses an
+inverted index, and requires several consecutive frames to confirm a loop. Scan
+Context compares polar descriptors over every circular shift, so heading does
+not matter. Inter-tree distances and trunk diameters survive a rigid motion, and
+two correctly matched trees are enough to hypothesize the planar transform. Book
+section: Recognition and Verification.
+:::
+
+## Filters and loops
+
+:::: {.columns}
+::: {.column width="50%"}
+**EKF-SLAM**
+
+::: {.incremental}
+- An old landmark re-observed: the update moves every correlated landmark, all
+  the way around the loop
+- Linear-Gaussian: the same map as the batch solution
+- But it cannot **relinearize** the past. Jacobians from old, wrong estimates are
+  baked in: overconfidence
+:::
+:::
+::: {.column width="50%"}
+**FastSLAM**
+
+::: {.incremental}
+- A revisit reweights the particles whose map agrees with the scan
+- Works only if a particle with a good path is still alive
+- Resampling may have discarded it; duplicate landmarks make an old place look
+  new
+:::
+:::
+::::
+
+. . .
+
+Particle count, process noise, association, and resampling all shape long loops.
+
+## The pose graph
+
+Keep the poses as variables. Planar pose $i$:
+
+$$
+\mathbf{X}_i =
+\begin{bmatrix}
+\mathbf{C}(\theta_i) & \mathbf{t}_i \\
+\mathbf{0}^T & 1
+\end{bmatrix}
+\in SE(2)
+$$
+
+. . .
+
+Odometry and loop closures both measure $\mathbf{X}_i^{-1}\mathbf{X}_j$: a
+relative pose $\mathbf{Z}_{ij}$ with information $\boldsymbol{\Omega}_{ij}$.
+Compare **on the group**:
+
+$$
+\mathbf{E}_{ij} = \mathbf{Z}_{ij}^{-1}\mathbf{X}_i^{-1}\mathbf{X}_j,
+\qquad
+\mathbf{e}_{ij} = \operatorname{Log}\left(\mathbf{E}_{ij}\right) \in \mathbb{R}^3
+$$
+
+. . .
+
+$$
+\mathbf{X}^\star = \arg\min_{\mathbf{X}_0, \ldots, \mathbf{X}_{n-1}}
+\sum_{(i,j) \in \mathcal{E}} \mathbf{e}_{ij}^T\,\boldsymbol{\Omega}_{ij}\,\mathbf{e}_{ij}
+$$
+
+::: {.notes}
+GraphSLAM keeps past poses as variables; odometry, landmark observations, GPS
+fixes, and loop closures all become factors (Dellaert and Kaess). Log maps a
+group element to its tangent vector, the translation and rotation "left over".
+In 3D the same formula holds on SE(3). Book section: Why GraphSLAM Handles Loops
+Naturally.
+:::
+
+## Why not just subtract?
+
+$\mathbf{z}_{ij} - (\mathbf{x}_j - \mathbf{x}_i)$ is wrong twice:
+
+::: {.incremental}
+- **Angles:** heading $179°$ then $-179°$ is a $2°$ turn. Subtraction says
+  $-358°$, and the optimizer tries to spin part of the map through a full turn
+- **Translation:** odometry measures motion in the frame of pose $i$. The
+  prediction is $\mathbf{C}(\theta_i)^T(\mathbf{t}_j - \mathbf{t}_i)$, not
+  $\mathbf{t}_j - \mathbf{t}_i$
+:::
+
+. . .
+
+$$
+\phi_{ij} = \operatorname{wrap}\left(\theta_j - \theta_i - \theta_z\right),
+\qquad
+\boldsymbol{\tau}_{ij} = \mathbf{C}(\theta_z)^T
+\left[\mathbf{C}(\theta_i)^T\left(\mathbf{t}_j - \mathbf{t}_i\right) - \mathbf{t}_z\right]
+$$
+
+. . .
+
+Most 2D solvers (g2o, the Grisetti et al. tutorial) use
+$\mathbf{e}_{ij} = [\boldsymbol{\tau}_{ij};\ \phi_{ij}]$: zero exactly when the
+Log is, different only at second order.
+
+## Gauss-Newton on a pose graph
+
+```{python}
+#| include: false
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
+
+
+def rot2(theta):
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, -s], [s, c]])
+
+
+def v2t(pose):
+    X = np.eye(3)
+    X[:2, :2] = rot2(pose[2])
+    X[:2, 2] = pose[:2]
+    return X
+
+
+def t2v(X):
+    return np.array([X[0, 2], X[1, 2], np.arctan2(X[1, 0], X[0, 0])])
+
+
+def relative_pose(pose_i, pose_j):
+    return t2v(np.linalg.inv(v2t(pose_i)) @ v2t(pose_j))
+
+
+def compose(pose, delta):
+    return t2v(v2t(pose) @ v2t(delta))
+
+
+rng = np.random.default_rng(7)
+steps_per_side = 10
+n_poses = 5 * steps_per_side + 1
+truth = [np.zeros(3)]
+for k in range(n_poses - 1):
+    turn = np.pi / 2 if (k + 1) % steps_per_side == 0 else 0.0
+    truth.append(compose(truth[-1], np.array([1.0, 0.0, turn])))
+truth = np.array(truth)
+
+sigma_odo = np.array([0.05, 0.05, np.deg2rad(1.0)])
+heading_bias = np.deg2rad(0.6)
+Omega_odo = np.diag(1.0 / sigma_odo**2)
+edges = []
+for i in range(n_poses - 1):
+    z = relative_pose(truth[i], truth[i + 1]) + rng.normal(0.0, sigma_odo)
+    z[2] += heading_bias
+    edges.append((i, i + 1, z, Omega_odo))
+
+sigma_loop = np.array([0.05, 0.05, np.deg2rad(0.5)])
+Omega_loop = np.diag(1.0 / sigma_loop**2)
+z_loop = relative_pose(truth[40], truth[0]) + rng.normal(0.0, sigma_loop)
+edges.append((40, 0, z_loop, Omega_loop))
+
+dead_reckoning = [truth[0]]
+for i, j, z, _ in edges[: n_poses - 1]:
+    dead_reckoning.append(compose(dead_reckoning[-1], z))
+dead_reckoning = np.array(dead_reckoning)
+loop_gap = np.linalg.norm(dead_reckoning[40, :2] - dead_reckoning[0, :2])
+
+
+def edge_residual_and_jacobians(pose_i, pose_j, z):
+    C_i, C_z = rot2(pose_i[2]), rot2(z[2])
+    dt = pose_j[:2] - pose_i[:2]
+    e = np.empty(3)
+    e[:2] = C_z.T @ (C_i.T @ dt - z[:2])
+    e[2] = wrap_angle(pose_j[2] - pose_i[2] - z[2])
+    c, s = np.cos(pose_i[2]), np.sin(pose_i[2])
+    dCiT_dtheta = np.array([[-s, c], [-c, -s]])
+    A = np.zeros((3, 3))
+    A[:2, :2] = -C_z.T @ C_i.T
+    A[:2, 2] = C_z.T @ dCiT_dtheta @ dt
+    A[2, 2] = -1.0
+    B = np.zeros((3, 3))
+    B[:2, :2] = C_z.T @ C_i.T
+    B[2, 2] = 1.0
+    return e, A, B
+
+
+def build_normal_equations(poses, edges, weights=None):
+    n = len(poses)
+    rows, cols, vals = [], [], []
+    b = np.zeros(3 * n)
+    cost = 0.0
+
+    def add_block(i, j, block):
+        rows.extend(3 * i + np.repeat(np.arange(3), 3))
+        cols.extend(3 * j + np.tile(np.arange(3), 3))
+        vals.extend(block.ravel())
+
+    for k, (i, j, z, Omega) in enumerate(edges):
+        e, A, B = edge_residual_and_jacobians(poses[i], poses[j], z)
+        W = Omega if weights is None else weights[k] * Omega
+        add_block(i, i, A.T @ W @ A)
+        add_block(i, j, A.T @ W @ B)
+        add_block(j, i, B.T @ W @ A)
+        add_block(j, j, B.T @ W @ B)
+        b[3 * i:3 * i + 3] += A.T @ W @ e
+        b[3 * j:3 * j + 3] += B.T @ W @ e
+        cost += e @ W @ e
+    H = sp.csc_matrix((vals, (rows, cols)), shape=(3 * n, 3 * n))
+    return H, b, cost
+
+
+def gauss_newton(initial, edges, weight_fn=None, max_iterations=50, tol=1e-8):
+    poses = initial.copy()
+    for iteration in range(max_iterations):
+        weights = None if weight_fn is None else weight_fn(poses, edges)
+        H, b, cost = build_normal_equations(poses, edges, weights)
+        dx = np.zeros(3 * len(poses))
+        dx[3:] = spla.spsolve(H[3:, 3:], -b[3:])
+        poses = poses + dx.reshape(-1, 3)
+        poses[:, 2] = wrap_angle(poses[:, 2])
+        if np.abs(dx).max() < tol:
+            break
+    return poses, H
+
+
+optimized, H_graph = gauss_newton(dead_reckoning, edges)
+
+
+def position_rmse(poses):
+    return np.sqrt(np.mean(np.sum((poses[:, :2] - truth[:, :2]) ** 2, axis=1)))
+```
+
+Linearize every residual; each edge adds four $3 \times 3$ blocks to $\mathbf{H}$
+(the information matrix of the whole trajectory) and two to $\mathbf{b}$:
+
+$$
+\mathbf{H}\,\Delta\mathbf{x} = -\mathbf{b},
+\qquad
+\mathbf{H}_{ij} \mathrel{+}= \mathbf{A}_{ij}^T\boldsymbol{\Omega}_{ij}\mathbf{B}_{ij},
+\quad \ldots
+$$
+
+```{.python code-line-numbers="|2-3|4-5|6-7|8-9|1-9"}
+for iteration in range(max_iterations):
+    weights = None if weight_fn is None else weight_fn(poses, edges)
+    H, b, cost = build_normal_equations(poses, edges, weights)
+    dx = np.zeros(3 * len(poses))
+    dx[3:] = spla.spsolve(H[3:, 3:], -b[3:])      # pose 0 stays put
+    poses = poses + dx.reshape(-1, 3)              # x <- x + dx, then wrap headings
+    poses[:, 2] = wrap_angle(poses[:, 2])
+    if np.abs(dx).max() < tol:
+        break
+```
+
+. . .
+
+**Gauge freedom:** move the whole trajectory and no residual changes, so
+$\mathbf{H}$ is singular. Hold pose 0 fixed: delete its rows and columns.
+
+::: {.notes}
+Line 2 is for the robust kernels later: per-edge weights recomputed each
+iteration (IRLS). Holding pose 0 is the same as a prior on x_0 with infinite
+information. Check analytic Jacobians against central differences before
+trusting any optimizer; the book's check agrees to 1e-9. Book section: A Pose
+Graph from Scratch.
+:::
+
+## One loop, closed
+
+```{python}
+fig, axes = plt.subplots(1, 2, figsize=(12, 3.6), gridspec_kw={"width_ratios": [1, 1.3]})
+ax = axes[0]
+ax.plot(truth[:, 0], truth[:, 1], color="black", lw=1.4, label="truth")
+ax.plot(dead_reckoning[:, 0], dead_reckoning[:, 1], "--", color="C1", lw=1.4, label="dead reckoning")
+ax.plot(optimized[:, 0], optimized[:, 1], color="C0", lw=1.8, label="pose graph")
+ax.plot(dead_reckoning[[40, 0], 0], dead_reckoning[[40, 0], 1], ":", color="C3", lw=2.5,
+        label="loop closure (40, 0)")
+ax.set_aspect("equal")
+ax.set_xlabel("x [m]")
+ax.set_ylabel("y [m]")
+ax.legend(loc="center", fontsize=12)
+ax = axes[1]
+pose_index = np.arange(n_poses)
+for poses_, style, color, label in [(dead_reckoning, "--", "C1", "dead reckoning"),
+                                    (optimized, "-", "C0", "pose graph")]:
+    ax.plot(pose_index, np.linalg.norm(poses_[:, :2] - truth[:, :2], axis=1), style, color=color,
+            lw=1.8, label=label)
+ax.axvline(40, color="C3", ls=":", lw=1.8, label="loop closure at pose 40")
+ax.set_xlabel("pose index")
+ax.set_ylabel("position error [m]")
+ax.legend(loc="upper left", fontsize=13)
+fig.tight_layout()
+plt.show()
+```
+
+```{python}
+#| output: asis
+print(f"Pose 40 dead-reckons {loop_gap:.2f} m from pose 0. RMSE: {position_rmse(dead_reckoning):.2f} m "
+      f"dead reckoning, {position_rmse(optimized):.2f} m pose graph.")
+```
+
+. . .
+
+The correction is spread around the loop; the second lap simply follows pose 40.
+
+::: {.notes}
+1 m steps around a 10 m square, one and a quarter laps, 51 poses. Odometry has
+white noise plus a 0.6 degree per step heading bias that the noise model knows
+nothing about. One verified loop closure, pose 40 to pose 0; nothing else is
+detected on the second pass. The simple residual differs from the exact Log at
+the solution by far less than the noise.
+:::
+
+## Sparsity is why graphs scale
+
+:::: {.columns}
+::: {.column width="45%"}
+```{python}
+fig, ax = plt.subplots(figsize=(4.8, 4.5), constrained_layout=True)
+ax.spy(H_graph, markersize=1.6, color="C0")
+for r, c in [(3 * 40 + 1, 1), (1, 3 * 40 + 1)]:
+    ax.plot(c, r, "o", markersize=16, markerfacecolor="none", markeredgecolor="C3", mew=2)
+ax.xaxis.set_ticks_position("bottom")
+ax.set_title(f"$\\mathbf{{H}}$: {H_graph.shape[0]} × {H_graph.shape[1]}", fontsize=16)
+plt.show()
+```
+:::
+::: {.column width="55%"}
+::: {.incremental}
+- Odometry: block-tridiagonal
+- Each loop closure: one pair of off-diagonal blocks (circled)
+- About 6% nonzero here. $10^5$ poses: $10^{11}$ entries dense, a few million
+  sparse
+- Sparse Cholesky after reordering (Dellaert and Kaess's square-root SAM)
+- Marginalize the past, as a filter does, and the Schur complement fills it in
+  (Part 4)
+:::
+:::
+::::
+
+::: {.notes}
+Production solvers factor H with a sparse Cholesky after reordering the
+variables to limit fill-in. Re-solving the whole batch for every new pose throws
+away almost all the previous work: iSAM2 (Kaess et al., the core of GTSAM)
+keeps the factorization as a Bayes tree, re-eliminates only the cliques new
+factors touch, and relinearizes only variables that moved. A new odometry edge
+costs almost nothing; a loop closure touches the path to the root and costs
+more, as it should. g2o and Ceres are the other common back ends. The usual
+architecture: a filter or odometry front end at sensor rate, a graph back end in
+its own thread. Book sections: A Pose Graph from Scratch, Incremental Smoothing
+in Practice.
+:::
+
+## A false loop closure
+
+```{python}
+#| include: false
+z_false = rng.normal(0.0, sigma_loop)
+edges_false = edges + [(48, 2, z_false, Omega_loop)]
+loop_edges = [len(edges) - 1, len(edges)]
+
+
+def huber_weight(s, k):
+    return min(1.0, k / np.sqrt(s))
+
+
+def cauchy_weight(s, c):
+    return 1.0 / (1.0 + s / c**2)
+
+
+def robust_weights(kernel, width):
+    def weight_fn(poses, edges):
+        w = np.ones(len(edges))
+        for k in loop_edges:
+            i, j, z, Omega = edges[k]
+            e, _, _ = edge_residual_and_jacobians(poses[i], poses[j], z)
+            w[k] = kernel(e @ Omega @ e, width)
+        return w
+    return weight_fn
+
+
+kernel_width = np.sqrt(7.81)
+plain, _ = gauss_newton(dead_reckoning, edges_false)
+huber, _ = gauss_newton(dead_reckoning, edges_false, robust_weights(huber_weight, kernel_width))
+cauchy, _ = gauss_newton(dead_reckoning, edges_false, robust_weights(cauchy_weight, kernel_width))
+final_weights = {name: robust_weights(kernel, kernel_width)(poses_, edges_false)[loop_edges]
+                 for name, kernel, poses_ in [("Huber", huber_weight, huber), ("Cauchy", cauchy_weight, cauchy)]}
+robust_results = [(plain, "C3", "plain least squares"), (huber, "C2", "Huber"), (cauchy, "C0", "Cauchy")]
+
+
+def plot_robust(n_methods):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 3.5), gridspec_kw={"width_ratios": [1, 1.3]})
+    ax = axes[0]
+    ax.plot(truth[:, 0], truth[:, 1], color="black", lw=1.2, label="truth")
+    for poses_, color, label in robust_results[:n_methods]:
+        ax.plot(poses_[:, 0], poses_[:, 1], color=color, lw=1.6)
+        ax.plot(poses_[48, 0], poses_[48, 1], "o", color=color, ms=9)
+    ax.plot(truth[[48, 2], 0], truth[[48, 2], 1], ":x", color="C4", lw=2.5, ms=10,
+            label="false closure\n(48, 2)")
+    ax.set_aspect("equal")
+    ax.set_xlim(-3.5, 13.5)
+    ax.set_ylim(-3.5, 13.5)
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    ax.legend(loc="center", fontsize=12)
+    ax = axes[1]
+    ax.plot(pose_index, np.linalg.norm(optimized[:, :2] - truth[:, :2], axis=1), "--", color="black",
+            lw=1.2, label="no false closure")
+    for poses_, color, label in robust_results[:n_methods]:
+        ax.plot(pose_index, np.linalg.norm(poses_[:, :2] - truth[:, :2], axis=1), color=color,
+                lw=1.6, label=f"{label}: RMSE {position_rmse(poses_):.2f} m")
+    ax.set_ylim(0, 3.6)
+    ax.set_xlabel("pose index")
+    ax.set_ylabel("position error [m]")
+    ax.legend(loc="upper left", fontsize=13)
+    fig.tight_layout()
+    plt.show()
+```
+
+Aliasing: pose 48 matched with pose 2, 6 m apart, as confidently as the true
+closure.
+
+::: {.r-stack}
+```{python}
+plot_robust(1)
+```
+::: {.fragment}
+```{python}
+plot_robust(2)
+```
+:::
+::: {.fragment}
+```{python}
+plot_robust(3)
+```
+:::
+:::
+
+```{python}
+#| output: asis
+print(f"Least squares does worse than dead reckoning ({position_rmse(dead_reckoning):.2f} m): "
+      f"the most wrong measurement gets the loudest voice.")
+```
+
+::: {.notes}
+Click through: plain least squares drags pose 48 most of the way to pose 2 and
+squeezes the map to do it; Huber recovers most of the map; Cauchy returns
+essentially the graph that never saw the false closure. Front-end verification
+cannot fully remove aliasing, because each wrong match is internally consistent
+(evenly spaced trees, a fence, identical doors). It is inconsistent only with
+the rest of the graph.
+:::
+
+## Robust kernels
+
+:::: {.columns}
+::: {.column width="55%"}
+With $s_k = \mathbf{e}_k^T\boldsymbol{\Omega}_k\mathbf{e}_k$, minimize
+$\sum_k \rho(s_k)$:
+
+$$
+\begin{aligned}
+\rho_\text{Huber}(s) &=
+\begin{cases}
+s, & s \le k^2 \\
+2k\sqrt{s} - k^2, & s > k^2
+\end{cases} \\
+\rho_\text{Cauchy}(s) &= c^2 \ln\left(1 + s / c^2\right)
+\end{aligned}
+$$
+
+::: {.fragment}
+**IRLS**: weighted least squares with $w_k = \rho'(s_k)$, recomputed every
+iteration.
+:::
+
+```{python}
+#| output: asis
+print(f"\n::: {{.fragment}}\nWidth $\\sqrt{{7.81}} \\approx {kernel_width:.1f}$, loop closures only. "
+      f"False closure's final weight: Huber {final_weights['Huber'][1]:.1e}, "
+      f"Cauchy {final_weights['Cauchy'][1]:.1e}.\n:::\n")
+```
+:::
+::: {.column width="45%"}
+```{python}
+mahal = np.linspace(0.01, 12.0, 400)
+fig, ax = plt.subplots(figsize=(5.2, 4.0), constrained_layout=True)
+ax.plot(mahal, np.ones_like(mahal), color="C3", lw=2.2, label="least squares")
+ax.plot(mahal, [huber_weight(m**2, kernel_width) for m in mahal], color="C2", lw=2.2, label="Huber")
+ax.plot(mahal, [cauchy_weight(m**2, kernel_width) for m in mahal], color="C0", lw=2.2, label="Cauchy")
+ax.axvline(kernel_width, color="0.4", ls="--", lw=1)
+ax.set_xlabel("Mahalanobis distance $\\sqrt{s}$")
+ax.set_ylabel("IRLS weight $w$")
+ax.set_ylim(0, 1.1)
+ax.legend(loc="center right", fontsize=13)
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+Huber is quadratic near zero and linear in the Mahalanobis distance beyond k: a
+bad measurement's pull is capped but never vanishes. Cauchy's influence peaks
+and then decays toward zero. Odometry stays quadratic: it is trustworthy by
+construction, and loop closures are the guesses. Book section: Robust Kernels
+for False Loop Closures.
+:::
+
+## Robust kernels are not magic
+
+::: {.incremental}
+- Cauchy is not convex: IRLS finds the minimum nearest its start
+- The true closure also starts as an "outlier"; it survives because it is much
+  less wrong. More drift or a narrower kernel, and it is rejected too
+:::
+
+. . .
+
+More careful answers:
+
+::: {.incremental}
+- **Switchable constraints** (Sünderhauf and Protzel): a switch per closure
+- **Dynamic covariance scaling** (Agarwal et al.): the same, in closed form
+- **Graduated non-convexity** (Yang et al.): start convex, morph to robust
+- **PCM** (Mangelson et al.): the largest mutually consistent set of closures,
+  joint compatibility's cousin
+:::
+
+## Loop closure in your Project 2 report
+
+You analyze loop closure; you do not implement it.
+
+::: {.incremental}
+- Where does the trajectory revisit mapped areas? Do revisited tree clusters line
+  up, or are there duplicates?
+- Do candidate old and new landmark sets have compatible geometry (inter-tree
+  distances, trunk diameters)?
+- Did particle diversity survive to the loop? What did particle count and the
+  resampling threshold do?
+- Would a graph-based smoother help? Why?
+- What front-end information would reliable loop closures need, and how would you
+  protect the back end from a false one?
+:::
+
+. . .
+
+A compare-and-contrast analysis, not another coding assignment.
+
+# Project 2: Victoria Park FastSLAM {#project2}
+
+A real log, a real park, and every shortcut punished.
+
+[Handout: Project 2](https://jbrodovsky.github.io/advanced_navigation/assignments/m2-victoria-park.html)
+
+## The job
+
+```text
+laser scan (361 ranges) --> tree extractor (Part A) --> z = (r, beta) per trunk
+                                                            |
+odometry 40 Hz (v_e, delta) --> encoder correction + lever arm (Part A)
+                                                            |
+                event-driven time sync --> FastSLAM 1.0 (Parts B and C)
+                                                            |
+            laser track + tree map --> SE(2)-aligned error vs GPS (Part D)
+```
+
+. . .
+
+::: {.incremental}
+- **FastSLAM 1.0** on the Victoria Park log; FastSLAM 2.0 is an optional
+  extension once the baseline works. 25% of the course grade
+- Most of the work is not the famous algorithm: where each sensor is, what its
+  numbers mean, and lining up sensors that never sample at the same instant
+- Get those wrong and no number of particles will save you
+:::
+
+::: {.notes}
+Recommended pace: weeks 10 and 11, alongside the mapping, association, and
+FastSLAM chapters; everything is due by the end of week 16. Submit one report
+PDF, the source files you wrote or changed, and a README with the commands that
+regenerate every figure. Book code may be adapted with attribution; grading
+weights the dataset-specific parts (vehicle and lever arm, time sync, laser
+front end, landmark management on real data) and the evidence.
+:::
+
+## The facts that bite
+
+::: {.smaller-text}
+| Quantity | In the log | What to do |
+|---|---|---|
+| Laser ranges | `uint16`: low 13 bits are cm, top 3 bits flags | `raw & 0x1FFF`, divide by 100; $\ge$ 8000 cm is "no return" (83% of beams) |
+| Laser angles | $A = 0, 0.5, \ldots, 180°$; $A = 0$ to the vehicle's **right** | $\beta = A - \pi/2$, positive to the left |
+| Laser timing | a scan every 213-215 ms; the first scan precedes the first odometry | event-driven synchronization; the first scan is skipped |
+| Speed | encoder on the **rear-left** wheel | centerline speed $v_c = v_e / (1 - \tfrac{H}{L}\tan\delta)$ |
+| Laser position | 3.78 m ahead of the rear axle, 0.50 m left | lever arm in the motion model |
+| GPS | ~5 Hz, gaps up to 58 s, dozens of jumps | reference only; never a filter measurement |
+:::
+
+. . .
+
+Each fact was checked on the data. Your report should show how you checked it
+too.
+
+## Time synchronization
+
+Odometry every 25 ms, scans every 213-215 ms: never at the same instant. At
+6 m/s, 25 ms is 15 cm along track.
+
+::: {.incremental}
+1. Odometry sample $k$ is a zero-order hold over $[t_k, t_{k+1})$
+2. Between scans, one `predict` per odometry interval
+3. Split the last interval at the laser timestamp: predict to the scan, update,
+   then predict the rest
+:::
+
+. . .
+
+```{.python code-line-numbers="|1|2-3|4|1-4"}
+for step in scan_steps(dataset, 0, 2000):
+    for control in step.controls:
+        slam.predict(control.speed_mps, control.steering_rad, control.dt_s)
+    slam.update(extract_tree_landmarks(dataset.laser_ranges_m[step.scan_index]), step.time_s)
+```
+
+::: {.notes}
+Grabbing the nearest odometry sample, or integrating one big step per scan,
+places every observation at the wrong pose; in a turn the heading error moves a
+tree 40 m away by another 30 cm. scan_steps is provided; you may write your own
+merge, but the report must explain the timing model either way.
+:::
+
+## What you write
+
+```{.python code-line-numbers="|1|2-4|5-8|1-8"}
+extract_tree_landmarks(scan_ranges_m, *, pose_guess=None)        # -> list[TreeObservation]
+LandmarkEKF.initialize(pose, measurement, measurement_covariance, *, time_s=0.0)
+landmark.innovation(pose, measurement, measurement_covariance)   # -> (nu, H_l, S)
+landmark.updated(pose, measurement, measurement_covariance, *, time_s=None)   # -> new LandmarkEKF
+slam.predict(speed_mps, steering_rad, dt_s)
+slam.associate(particle, measurements)                           # -> list[Association]
+slam.update(observations, time_s)
+slam.resample()
+```
+
+. . .
+
+::: {.incremental}
+- Part A, the front end; Part B, landmark EKFs and association; Part C, the
+  filter. Docstrings are the contract; keep the signatures
+- Provided: the loader, vehicle model, observation model and Jacobians, weights,
+  timing, and evaluation
+- `updated()` returns a **new** landmark: after resampling, particles share
+  landmark objects
+- The starter tests skip until you implement each piece, then start checking it
+:::
+
+::: {.notes}
+The package is projects/victoria_park_slam. uv run pytest
+projects/victoria_park_slam is a quick sanity check; uv run python -m
+victoria_park_slam.run_all runs whatever is implemented on the first 2000 scans,
+and its TUNING block is where your values go. One interface difference from the
+book's toy LandmarkEKF: the starter package counts time in seconds, through a
+keyword-only argument.
+:::
+
+## The specification
+
+::: {.incremental}
+- **State:** the laser pose $\mathbf{x}^{[i]} = [x_L, y_L, \theta]^T$; controls
+  $\mathbf{u} = [v_e, \delta]^T$; observations $\mathbf{z} = [r, \beta]^T$
+- **Predict:** perturb the controls with $\mathbf{Q}_u$, then encoder correction
+  and lever arm, vectorized over particles
+- **Associate** per particle: match below 5.99, greedy, one observation per
+  landmark; spawn only beyond 13.82 for every landmark; otherwise discard
+- **Weight:** $\log\mathcal{N}(\boldsymbol{\nu}; \mathbf{0}, \mathbf{S})$ or
+  $\log p_0$, with $p_0 = 1/(75\pi)\ \text{m}^{-1}\text{rad}^{-1}$ (75 m, 180°)
+- **Tracks:** confirmed after 3 associations; tentative ones deleted after 2 s
+  unseen
+- **Resample:** log-sum-exp, then systematic when $N_\text{eff} < M/2$
+:::
+
+::: {.notes}
+All thresholds are fields of FastSLAM and its motion and measurement configs,
+and rng is its only source of randomness. Change them if you can justify it, and
+report the values you used. The handout writes the resampling threshold as N/2
+with N the particle count; the book's SLAM chapter calls the particle count M.
+:::
+
+## Evaluation and required sweeps
+
+::: {.incremental}
+1. Valid GPS fixes only: runs cut at gaps over 1 s and at jumps; never
+   interpolated across a gap
+2. Interpolate your laser track to those times; say which estimate you report
+3. One rigid SE(2) alignment, no scale: it removes the start frame, it cannot
+   straighten a bent trajectory
+4. RMSE, maximum error, and error against time, next to dead reckoning; runtime
+   per scan; landmark counts
+:::
+
+. . .
+
+**Required**, first 2000 scans (about 430 s, 1.1 km): particles 10 / 25 / 50 /
+100, gate 4.61 / 5.99 / 9.21, $\mathbf{Q}_u$ × 0.25 / 1 / 4. Several seeds: a
+particle filter is a random algorithm.
+
+. . .
+
+For orientation: dead reckoning is about 32 m RMSE over those scans; a sound
+FastSLAM 1.0, a few meters. GPS is good to a meter or two: do not chase
+centimeters.
+
+::: {.notes}
+run_all --sweep particles gate q_scale runs the required sweeps. The full run
+(all 7249 scans, where dead reckoning drifts to about 93 m), further sweeps (R,
+p0, resampling threshold, extractor thresholds), and several seeds separate
+Excellent from Acceptable. Part D also asks for the EKF-SLAM, FastSLAM, and
+GraphSLAM comparison.
+:::
+
+## Pitfalls
+
+::: {.incremental}
+- A mirrored scan, $\beta = \pi/2 - A$: looks just as plausible
+- Nearest-sample synchronization: every tree seen from the wrong pose
+- $\mathbf{Q}_u$ tuned per 25 ms sample: far too small for real odometry errors
+- No $p_0$, or one gate doing the work of two: a forest of duplicates
+- Mutating a shared landmark: other particles' maps change silently
+- A detector that floods the log with false trees, or finds none at the hedges
+- GPS in the filter
+:::
+
+. . .
+
+::: {.key}
+A copied filter that runs earns little. One you can justify, test, tune, and
+break on purpose earns a lot.
+:::
+
+::: {.notes}
+On Q_u: the heading spread after T seconds grows like (v/L) sigma_delta
+sqrt(T dt); at 4 m/s with 3 degrees of steering noise per 25 ms sample that is
+under a degree after a full second. Steering offsets, tire slip, and scale errors
+are correlated over seconds, so a physically reasonable per-sample Q_u is far
+too small. If you change the step rate, rescale: the pose spread over a fixed
+time scales like Q_u dt.
+:::
+
+## Part 5 in one slide
+
+::: {.incremental}
+- **Mapping:** grids add log-odds; landmark maps keep a few points with
+  covariances; conventions are hypotheses the data can test
+- **EKF-SLAM:** the correlations do real work, at $O(N^2)$ and with
+  linearization overconfidence
+- **FastSLAM:** condition on the path and the correspondences; particles carry
+  paths, $2 \times 2$ EKFs carry trees
+- **Association:** wrap, gate twice, and weight everything on one scale with $p_0$
+- **Vision:** the same pipeline; scale must come from outside the images
+- **Loop closure:** keep the past (pose graphs), and defend it from false
+  closures
+- **Always:** read the diagnostics before believing the map
+:::
+
+## Next: Part 6
+
+[Global Scale Navigation →](06-global.html)
+
+Off the flat park and onto a curved, rotating Earth: GNSS, and the inertial
+navigation it keeps honest.
+
+::: {.notes}
+Bridge: Victoria Park's GPS was too unreliable to trust; VIO cannot see global
+position or yaw without GNSS or a map. Part 6 propagates an INS on a curved,
+rotating Earth and corrects it with loosely coupled GNSS (Project 3).
+:::

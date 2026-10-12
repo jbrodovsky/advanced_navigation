@@ -1,0 +1,2847 @@
+---
+title: "Global Scale Navigation"
+subtitle: "Part 6 · Advanced Robot Navigation"
+part: 6
+footer: "Advanced Robot Navigation · Global Scale Navigation"
+book-sources:
+  - book/chapters/05-global/global-nav.qmd
+  - book/chapters/05-global/ins-gnss.qmd
+  - book/chapters/05-global/ins-errors.qmd
+  - book/assignments/m3-ins-gnss.qmd
+---
+
+## Part 6 at a glance
+
+```{python}
+#| include: false
+import numpy as np
+import matplotlib.pyplot as plt
+
+plt.rcParams.update({
+    "font.size": 13,
+    "axes.grid": True,
+    "grid.alpha": 0.25,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "legend.frameon": False,
+})
+
+ACCENT, TINT = "#b91c1c", "#fef2f2"   # the Part 6 colours of the theme
+
+
+def pin_figure_size(fig):
+    """Make the saved (tight-bbox) image span the whole figure, so r-stack layers align."""
+    fig.add_artist(plt.Rectangle((-0.02, -0.02), 1.04, 1.04, transform=fig.transFigure,
+                                 fill=False, edgecolor="none"))
+```
+
+1. [Global navigation and GNSS measurements](#/global)
+2. [Curved-Earth INS and loose GNSS integration](#/insgnss)
+3. [INS error models and IMU characterization](#/inserrors)
+4. [Project 3: INS/GNSS integration](#/project3)
+
+::: {.key}
+An INS is smooth, fast, and wrong in slowly growing ways. GNSS is noisy, slow,
+and right on average. The filter makes each one cover for the other.
+:::
+
+::: {.notes}
+Weeks 12 and 13 of the schedule, alongside Project 3. Part 4 ended with the
+error-state EKF as "how an INS does it"; this part builds that filter for real:
+GNSS as the aiding sensor, a strapdown mechanization on the curved, rotating
+Earth, and the IMU error models that set its process noise. The error models are
+deliberately short-horizon MEMS approximations, because that is the sensor in the
+project.
+:::
+
+# Global Navigation and GNSS Measurements {#global}
+
+Leave the lab floor, and the planet starts keeping score.
+
+[Chapter: Global Navigation and GNSS Measurements](https://jbrodovsky.github.io/advanced_navigation/chapters/05-global/global-nav.html)
+
+## Off the lab floor
+
+[What changes when the vehicle leaves the lab and crosses the planet?]{.question}
+
+. . .
+
+::: {.incremental}
+- Gravity changes with latitude and height, and its direction *defines* "down"
+- Gyros feel Earth's rotation, about 15°/h, on top of the vehicle's
+- The local frame turns as the vehicle travels: the **transport rate**
+- Velocity in a rotating frame picks up **Coriolis** terms
+- Latitude and longitude are angles: meters need radii of curvature
+:::
+
+. . .
+
+Get one wrong and it enters the integrators exactly like a sensor bias.
+
+::: {.notes}
+For the smartphone IMU of Project 3 the gyro bias swamps Earth rate, but a wrong
+gravity sign, a degree-for-radian slip, or a height in the wrong datum is never
+small. Where this sits in the stack: guidance needs a state that is
+geo-referenced (GNSS), high-rate and always available (inertial). Integration
+delivers all three, and because nobody checks the output by hand, integrity
+matters as much as accuracy.
+:::
+
+## The frame chain
+
+```{python}
+fig, ax = plt.subplots(figsize=(11.5, 2.2))
+ax.set_position([0.0, 0.0, 1.0, 1.0])
+frames = [("ECI (i)", "inertial"), ("ECEF (e)", "rotates with Earth"),
+          ("NED (n)", "local level, moves\nwith the vehicle"), ("Body (b)", "IMU axes, FRD")]
+rates = [r"Earth rate $\omega_{ie}$" + "\nabout 15°/h",
+         r"transport rate $\omega_{en}$" + "\nabout speed / radius",
+         r"vehicle rotation $\omega_{nb}$"]
+xs = [0.065, 0.35, 0.63, 0.905]
+boxes = [ax.text(x, 0.36, f"{name}\n{desc}", ha="center", va="center", fontsize=14,
+                 bbox=dict(boxstyle="round,pad=0.5", facecolor=TINT, edgecolor=ACCENT, linewidth=1.8))
+         for x, (name, desc) in zip(xs, frames)]
+for i, label in enumerate(rates):
+    ax.annotate("", xy=(0.0, 0.5), xycoords=boxes[i + 1], xytext=(1.0, 0.5), textcoords=boxes[i],
+                arrowprops=dict(arrowstyle="-|>", color="0.25", linewidth=1.8, shrinkA=12, shrinkB=12))
+    ax.text(0.5 * (xs[i] + xs[i + 1]), 0.88, label, ha="center", va="center", fontsize=13)
+ax.set_xlim(0, 1)
+ax.set_ylim(0, 1.1)
+ax.axis("off")
+plt.show()
+```
+
+$$
+\boldsymbol{\omega}_{ib}^b
+= \mathbf{C}_n^b\left(\boldsymbol{\omega}_{ie}^n + \boldsymbol{\omega}_{en}^n\right)
++ \boldsymbol{\omega}_{nb}^b
+$$
+
+. . .
+
+A strapdown gyro measures the sum of all three rates. Only the last one is the
+attitude change we want to track.
+
+::: {.notes}
+ECI is the clean frame for Newton; ECEF is where satellite positions and receiver
+fixes live; NED carries geodetic position and north-east-down velocity; the IMU
+measures in body axes. The mechanization has to subtract Earth rate and transport
+rate to recover the vehicle's own rotation.
+:::
+
+## How far can a flat frame stretch?
+
+```{python}
+R_EARTH_MEAN = 6_371e3
+distance_m = np.logspace(1, 6.3, 400)
+ARCMIN_TO_MG = 1e3 * np.radians(1.0 / 60.0)
+landmarks = {"lab": 100.0, "1 nmi": 1852.0, "harbor": 10e3, "coastal leg": 100e3, "ocean leg": 1e6}
+
+fig, (ax_h, ax_t) = plt.subplots(1, 2, figsize=(11.5, 3.6))
+ax_h.loglog(distance_m, distance_m**2 / (2.0 * R_EARTH_MEAN), color="C0", linewidth=2)
+ax_t.loglog(distance_m, np.degrees(distance_m / R_EARTH_MEAN) * 60.0, color="C3", linewidth=2)
+for name, d in landmarks.items():
+    for ax, value in ((ax_h, d**2 / (2 * R_EARTH_MEAN)), (ax_t, np.degrees(d / R_EARTH_MEAN) * 60)):
+        ax.plot(d, value, "o", color="0.3", markersize=5)
+        ax.annotate(name, (d, value), textcoords="offset points", xytext=(-4, 6), ha="right", fontsize=11)
+ax_h.set_xlabel("distance from frame origin [m]")
+ax_h.set_ylabel("plane height [m]")
+ax_t.set_xlabel("distance from frame origin [m]")
+ax_t.set_ylabel("vertical tilt [arcmin]")
+secondary = ax_t.secondary_yaxis("right", functions=(lambda a: a * ARCMIN_TO_MG, lambda m: m / ARCMIN_TO_MG))
+secondary.set_ylabel("gravity error [mg]")
+for ax in (ax_h, ax_t):
+    ax.grid(True, which="both", alpha=0.25)
+fig.tight_layout()
+plt.show()
+```
+
+. . .
+
+The nautical mile was one arcminute of latitude, so "down" tilts 1′ per nmi:
+$g\sin(d/R) \approx 0.3$ mg of gravity misprojected.
+
+. . .
+
+Tiny next to a phone's accelerometer bias, large next to a navigation-grade one.
+The **transport rate** keeps "down" pointing down.
+
+::: {.notes}
+Spherical Earth, R = 6371 km. The tangent plane rises about d^2/2R above the
+surface; the vertical tilts d/R radians. The tilt is the dangerous number for an
+INS. Book: "From Local Coordinates to Global Coordinates".
+:::
+
+## Which height did the receiver give you?
+
+$$
+H \approx h - N_g
+$$
+
+Mean-sea-level height $H$ is ellipsoidal height $h$ minus the geoid undulation $N_g$.
+
+. . .
+
+::: {.incremental}
+- $N_g \approx -28$ m in central Massachusetts; about $-106$ to $+85$ m worldwide
+- NMEA `GGA` and Apple's `altitude`: mean sea level. Android's
+  `getAltitude()`: the WGS-84 ellipsoid
+- Feed $H$ in as $h$: every fix tens of meters off vertically, every horizontal
+  plot perfect
+- A constant offset is invisible to the innovation tests: the filter converges
+  to the wrong height, with consistent statistics
+:::
+
+::: {.notes}
+"Check the datum of every height field before it touches the state." Exercise 3
+of the chapter works out what the filter does with an MSL height, including the
+gravity error from the free-air gradient.
+:::
+
+## Pseudoranges
+
+[How do four satellites become a position?]{.question}
+
+. . .
+
+$$
+\tilde{\rho}_s = \left\|\mathbf{r}_s - \mathbf{r}_u\right\| + c\,\delta t_u - c\,\delta t_s + \epsilon_s
+$$
+
+. . .
+
+::: {.incremental}
+- Signals from GPS orbit (26,560 km from Earth's center) take 67 to 86 ms; one
+  microsecond of clock error is 300 m
+- The receiver's quartz clock is never that good, so $\delta t_u$ is an unknown
+- Three position unknowns plus the clock: at least **four** satellites
+- Each extra constellation adds one more unknown, its time offset
+:::
+
+::: {.notes}
+GPS, GLONASS, Galileo, BeiDou, plus the regional QZSS and NavIC. Each satellite
+broadcasts its ephemeris, clock corrections, and health; delta t_s is known from
+that message. epsilon collects atmosphere, multipath, receiver noise, residual
+orbit and clock error. Your phone tracks several systems at once.
+:::
+
+## PVT is Gauss-Newton
+
+With $b = c\,\delta t_u$ and $\mathbf{x} = [\mathbf{r}_u^T,\ b]^T$ in ECEF:
+$\;\rho_s(\mathbf{x}) = \left\|\mathbf{r}_s - \mathbf{r}_u\right\| + b$
+
+. . .
+
+$$
+\mathbf{G} =
+\begin{bmatrix}
+-\mathbf{u}_1^T & 1 \\
+\vdots & \vdots \\
+-\mathbf{u}_m^T & 1
+\end{bmatrix},
+\qquad
+\Delta\hat{\mathbf{x}} = (\mathbf{G}^T\mathbf{G})^{-1}\mathbf{G}^T\Delta\boldsymbol{\rho}
+$$
+
+. . .
+
+::: {.incremental}
+- $\mathbf{u}_s$ points from receiver to satellite: moving toward a satellite
+  shortens its range
+- Relinearize and repeat: the same iteration as the iterated EKF of Part 4
+- Unequal variances: $(\mathbf{G}^T\mathbf{R}^{-1}\mathbf{G})^{-1}\mathbf{G}^T\mathbf{R}^{-1}\Delta\boldsymbol{\rho}$
+:::
+
+## From the center of the Earth in five steps
+
+```{python}
+#| include: false
+C_LIGHT = 299_792_458.0
+WGS84_A = 6_378_137.0
+WGS84_F = 1.0 / 298.257223563
+WGS84_E2 = WGS84_F * (2.0 - WGS84_F)
+GPS_ORBIT_RADIUS = 26_560e3
+
+
+def radii(lat):
+    """Meridian R_M and prime-vertical R_N radii of curvature [m]."""
+    den = 1.0 - WGS84_E2 * np.sin(lat) ** 2
+    return WGS84_A * (1.0 - WGS84_E2) / den**1.5, WGS84_A / np.sqrt(den)
+
+
+def geodetic_to_ecef(lat, lon, h):
+    R_N = radii(lat)[1]
+    return np.array([(R_N + h) * np.cos(lat) * np.cos(lon),
+                     (R_N + h) * np.cos(lat) * np.sin(lon),
+                     (R_N * (1.0 - WGS84_E2) + h) * np.sin(lat)])
+
+
+def C_e_to_n(lat, lon):
+    sL, cL, sl, cl = np.sin(lat), np.cos(lat), np.sin(lon), np.cos(lon)
+    return np.array([[-sL * cl, -sL * sl, cL], [-sl, cl, 0.0], [-cL * cl, -cL * sl, -sL]])
+
+
+def place_satellites(r_rx, lat, lon, az_deg, el_deg, radius=GPS_ORBIT_RADIUS):
+    az, el = np.radians(az_deg), np.radians(el_deg)
+    u_ned = np.column_stack([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), -np.sin(el)])
+    u_ecef = u_ned @ C_e_to_n(lat, lon)
+    b = u_ecef @ r_rx
+    distance = -b + np.sqrt(b**2 - r_rx @ r_rx + radius**2)
+    return r_rx + distance[:, None] * u_ecef
+
+
+def geometry_matrix(sat_ecef, r_rx):
+    diff = sat_ecef - r_rx
+    ranges = np.linalg.norm(diff, axis=1)
+    u = diff / ranges[:, None]
+    return np.column_stack([-u, np.ones(len(ranges))]), ranges
+
+
+def solve_pvt(sat_ecef, pseudoranges, x0=None, max_iter=10, tol_m=1e-4):
+    x = np.zeros(4) if x0 is None else np.array(x0, dtype=float)
+    steps = []
+    for _ in range(max_iter):
+        G, ranges = geometry_matrix(sat_ecef, x[:3])
+        dx = np.linalg.solve(G.T @ G, G.T @ (pseudoranges - (ranges + x[3])))
+        x = x + dx
+        steps.append(float(np.linalg.norm(dx)))
+        if steps[-1] < tol_m:
+            break
+    G, _ = geometry_matrix(sat_ecef, x[:3])
+    return x, G, steps
+
+
+def dop(G, lat, lon):
+    D = np.linalg.inv(G.T @ G)
+    C = C_e_to_n(lat, lon)
+    D_ned = C @ D[:3, :3] @ C.T
+    return {"HDOP": float(np.sqrt(D_ned[0, 0] + D_ned[1, 1])),
+            "VDOP": float(np.sqrt(D_ned[2, 2]))}, D_ned
+
+
+# The chapter's synthetic sky over Worcester, same seed and order of draws.
+lat0, lon0, h0 = np.radians(42.2742), np.radians(-71.8080), 150.0
+r_true = geodetic_to_ecef(lat0, lon0, h0)
+clock_true_m = C_LIGHT * 3.0e-4
+sigma_rho = 3.0
+rng = np.random.default_rng(2024)
+az_good = np.array([10.0, 60.0, 105.0, 150.0, 200.0, 245.0, 290.0, 330.0])
+el_good = np.array([72.0, 28.0, 45.0, 15.0, 60.0, 22.0, 38.0, 12.0])
+sats_good = place_satellites(r_true, lat0, lon0, az_good, el_good)
+rho = (np.linalg.norm(sats_good - r_true, axis=1) + clock_true_m
+       + sigma_rho * rng.standard_normal(len(az_good)))
+x_hat, G_good, gn_steps = solve_pvt(sats_good, rho)
+
+az_poor = np.array([35.0, 50.0, 62.0, 75.0, 88.0, 100.0])
+el_poor = np.array([48.0, 62.0, 35.0, 55.0, 42.0, 66.0])
+sats_poor = place_satellites(r_true, lat0, lon0, az_poor, el_poor)
+
+
+def monte_carlo_errors(sats, n_trials=2000):
+    true_ranges = np.linalg.norm(sats - r_true, axis=1)
+    x_warm, _, _ = solve_pvt(sats, true_ranges + clock_true_m)
+    errors = np.empty((n_trials, 3))
+    for k in range(n_trials):
+        rho_k = true_ranges + clock_true_m + sigma_rho * rng.standard_normal(len(sats))
+        x_k, _, _ = solve_pvt(sats, rho_k, x0=x_warm, max_iter=4)
+        errors[k] = C_e_to_n(lat0, lon0) @ (x_k[:3] - r_true)
+    return errors
+
+
+sky_results = {}
+for name, sats in (("spread", sats_good), ("clustered", sats_poor)):
+    _, G_name, _ = solve_pvt(sats, np.linalg.norm(sats - r_true, axis=1) + clock_true_m)
+    factors, D_ned = dop(G_name, lat0, lon0)
+    sky_results[name] = (factors, D_ned, monte_carlo_errors(sats))
+```
+
+:::: {.columns}
+::: {.column width="62%"}
+```{.python code-line-numbers="|2|4-5|6-7|8-9|1-10"}
+def solve_pvt(sat_ecef, rho, max_iter=10, tol=1e-4):
+    x = np.zeros(4)           # Earth's center
+    for _ in range(max_iter):
+        G, ranges = geometry_matrix(sat_ecef, x[:3])
+        residual = rho - (ranges + x[3])
+        dx = np.linalg.solve(G.T @ G, G.T @ residual)
+        x = x + dx
+        if np.linalg.norm(dx) < tol:
+            break
+    return x                  # [x, y, z, b], ECEF m
+```
+:::
+::: {.column width="38%"}
+```{python}
+fig, ax = plt.subplots(figsize=(4.3, 4.2))
+it = np.arange(1, len(gn_steps) + 1)
+ax.bar(it, gn_steps, color=ACCENT, alpha=0.85)
+ax.set_yscale("log")
+ax.set_xticks(it)
+ax.set_xlabel("iteration")
+ax.set_ylabel("step size [m]")
+ax.annotate(f"{gn_steps[0] / 1e3:,.0f} km", (1, gn_steps[0]), textcoords="offset points",
+            xytext=(16, -2), fontsize=12)
+ax.annotate(f"{gn_steps[-1]:.0e} m", (it[-1], gn_steps[-1]), textcoords="offset points",
+            xytext=(0, 8), ha="center", fontsize=12)
+ax.grid(True, axis="y", which="both", alpha=0.25)
+ax.grid(False, axis="x")
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+Eight satellites over Worcester, a 90 km clock offset, 3 m of noise: the first
+step alone covers more than 7000 km.
+
+::: {.notes}
+The problem is so mildly nonlinear at satellite distances that a receiver with no
+idea where it is can start at the center of the Earth. The book's version also
+returns G at the solution and the step sizes; this is the bare loop. The
+remaining error of a few meters is what 3 m of pseudorange noise buys with this
+sky.
+:::
+
+## Dilution of precision
+
+$$
+\operatorname{cov}(\hat{\mathbf{x}}) = \sigma^2\,\mathbf{D},
+\qquad
+\mathbf{D} = (\mathbf{G}^T\mathbf{G})^{-1}
+$$
+
+. . .
+
+$\mathbf{D}$ depends only on geometry: it separates "how good are the
+measurements" from "how well placed are the satellites."
+
+. . .
+
+Rotate the position block into NED, $\mathbf{D}^n = \mathbf{C}_e^n\mathbf{D}_{rr}\mathbf{C}_n^e$:
+
+$$
+\text{HDOP} = \sqrt{D^n_{NN} + D^n_{EE}},
+\qquad
+\text{VDOP} = \sqrt{D^n_{DD}},
+\qquad
+\text{TDOP} = \sqrt{D_{bb}}
+$$
+
+. . .
+
+Expected horizontal error $\approx \sigma \cdot \text{HDOP}$, vertical
+$\approx \sigma \cdot \text{VDOP}$.
+
+::: {.notes}
+Also GDOP = sqrt(tr D) and PDOP over the position block; the rotation leaves the
+trace unchanged, so PDOP can be computed in either frame.
+:::
+
+## Same noise, different sky
+
+```{python}
+#| include: false
+from math import sqrt
+
+
+def ellipse_ne(cov2, scale, n=200):
+    vals, vecs = np.linalg.eigh(cov2)
+    t = np.linspace(0.0, 2.0 * np.pi, n)
+    return (vecs @ (scale * np.sqrt(vals)[:, None] * np.vstack([np.cos(t), np.sin(t)]))).T
+
+
+def plot_skies(n_skies):
+    """Skyplot and horizontal fix errors for the spread sky, then the clustered one."""
+    fig = plt.figure(figsize=(11.0, 3.7))
+    axes = [fig.add_subplot(1, 4, 1, projection="polar"), fig.add_subplot(1, 4, 2),
+            fig.add_subplot(1, 4, 3, projection="polar"), fig.add_subplot(1, 4, 4)]
+    skies = [("spread", az_good, el_good, "C0", 12.0), ("clustered", az_poor, el_poor, "C3", 120.0)]
+    for j, (name, az, el, color, half) in enumerate(skies):
+        factors, D_ned, errors = sky_results[name]
+        ax = axes[2 * j]
+        ax.set_theta_zero_location("N")
+        ax.set_theta_direction(-1)
+        ax.scatter(np.radians(az), 90.0 - el, s=55, color=color, zorder=3)
+        ax.set_rlim(0, 90)
+        ax.set_rticks([0, 30, 60, 90])
+        ax.set_yticklabels(["90°", "60°", "30°", "0°"], fontsize=9)
+        ax.set_xticks(np.radians([0, 90, 180, 270]))
+        ax.set_xticklabels(["N", "E", "S", "W"], fontsize=10)
+        ax.set_rlabel_position(157.5)
+        ax.set_title(f"{name} sky", fontsize=12)
+        ax = axes[2 * j + 1]
+        ax.plot(errors[:, 1], errors[:, 0], ".", color=color, alpha=0.25, markersize=3)
+        ell = ellipse_ne(sigma_rho**2 * D_ned[:2, :2], sqrt(5.991))
+        ax.plot(ell[:, 1], ell[:, 0], color="k", linewidth=1.5)
+        ax.set_xlim(-half, half)
+        ax.set_ylim(-half, half)
+        ax.set_aspect("equal")
+        ax.set_title(f"HDOP {factors['HDOP']:.1f}, VDOP {factors['VDOP']:.1f}", fontsize=12)
+        ax.set_xlabel("east error [m]", fontsize=11)
+        ax.set_ylabel("north error [m]", fontsize=11)
+        ax.tick_params(labelsize=10)
+    fig.tight_layout(pad=0.6, w_pad=1.0)
+    pin_figure_size(fig)
+    if n_skies < 2:
+        axes[2].set_visible(False)
+        axes[3].set_visible(False)
+    plt.show()
+```
+
+::: {.r-stack}
+```{python}
+plot_skies(1)
+```
+::: {.fragment}
+```{python}
+plot_skies(2)
+```
+:::
+:::
+
+. . .
+
+Same 3 m pseudoranges: about 3 m horizontal error from the spread sky, over 30 m
+from the clustered one. And VDOP exceeds HDOP even in the good sky.
+
+::: {.notes}
+2000 single-epoch fixes per sky, black ellipse = 95% predicted from sigma^2 D^n;
+the Monte Carlo lands on sigma times DOP. The clustered ellipse is long and thin:
+all satellites lie to the north-east. VDOP > HDOP because every satellite is
+above the horizon, so height and the receiver clock push the pseudoranges in
+similar ways; that is why GNSS height is typically 1.5 to 2 times worse. DOP is
+a geometry statement, not an accuracy guarantee.
+:::
+
+## GNSS is not truth
+
+::: {.smaller-text}
+| Source | Typical size | Typical residual | Character |
+|---|---|---|---|
+| Satellite clock, ephemeris | (broadcast values are the correction) | 0.5 to 1 m | slow, common to all users |
+| Ionosphere | 1 to 15 m at zenith, more at low elevation | about half removed by the broadcast model | dispersive |
+| Troposphere | 2.4 m at zenith, 25 m at 5° elevation | 0.1 to 0.5 m | mostly predictable |
+| Multipath | 0.5 to a few m; tens of m in urban canyons | not removed by models | time-correlated |
+| Receiver noise | 0.1 to 1 m (code) | not removed by models | nearly white |
+:::
+
+. . .
+
+Not independent, not zero-mean, not white: a high-rate output is not a high rate
+of independent information.
+
+. . .
+
+$\mathbf{R}_{GNSS}$ too small: multipath jumps into the INS. Too large: drift goes
+uncorrected. Gate, adapt, and check the NIS.
+
+::: {.notes}
+Orders of magnitude for a single-frequency code receiver. Beyond the budget:
+non-line-of-sight reception (only a reflection arrives, a positive error of tens
+of meters), outages, and self-inflicted timing errors: a 100 ms mismatch at
+highway speed is 3 m before any radio physics.
+:::
+
+## Jamming and spoofing
+
+::: {.incremental}
+- At the antenna: about $-128$ dBm, $10^{-16}$ W, below the thermal noise floor
+- A jammer of a few watts denies GNSS over tens of kilometers on the ground
+- A spoofer is worse: a confident, smoothly moving, **wrong** position
+- Not hypothetical: ships placed inland in the Black Sea (2017); airliners
+  spoofed over the Middle East since 2023; persistent jamming around the Baltic
+:::
+
+. . .
+
+::: {.key}
+Design every robot that leaves the lab for GNSS that is sometimes absent and
+sometimes lying. The INS is the natural detector and the fallback.
+:::
+
+::: {.notes}
+A spoofed position must also agree with what the inertial sensors felt; the
+innovation tests of the integrated filter are the first line of defense. RAIM is
+in the Advanced Topics part. Accuracy is closeness to truth, availability is
+whether it is usable, integrity is the ability to warn. A small reported sigma is
+an accuracy statement, not an integrity guarantee.
+:::
+
+## Why INS and GNSS fit together
+
+:::: {.columns}
+::: {.column width="44%"}
+**INS:** high-rate, smooth, self-contained, immune to jamming. Drifts.
+
+**GNSS:** global, bounded error. Slow, noisy, blockable, spoofable.
+
+::: {.fragment}
+How long can the INS coast?
+
+- Navigation grade: about a nautical mile per hour
+- Smartphone: a kilometer within about a minute
+:::
+:::
+::: {.column width="56%"}
+```{python}
+dt_o, q_o, r_o = 1.0, 0.01, 1.5**2
+F_o = np.array([[1.0, dt_o], [0.0, 1.0]])
+Q_o = q_o * np.array([[dt_o**3 / 3, dt_o**2 / 2], [dt_o**2 / 2, dt_o]])
+P_o = np.diag([4.0, 1.0])
+t_o, sig_o = np.arange(0, 121), []
+outage = (t_o >= 45) & (t_o < 80)
+for k in t_o:
+    if k > 0:
+        P_o = F_o @ P_o @ F_o.T + Q_o
+    if k > 0 and not outage[k]:
+        S = P_o[0, 0] + r_o
+        K = P_o[:, 0] / S
+        P_o = P_o - np.outer(K, P_o[0, :])
+    sig_o.append(np.sqrt(P_o[0, 0]))
+fig, ax = plt.subplots(figsize=(6.2, 4.2))
+ax.axvspan(45, 80, color="0.9", zorder=0)
+ax.plot(t_o, sig_o, color=ACCENT, linewidth=2.2)
+ax.text(46.5, 0.97 * max(sig_o), "GNSS outage:\npropagate\nonly", ha="left", va="top", fontsize=12)
+ax.annotate("fix\nreturns", (80, sig_o[80]), xytext=(95, 0.5 * max(sig_o)), fontsize=12,
+            arrowprops=dict(arrowstyle="->", color="0.3"))
+ax.set_yticks([])
+ax.set_xlabel("time")
+ax.set_ylabel("position uncertainty")
+ax.set_title("schematic", fontsize=12, color="0.4")
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+The system is not magic: a trade between short-term continuity and long-term
+bounded error. The schematic is a toy constant-velocity filter; the real numbers
+for a phone IMU come in the error-models chapter.
+:::
+
+## Loosely coupled integration
+
+```text
+IMU samples -->  strapdown propagation of the nominal state  <--------------------+
+                               |                                                  |
+                               v                                                  |
+GNSS PVT + quality -->  innovation: GNSS minus INS  -->  error-state update  -->  inject, reset
+```
+
+. . .
+
+$$
+\mathbf{x}_{nom} = \left[L,\ \lambda,\ h,\ \mathbf{v}^n,\ \mathbf{q}_b^n,\ \mathbf{b}_a,\ \mathbf{b}_g\right],
+\qquad
+\delta\mathbf{x} = \left[\delta\mathbf{p},\ \delta\mathbf{v},\ \delta\boldsymbol{\theta},\ \delta\mathbf{b}_a,\ \delta\mathbf{b}_g\right]^T
+$$
+
+. . .
+
+The receiver solves its own PVT; the filter never sees a pseudorange. And the
+nominal position is in radians while $\delta\mathbf{p}$ is in NED **meters**: that
+mismatch is where the first real bug hides.
+
+::: {.notes}
+The five steps of the chapter: the IMU drives high-rate propagation, the receiver
+outputs timestamped position and velocity, the filter forms a GNSS-minus-INS
+innovation, the Kalman update estimates the error state, and the estimate is
+injected into the nominal state. This is the architecture of Project 3.
+:::
+
+## The position innovation
+
+$$
+\mathbf{z}_k =
+\begin{bmatrix}
+(R_M + \hat{h})(L_{GNSS} - \hat{L}) \\
+(R_N + \hat{h})\cos\hat{L}\,(\lambda_{GNSS} - \hat{\lambda}) \\
+-(h_{GNSS} - \hat{h})
+\end{bmatrix},
+\qquad
+\boldsymbol{\nu}_k = \mathbf{z}_k - \hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b
+$$
+
+. . .
+
+::: {.incremental}
+- Radians to NED meters first, through the meridian ($R_M$) and prime-vertical
+  ($R_N$) radii; corrections go back through the same radii
+- Add the lever arm straight to $(L, \lambda, h)$ and you add meters to radians:
+  a bug that looks like a physics problem
+- A masthead antenna swings meters sideways with every roll. Ignored: a
+  self-inflicted residual. Modeled: attitude becomes visible
+:::
+
+::: {.notes}
+Sign convention: GNSS minus INS, errors true minus estimate. Some texts flip
+both; either works if consistent. The chapter checks the linearized model against
+an exact ECEF computation with a 2 m mast: it agrees to 3 mm. A phone that
+reports only speed and course gives horizontal velocity: two rows, not three.
+:::
+
+## Loose, tight, deep
+
+:::: {.columns}
+::: {.column width="33%"}
+**Loose**: position domain
+
+- Receiver PVT is the measurement
+- Modular, easy to validate
+- Needs four or more satellites
+- Cascaded filters: correlated errors, so inflate $\mathbf{R}$
+:::
+::: {.column width="33%"}
+**Tight**: range domain
+
+- Each pseudorange and rate
+- Clock bias and drift states
+- Still aids with two or three satellites
+- Per-satellite fault exclusion
+:::
+::: {.column width="33%"}
+**Deep**: inside the receiver
+
+- INS aids the tracking loops
+- Narrower loop bandwidths
+- Weaker signals, higher dynamics, faster reacquisition
+:::
+::::
+
+. . .
+
+Coupling is about robustness and integrity, not accuracy. Centimeters come from
+the **carrier phase** (RTK, PPP). Project 3 is loose.
+
+::: {.notes}
+Tight and deep coupling are comparison points only in this course; the Advanced
+Topics part works through the tightly coupled measurement model. A vendor who
+promises "centimeter accuracy thanks to tight coupling" deserves two questions
+(Exercise 5).
+:::
+
+# Curved-Earth INS and Loose GNSS Integration {#insgnss}
+
+A strapdown INS on a spinning ellipsoid, kept honest by GNSS.
+
+[Chapter: Curved-Earth INS and Loose GNSS Integration](https://jbrodovsky.github.io/advanced_navigation/chapters/05-global/ins-gnss.html)
+
+## Propagate, estimate, inject
+
+```{python}
+#| include: false
+from dataclasses import dataclass, field, replace
+from scipy.linalg import expm
+from scipy.spatial.transform import Rotation
+from scipy.stats import chi2
+
+WGS84_B = WGS84_A * (1.0 - WGS84_F)
+OMEGA_IE = 7.292115e-5
+WGS84_GM = 3.986004418e14
+GAMMA_E, GAMMA_P = 9.7803253359, 9.8321849378
+SOMIGLIANA_K = 0.001931852652
+WGS84_M = OMEGA_IE**2 * WGS84_A**2 * WGS84_B / WGS84_GM
+
+
+def skew(a):
+    return np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
+
+
+def earth_rate_ned(lat):
+    return OMEGA_IE * np.array([np.cos(lat), 0.0, -np.sin(lat)])
+
+
+def transport_rate_ned(lat, h, v_ned):
+    R_M, R_N = radii(lat)
+    return np.array([v_ned[1] / (R_N + h), -v_ned[0] / (R_M + h), -v_ned[1] * np.tan(lat) / (R_N + h)])
+
+
+def somigliana(lat):
+    s2 = np.sin(lat) ** 2
+    return GAMMA_E * (1.0 + SOMIGLIANA_K * s2) / np.sqrt(1.0 - WGS84_E2 * s2)
+
+
+def gravity(lat, h):
+    s2 = np.sin(lat) ** 2
+    scale = (1.0 - 2.0 * h / WGS84_A * (1.0 + WGS84_F + WGS84_M - 2.0 * WGS84_F * s2)
+             + 3.0 * h**2 / WGS84_A**2)
+    return somigliana(lat) * scale
+
+
+def quat_multiply(p, q):
+    pw, px, py, pz = p
+    qw, qx, qy, qz = q
+    return np.array([pw * qw - px * qx - py * qy - pz * qz,
+                     pw * qx + px * qw + py * qz - pz * qy,
+                     pw * qy - px * qz + py * qw + pz * qx,
+                     pw * qz + px * qy - py * qx + pz * qw])
+
+
+def quat_from_rotvec(rotvec):
+    angle = np.sqrt(rotvec @ rotvec)
+    if angle < 1e-12:
+        return np.array([1.0, 0.5 * rotvec[0], 0.5 * rotvec[1], 0.5 * rotvec[2]])
+    s = np.sin(0.5 * angle) / angle
+    return np.array([np.cos(0.5 * angle), s * rotvec[0], s * rotvec[1], s * rotvec[2]])
+
+
+def quat_to_dcm(q):
+    w, x, y, z = q
+    return np.array([[w*w + x*x - y*y - z*z, 2*(x*y - w*z), 2*(x*z + w*y)],
+                     [2*(x*y + w*z), w*w - x*x + y*y - z*z, 2*(y*z - w*x)],
+                     [2*(x*z - w*y), 2*(y*z + w*x), w*w - x*x - y*y + z*z]])
+
+
+def quat_from_euler(roll, pitch, yaw):
+    x, y, z, w = Rotation.from_euler("ZYX", [yaw, pitch, roll]).as_quat()
+    return np.array([w, x, y, z])
+
+
+@dataclass
+class NavState:
+    lat: float
+    lon: float
+    h: float
+    v: np.ndarray
+    q: np.ndarray
+    b_a: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    b_g: np.ndarray = field(default_factory=lambda: np.zeros(3))
+
+
+def strapdown_step(x, f_meas, w_meas, tau, earth=True):
+    """The book's mechanization (Groves Section 5.4), one IMU interval."""
+    f_b = f_meas - x.b_a
+    w_ib = w_meas - x.b_g
+    R_M, R_N = radii(x.lat)
+    w_ie = earth_rate_ned(x.lat) if earth else np.zeros(3)
+    w_en = transport_rate_ned(x.lat, x.h, x.v) if earth else np.zeros(3)
+    g_n = np.array([0.0, 0.0, gravity(x.lat, x.h)])
+    C_old = quat_to_dcm(x.q)
+    q = quat_multiply(quat_from_rotvec(-(w_ie + w_en) * tau), quat_multiply(x.q, quat_from_rotvec(w_ib * tau)))
+    q = q / np.sqrt(q @ q)
+    C_new = quat_to_dcm(q)
+    f_n = 0.5 * (C_old + C_new) @ f_b
+    v = x.v + (f_n + g_n - np.cross(w_en + 2.0 * w_ie, x.v)) * tau
+    h = x.h - 0.5 * tau * (x.v[2] + v[2])
+    lat = x.lat + 0.5 * tau * (x.v[0] / (R_M + x.h) + v[0] / (R_M + h))
+    R_N_new = radii(lat)[1]
+    lon = x.lon + 0.5 * tau * (x.v[1] / ((R_N + x.h) * np.cos(x.lat)) + v[1] / ((R_N_new + h) * np.cos(lat)))
+    return replace(x, lat=lat, lon=lon, h=h, v=v, q=q)
+
+
+def error_state_model(C_bn, f_b):
+    F = np.zeros((15, 15))
+    F[0:3, 3:6] = np.eye(3)
+    F[3:6, 6:9] = -skew(C_bn @ f_b)
+    F[3:6, 9:12] = -C_bn
+    F[6:9, 12:15] = -C_bn
+    G = np.zeros((15, 12))
+    G[3:6, 0:3], G[6:9, 3:6] = C_bn, C_bn
+    G[9:12, 6:9], G[12:15, 9:12] = np.eye(3), np.eye(3)
+    return F, G
+
+
+def error_between(x_true, x_hat):
+    R_M, R_N = radii(x_hat.lat)
+    dp = np.array([(R_M + x_hat.h) * (x_true.lat - x_hat.lat),
+                   (R_N + x_hat.h) * np.cos(x_hat.lat) * (x_true.lon - x_hat.lon),
+                   -(x_true.h - x_hat.h)])
+    C_err = quat_to_dcm(x_true.q) @ quat_to_dcm(x_hat.q).T
+    return np.concatenate([dp, x_true.v - x_hat.v, Rotation.from_matrix(C_err).as_rotvec(),
+                           x_true.b_a - x_hat.b_a, x_true.b_g - x_hat.b_g])
+
+
+def inject(x_hat, dx):
+    R_M, R_N = radii(x_hat.lat)
+    q = quat_multiply(quat_from_rotvec(dx[6:9]), x_hat.q)
+    return replace(x_hat, lat=x_hat.lat + dx[0] / (R_M + x_hat.h),
+                   lon=x_hat.lon + dx[1] / ((R_N + x_hat.h) * np.cos(x_hat.lat)),
+                   h=x_hat.h - dx[2], v=x_hat.v + dx[3:6], q=q / np.linalg.norm(q),
+                   b_a=x_hat.b_a + dx[9:12], b_g=x_hat.b_g + dx[12:15])
+
+
+def antenna_position(x, lever_b):
+    R_M, R_N = radii(x.lat)
+    d = quat_to_dcm(x.q) @ lever_b
+    return x.lat + d[0] / (R_M + x.h), x.lon + d[1] / ((R_N + x.h) * np.cos(x.lat)), x.h - d[2]
+
+
+def gnss_position_residual(x_hat, lat_g, lon_g, h_g, lever_b):
+    R_M, R_N = radii(x_hat.lat)
+    z = np.array([(R_M + x_hat.h) * (lat_g - x_hat.lat),
+                  (R_N + x_hat.h) * np.cos(x_hat.lat) * (lon_g - x_hat.lon),
+                  -(h_g - x_hat.h)])
+    lever_n = quat_to_dcm(x_hat.q) @ lever_b
+    H = np.zeros((3, 15))
+    H[:, 0:3] = np.eye(3)
+    H[:, 6:9] = -skew(lever_n)
+    return z - lever_n, H
+
+
+def eskf_update(x_hat, P, nu, H, R):
+    S = H @ P @ H.T + R
+    K = np.linalg.solve(S, H @ P).T
+    dx = K @ nu
+    I_KH = np.eye(P.shape[0]) - K @ H
+    P = I_KH @ P @ I_KH.T + K @ R @ K.T
+    x_hat = inject(x_hat, dx)
+    G_reset = np.eye(P.shape[0])
+    G_reset[6:9, 6:9] += skew(0.5 * dx[6:9])
+    return x_hat, G_reset @ P @ G_reset.T, float(nu @ np.linalg.solve(S, nu))
+```
+
+[What does an INS do at every IMU sample on a curved, rotating Earth?]{.question}
+
+. . .
+
+::: {.incremental}
+1. The IMU, at high rate, propagates attitude, velocity, and position
+2. GNSS, at a lower rate, estimates the accumulated INS **errors**
+3. The estimate is injected back into the nominal state
+:::
+
+. . .
+
+Small frame and sign mistakes masquerade as bad filtering, bad data, or a cursed
+IMU. It is usually just geometry.
+
+## The nominal state
+
+$$
+\mathbf{x}_{nom} = \left[L,\ \lambda,\ h,\ \mathbf{v}^n,\ \mathbf{q}_b^n,\ \mathbf{b}_a,\ \mathbf{b}_g\right]
+$$
+
+::: {.incremental}
+- $L, \lambda$ in radians; $h$ in meters above the WGS-84 **ellipsoid**
+- $\mathbf{v}^n = [v_N, v_E, v_D]^T$: velocity relative to the Earth, in NED axes
+- $\mathbf{q}_b^n$: Hamilton, scalar first, $\mathbf{C}_b^n = \mathbf{C}(\mathbf{q}_b^n)$;
+  Euler angles only for display and initialization
+- Mixed frames on purpose: the local level frame's "origin" is wherever the
+  vehicle is right now
+:::
+
+. . .
+
+::: {.aside-box}
+Groves writes the radii as $R_N$ and $R_E$; we write $R_M$ (meridian) and $R_N$
+(prime vertical), and Groves' $\mathbf{v}_{eb}^n$ is our $\mathbf{v}^n$. Never mix
+formulas from two sources without checking the subscripts.
+:::
+
+::: {.notes}
+The mechanization follows Groves, Section 5.4, in this book's conventions: NED
+navigation frame, forward-right-down body frame.
+:::
+
+## Radii and rates
+
+$$
+R_M = \frac{a(1-e^2)}{(1-e^2\sin^2 L)^{3/2}},
+\qquad
+R_N = \frac{a}{\sqrt{1-e^2\sin^2 L}}
+$$
+
+$$
+\boldsymbol{\omega}_{ie}^n = \omega_{ie}\begin{bmatrix} \cos L \\ 0 \\ -\sin L \end{bmatrix},
+\qquad
+\boldsymbol{\omega}_{en}^n =
+\begin{bmatrix}
+v_E/(R_N + h) \\
+-v_N/(R_M + h) \\
+-v_E\tan L/(R_N + h)
+\end{bmatrix}
+$$
+
+. . .
+
+```{python}
+#| output: asis
+lat_wpi = np.radians(42.2742)
+rows = [("Earth rate", earth_rate_ned(lat_wpi)),
+        ("transport rate, car at 30 m/s east", transport_rate_ned(lat_wpi, 0.0, np.array([0.0, 30.0, 0.0]))),
+        ("transport rate, airliner at 250 m/s east", transport_rate_ned(lat_wpi, 0.0, np.array([0.0, 250.0, 0.0])))]
+print("::: {.smaller-text}")
+print("| At 42.27° N, in °/h | north | east | down |")
+print("|---|---:|---:|---:|")
+for name, w in rows:
+    n, e, d = np.degrees(w) * 3600.0
+    print(f"| {name} | {n:.2f} | {abs(e):.2f} | {d:.2f} |")
+print(":::")
+```
+
+None comes near a phone gyro's bias of hundreds of °/h.
+
+::: {.notes}
+WGS-84: a = 6378137 m, f = 1/298.257223563, omega_ie = 7.292115e-5 rad/s. Moving
+Delta N meters north changes latitude by Delta N/(R_M + h) radians. Some
+references flip the sign convention of the transport rate; this one is paired
+with the chapter's velocity and attitude equations.
+:::
+
+## Gravity, not gravitation
+
+::: {.incremental}
+- Accelerometers cannot feel gravity: in free fall they read zero; on a table,
+  the table pushing up. That is **specific force**
+- Gravity is gravitation plus the centrifugal pull of a spinning planet:
+  $\mathbf{g} = \boldsymbol{\gamma} - \boldsymbol{\omega}_{ie} \times (\boldsymbol{\omega}_{ie} \times \mathbf{r})$
+- Centrifugal: about $0.034$ m/s² at the equator (0.35% of $g$), zero at the poles
+- The WGS-84 ellipsoid is an equipotential: normal gravity points exactly along
+  NED down
+:::
+
+. . .
+
+At the equator, $GM/a^2 = 9.7983$; minus centrifugal, $9.7644$; add the $J_2$
+equatorial bulge: $9.7803$ m/s².
+
+. . .
+
+::: {.key}
+Any error in the gravity model is indistinguishable from an accelerometer bias.
+:::
+
+## Normal gravity
+
+:::: {.columns}
+::: {.column width="48%"}
+Somigliana's closed form:
+
+$$
+g_0(L) = \gamma_e\,\frac{1 + k\sin^2 L}{\sqrt{1 - e^2\sin^2 L}}
+$$
+
+$\gamma_e = 9.7803253359$ m/s²<br>$k = 0.001931852652$
+
+A free-air term lowers it with height:
+$\mathbf{g}^n = [0, 0, g(L, h)]^T$, positive down.
+:::
+::: {.column width="52%"}
+```{python}
+lat_deg = np.linspace(0.0, 90.0, 181)
+fig, ax = plt.subplots(figsize=(5.8, 3.9))
+for h_km, color in [(0.0, "C0"), (10.0, "C1")]:
+    ax.plot(lat_deg, gravity(np.radians(lat_deg), h_km * 1e3), color=color, linewidth=2,
+            label=f"h = {h_km:.0f} km")
+ax.axhline(9.80665, color="0.4", linestyle="--", linewidth=1.2, label="standard 9.80665")
+ax.set_xlabel("latitude [deg]")
+ax.set_ylabel("normal gravity [m/s²]")
+ax.set_xticks([0, 30, 60, 90])
+ax.legend(loc="lower right", fontsize=12)
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+. . .
+
+Height shortcuts cost 4 to 14 µg at 10 km: a phone (bias ~10,000 µg) never
+notices; a navigation-grade accelerometer (25 to 100 µg) would.
+
+::: {.notes}
+"Close enough" depends entirely on the grade of the sensor you are trying to keep
+honest. Older code uses a truncated series in sin^2 L; no reason to approximate a
+closed form. Exercise 2 puts an INS on the summit of Mount Washington.
+:::
+
+## Attitude first
+
+Over one step of length $\tau$, $X(-)$ is before and $X(+)$ after (not the
+Kalman prior and posterior):
+
+$$
+\mathbf{q}_b^n(+) = \mathbf{q}\!\left(-\boldsymbol{\omega}_{in}^n\tau\right)
+\otimes \mathbf{q}_b^n(-) \otimes
+\mathbf{q}\!\left(\boldsymbol{\omega}_{ib}^b\tau\right),
+\qquad
+\boldsymbol{\omega}_{in}^n = \boldsymbol{\omega}_{ie}^n + \boldsymbol{\omega}_{en}^n
+$$
+
+. . .
+
+::: {.incremental}
+- Right factor: the body's turn, in body axes. Left factor: un-turn the
+  navigation frame, in navigation axes
+- Exact rotation-vector quaternions stay unit length up to rounding (renormalize
+  anyway)
+- To first order this is Groves' matrix form, the same algorithm
+:::
+
+. . .
+
+Then resolve the specific force with the **average** attitude:
+$\mathbf{f}^n \approx \tfrac{1}{2}\left(\mathbf{C}_b^n(-) + \mathbf{C}_b^n(+)\right)\mathbf{f}^b$
+
+::: {.notes}
+Groves' form: C(+) = C(-)(I + Omega_ib tau) - (Omega_ie + Omega_en) C(-) tau, first
+order in tau, and repeated application slowly destroys orthonormality. Using only
+C(-) resolves a whole step's specific force along stale axes, which matters when
+the vehicle rotates quickly (Exercise 5).
+:::
+
+## Velocity: four terms, four stories
+
+$$
+\mathbf{v}^n(+) = \mathbf{v}^n(-) + \left[\mathbf{f}^n + \mathbf{g}^n
+- \left(\boldsymbol{\Omega}_{en}^n + 2\boldsymbol{\Omega}_{ie}^n\right)\mathbf{v}^n(-)\right]\tau
+$$
+
+::: {.incremental}
+- $\mathbf{f}^n$: everything the accelerometers feel (thrust, tires, lift, the road)
+- $\mathbf{g}^n$: what they cannot. At rest, $\mathbf{f}^n = [0, 0, -g]^T$ and the
+  two cancel
+- $-2\boldsymbol{\Omega}_{ie}^n\mathbf{v}^n$, **Coriolis**: about 0.3 mg for a car
+  at 30 m/s. Eastbound ships weigh slightly less (Eötvös)
+- $-\boldsymbol{\Omega}_{en}^n\mathbf{v}^n$, **transport rate**: flying level over
+  a sphere is accelerating toward its center. Drop it and an airliner's INS
+  believes it is slowly descending
+:::
+
+::: {.notes}
+Groves' equation 5.54. g already includes the centrifugal term, so none appears
+here. Coriolis deflects to the right in the northern hemisphere; an airliner sees
+eight times the car's value. Eötvös explained in the early 1900s why shipboard
+gravity readings depended on whether the ship steamed east or west. The down
+component of the transport-rate term is about 1e-4 m/s^2 for a car and a milli-g
+for an airliner.
+:::
+
+## Position: radians, in the right order
+
+$$
+\dot{L} = \frac{v_N}{R_M + h},
+\qquad
+\dot{\lambda} = \frac{v_E}{(R_N + h)\cos L},
+\qquad
+\dot{h} = -v_D
+$$
+
+. . .
+
+::: {.incremental}
+- Trapezoidal: both velocities are known by now
+- Height first (latitude needs $h(+)$), then latitude, then longitude (it needs
+  $L(+)$)
+- Radians per second, not meters per second
+- $\cos L$ is singular at the poles: polar vehicles use wander-azimuth or ECEF
+  mechanizations
+:::
+
+. . .
+
+::: {.key}
+The order is not arbitrary. Attitude resolves specific force; velocity sets the
+transport rate and position rate; position sets gravity, Earth rate, and the
+radii.
+:::
+
+## Coning: never decimate IMU data
+
+```{python}
+#| include: false
+beta_c, cone_hz = np.radians(1.0), 5.0
+w_cone = 2.0 * np.pi * cone_hz
+
+
+def coning_truth(t):
+    return (Rotation.from_rotvec([0.0, 0.0, w_cone * t]) * Rotation.from_rotvec([beta_c, 0.0, 0.0])
+            * Rotation.from_rotvec([0.0, 0.0, -w_cone * t]))
+
+
+def coning_increment(t0, t1):
+    sb = np.sin(beta_c)
+    return np.array([sb * (np.cos(w_cone * t1) - np.cos(w_cone * t0)),
+                     sb * (np.sin(w_cone * t1) - np.sin(w_cone * t0)),
+                     -w_cone * (1.0 - np.cos(beta_c)) * (t1 - t0)])
+
+
+def to_scipy(q):
+    return Rotation.from_quat(np.roll(q, -1))
+
+
+coning_rates = np.array([50.0, 100.0, 200.0, 400.0, 800.0])
+coning_drift = np.zeros((coning_rates.size, 2))
+duration_c = 20.0
+for i, rate_hz in enumerate(coning_rates):
+    dt_c = 1.0 / rate_hz
+    xq, yq, zq, wq = coning_truth(0.0).as_quat()
+    q_naive = np.array([wq, xq, yq, zq])
+    q_coned = q_naive.copy()
+    d_prev = coning_increment(-dt_c, 0.0)
+    for k in range(round(duration_c * rate_hz)):
+        d_theta = coning_increment(k * dt_c, (k + 1) * dt_c)
+        q_naive = quat_multiply(q_naive, quat_from_rotvec(d_theta))
+        q_coned = quat_multiply(q_coned, quat_from_rotvec(d_theta + np.cross(d_prev, d_theta) / 12.0))
+        d_prev = d_theta
+    truth_c = coning_truth(duration_c)
+    coning_drift[i] = [np.degrees((to_scipy(q).inv() * truth_c).magnitude()) * 3600.0 / duration_c
+                       for q in (q_naive, q_coned)]
+```
+
+:::: {.columns}
+::: {.column width="47%"}
+::: {.incremental}
+- Many IMUs output **increments** $\Delta\boldsymbol{\theta}_k$, $\Delta\mathbf{v}_k$:
+  they capture motion faster than the output rate
+- Rotations do not commute. A wobbling axis (**coning**) makes a naive integrator
+  drift; the velocity cousin is **sculling**
+- Two-sample correction:
+  $\boldsymbol{\phi}_k \approx \Delta\boldsymbol{\theta}_k + \tfrac{1}{12}\Delta\boldsymbol{\theta}_{k-1}\times\Delta\boldsymbol{\theta}_k$
+:::
+:::
+::: {.column width="53%"}
+```{python}
+fig, ax = plt.subplots(figsize=(6.0, 3.9))
+ax.loglog(coning_rates, coning_drift[:, 0], "o-", color="C1", linewidth=2, label="naive")
+ax.loglog(coning_rates, coning_drift[:, 1], "s-", color="C0", linewidth=2, label="coning-corrected")
+ax.axhline(np.degrees(OMEGA_IE) * 3600.0, color="0.4", linestyle="--", linewidth=1.2)
+ax.text(coning_rates[-1], 1.4 * np.degrees(OMEGA_IE) * 3600.0, "Earth rate", ha="right", fontsize=12)
+ax.set_xlabel("IMU rate [Hz]")
+ax.set_ylabel("attitude drift [deg/h]")
+ax.set_title("perfect gyros, 1° cone at 5 Hz", fontsize=12)
+ax.legend(loc="lower left", fontsize=12)
+ax.grid(True, which="both", alpha=0.25)
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+Naive error falls with the rate squared, corrected with the fourth power. At
+100 Hz the naive integrator drifts faster than the Earth turns.
+
+::: {.notes}
+Using increments is easy: replace omega tau by Delta theta and f tau by Delta v.
+Navigation-grade IMUs run their coning and sculling algorithms internally at
+kilohertz rates and output compensated increments (Savage has the families). For
+Project 3 the gyro bias dwarfs these effects, but the mechanism is why you never
+decimate before integrating.
+:::
+
+## The stationary test
+
+```{python}
+#| include: false
+q0 = quat_from_euler(np.radians(2.0), np.radians(-1.0), np.radians(30.0))
+C0 = quat_to_dcm(q0)
+f_rest = C0.T @ np.array([0.0, 0.0, -gravity(lat0, h0)])
+w_rest = C0.T @ earth_rate_ned(lat0)
+tau_imu, t_end = 0.01, 60.0
+n_steps = round(t_end / tau_imu)
+t_stat = np.arange(n_steps + 1) * tau_imu
+b_a_mems = np.array([0.005, -0.008, 0.012]) * 9.80665
+b_g_mems = np.radians([0.08, -0.06, 0.10])
+R_M0, R_N0 = radii(lat0)
+truth_rest = NavState(lat0, lon0, h0, np.zeros(3), q0, b_a=b_a_mems, b_g=b_g_mems)
+
+stationary = {}
+for name, earth, b_a, b_g in [("perfect IMU, full mechanization", True, 0.0, 0.0),
+                              ("perfect IMU, Earth rate ignored", False, 0.0, 0.0),
+                              ("MEMS biases, full mechanization", True, b_a_mems, b_g_mems)]:
+    x = NavState(lat0, lon0, h0, np.zeros(3), q0.copy())
+    horiz = np.zeros(n_steps + 1)
+    err_1hz = [np.zeros(15)]
+    for k in range(n_steps):
+        x = strapdown_step(x, f_rest + b_a, w_rest + b_g, tau_imu, earth=earth)
+        horiz[k + 1] = np.hypot((R_M0 + h0) * (x.lat - lat0), (R_N0 + h0) * np.cos(lat0) * (x.lon - lon0))
+        if earth and (k + 1) % 100 == 0:
+            err_1hz.append(error_between(truth_rest, x))
+    stationary[name] = {"horiz": horiz, "final": x, "err_1hz": np.array(err_1hz)}
+```
+
+A perfect IMU at rest at 42° N, 60 s at 100 Hz, through three mechanizations:
+
+```{python}
+fig, ax = plt.subplots(figsize=(12, 3.4))
+ax.semilogy(t_stat[1:], np.maximum(stationary["perfect IMU, full mechanization"]["horiz"][1:], 1.1e-6),
+            color="C2", linewidth=3, alpha=0.8, label="perfect IMU, full mechanization (zero to rounding)")
+for name, color in [("perfect IMU, Earth rate ignored", "C1"), ("MEMS biases, full mechanization", "C3")]:
+    ax.semilogy(t_stat[1:], stationary[name]["horiz"][1:], color=color, linewidth=3, alpha=0.75, label=name)
+ax.semilogy(t_stat[1:], gravity(lat0, h0) * OMEGA_IE * np.cos(lat0) * t_stat[1:]**3 / 6.0, "k--",
+            linewidth=1, label=r"$g\,\omega_{ie}\cos L\,t^3/6$")
+ax.set_xlabel("time [s]")
+ax.set_ylabel("horizontal error [m]")
+ax.set_ylim(1e-6, 3e3)
+ax.legend(loc="lower right", bbox_to_anchor=(1.0, 0.06), fontsize=12)
+ax.grid(True, which="both", alpha=0.25)
+fig.tight_layout()
+plt.show()
+```
+
+. . .
+
+::: {.key}
+The perfect case must sit still. One wrong sign in Earth rate, Coriolis, or
+gravity and it drifts immediately: put this test in every INS test suite.
+:::
+
+::: {.notes}
+Perfect accelerometers read C_n^b [0, 0, -g]; perfect gyros read C_n^b omega_ie,
+about 15 deg/h. The two quaternion factors cancel exactly, so attitude never moves.
+The flat-Earth case mistakes Earth rate for vehicle rotation, tilts its vertical
+at omega_ie cos L, and is 19 m off after a minute. Smartphone biases (5 to 12 mg,
+200 to 360 deg/h) put the full mechanization about 575 m off: Earth rate is real,
+but with MEMS sensors it is not what limits you. The bias is.
+:::
+
+## Leveling: roll and pitch from gravity
+
+$$
+\phi = \operatorname{atan2}(-f_y,\ -f_z),
+\qquad
+\theta = \operatorname{atan2}\!\left(f_x,\ \sqrt{f_y^2 + f_z^2}\right)
+$$
+
+. . .
+
+::: {.incremental}
+- At rest, $\mathbf{f}^b = g\,[\sin\theta,\ -\cos\theta\sin\phi,\ -\cos\theta\cos\phi]^T$
+  in FRD axes: two angles fall out
+- Average for a few seconds: noise and vibration average down. **Bias does not**
+:::
+
+. . .
+
+$$
+\delta\theta_\text{tilt} \approx \frac{b_a}{g}
+\qquad (\text{about } 0.06^\circ \text{ per milli-g})
+$$
+
+. . .
+
+Harmless while parked: the tilt leaks exactly enough gravity to cancel the bias.
+It shows up once the vehicle turns and the bias rotates but the tilt does not.
+
+## Heading: gyrocompassing
+
+```{python}
+#| include: false
+def coarse_level(f_b):
+    return np.arctan2(-f_b[1], -f_b[2]), np.arctan2(f_b[0], np.hypot(f_b[1], f_b[2]))
+
+
+def gyrocompass(w_b, roll, pitch):
+    w_h = Rotation.from_euler("YX", [pitch, roll]).as_matrix() @ w_b
+    return np.arctan2(-w_h[1], w_h[0])
+
+
+roll_t, pitch_t, yaw_t = np.radians([3.0, -2.0, 125.0])
+C_align = quat_to_dcm(quat_from_euler(roll_t, pitch_t, yaw_t))
+f_align = C_align.T @ np.array([0.0, 0.0, -gravity(lat0, h0)])
+w_align = C_align.T @ earth_rate_ned(lat0)
+roll_hat, pitch_hat = coarse_level(f_align)
+east_in_body = C_align.T @ np.array([0.0, 1.0, 0.0])
+bias_sweep = np.logspace(-3, 4, 300)
+gc_error = np.array([abs(np.degrees(np.angle(np.exp(1j * (
+    yaw_t - gyrocompass(w_align + np.radians(b / 3600.0) * east_in_body, roll_hat, pitch_hat))))))
+    for b in bias_sweep])
+gc_rule = np.degrees(np.radians(bias_sweep / 3600.0) / (OMEGA_IE * np.cos(lat0)))
+```
+
+:::: {.columns}
+::: {.column width="46%"}
+At rest the gyros sense only Earth rate. Its horizontal part,
+$\omega_{ie}\cos L \approx 11$°/h at WPI, points **north**.
+
+$$
+\delta\psi \approx \frac{b_{g,E}}{\omega_{ie}\cos L}
+$$
+
+::: {.incremental}
+- Navigation grade, 0.01°/h: a few hundredths of a degree
+- Smartphone, a few hundred °/h: twenty to thirty times the signal. The compass
+  points at the bias
+:::
+:::
+::: {.column width="54%"}
+```{python}
+fig, ax = plt.subplots(figsize=(6.0, 4.4))
+ax.loglog(bias_sweep, gc_rule, "--", color="0.45", linewidth=1.5, label="rule of thumb")
+ax.loglog(bias_sweep, gc_error, color=ACCENT, linewidth=2.4, label="gyrocompass heading error")
+for b, label in [(0.01, "navigation\ngrade"), (300.0, "smartphone")]:
+    ax.axvline(b, color="0.6", linewidth=1)
+    ax.text(b * 1.3, 2e-3, label, fontsize=12, va="bottom")
+ax.axhline(90.0, color="0.75", linewidth=1)
+ax.set_ylim(1e-3, 3e3)
+ax.set_xlabel("east gyro bias [deg/h]")
+ax.set_ylabel("heading error [deg]")
+ax.legend(loc="upper left", fontsize=12)
+ax.grid(True, which="both", alpha=0.25)
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+Level first, rotate the gyro outputs into the leveled frame, psi = atan2(-w_y,
+w_x). Ships found north this way long before GNSS: Anschuetz-Kaempfe's gyrocompass
+went to sea in 1908, Sperry's in 1911, both sensing the same 15 deg/h with a
+spinning wheel. The rule of thumb holds while the bias is small next to omega_ie
+cos L and then fails gracefully into nonsense: at 300 deg/h the answer is wrong
+by almost 90 degrees. Within a degree of north needs a residual bias under about
+0.2 deg/h, so bench calibration does not save a phone either.
+:::
+
+## Where a MEMS INS gets heading
+
+::: {.incremental}
+- **Magnetometer:** correct for declination (about $-14^\circ$ at WPI) and the
+  vehicle's hard- and soft-iron distortion. A few degrees in the open, badly wrong
+  near steel, rebar, and motors
+- **GNSS course over ground:** for a car that does not crab, its heading to about
+  a degree above a few m/s. Below walking speed, noise
+- **Dual GNSS antennas:** heading from the carrier-phase baseline, a fraction of a
+  degree, even when parked
+- **Maneuvers:** start with a large heading uncertainty and let the dynamics
+  reveal it (the simulated drive, coming up)
+:::
+
+. . .
+
+[A smartphone has no business gyrocompassing.]{.muted}
+
+## The error state, on a curved Earth
+
+Part 4 promised this filter. Here it is with a geodetic nominal position:
+
+$$
+\delta\mathbf{x} = \left[\delta\mathbf{p},\ \delta\mathbf{v},\ \delta\boldsymbol{\theta},\ \delta\mathbf{b}_a,\ \delta\mathbf{b}_g\right]^T \in \mathbb{R}^{15}
+$$
+
+::: {.incremental}
+- Every error is **true minus estimate**
+- $\delta\mathbf{p}$ in NED meters: same units, comparable sizes
+- $\delta\boldsymbol{\theta}$: the small rotation, in **navigation** axes, that
+  carries the estimate onto the truth,
+  $\mathbf{C}_b^n \approx (\mathbf{I} + [\delta\boldsymbol{\theta}]_\times)\hat{\mathbf{C}}_b^n$
+- $\delta\mathbf{b}_a = \mathbf{b}_a - \hat{\mathbf{b}}_a$,
+  $\;\delta\mathbf{b}_g = \mathbf{b}_g - \hat{\mathbf{b}}_g$
+:::
+
+## The short-horizon error model
+
+$$
+\begin{aligned}
+\delta\dot{\mathbf{p}} &= \delta\mathbf{v} \\
+\delta\dot{\mathbf{v}} &= -\left[\hat{\mathbf{C}}_b^n\hat{\mathbf{f}}^b\right]_\times \delta\boldsymbol{\theta}
+- \hat{\mathbf{C}}_b^n\,\delta\mathbf{b}_a + \hat{\mathbf{C}}_b^n\mathbf{w}_a \\
+\delta\dot{\boldsymbol{\theta}} &= -\hat{\mathbf{C}}_b^n\,\delta\mathbf{b}_g + \hat{\mathbf{C}}_b^n\mathbf{w}_g \\
+\delta\dot{\mathbf{b}}_a &= \mathbf{w}_{ba},
+\qquad
+\delta\dot{\mathbf{b}}_g = \mathbf{w}_{bg}
+\end{aligned}
+$$
+
+. . .
+
+::: {.incremental}
+- **Tilt coupling:** an attitude error rotates the sensed specific force, mostly
+  the 9.8 m/s² reaction to gravity. 1 mrad of tilt is about 10 mm/s² of false
+  horizontal acceleration
+- A gyro bias error turns the attitude estimate at $\hat{\mathbf{C}}_b^n\delta\mathbf{b}_g$
+- Random-walk biases; a Gauss-Markov bias would add $-\delta\mathbf{b}/T_c$
+:::
+
+::: {.notes}
+The velocity row comes from C f - C_hat f_hat to first order, with f = f_hat -
+delta b_a - n_a and a x b = -b x a. The attitude row comes from the exact
+kinematics C_dot = C Omega_ib - Omega_in C; the full result also has -omega_in x
+delta theta - delta omega_in, the first of the couplings this model leaves out
+(Exercise 1 derives it).
+:::
+
+## $\mathbf{F}$, $\mathbf{Q}_c$, and one step
+
+$$
+\mathbf{F} =
+\begin{bmatrix}
+\mathbf{0} & \mathbf{I} & \mathbf{0} & \mathbf{0} & \mathbf{0} \\
+\mathbf{0} & \mathbf{0} & -[\hat{\mathbf{f}}^n]_\times & -\hat{\mathbf{C}}_b^n & \mathbf{0} \\
+\mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} & -\hat{\mathbf{C}}_b^n \\
+\mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} \\
+\mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0}
+\end{bmatrix},
+\qquad
+\mathbf{Q}_c = \operatorname{blkdiag}\!\left(N_a^2\mathbf{I},\ N_g^2\mathbf{I},\ q_{ba}\mathbf{I},\ q_{bg}\mathbf{I}\right)
+$$
+
+. . .
+
+$$
+\mathbf{F}_d \approx \mathbf{I} + \mathbf{F}\tau,
+\qquad
+\mathbf{Q}_d \approx \mathbf{G}\mathbf{Q}_c\mathbf{G}^T\tau,
+\qquad
+\mathbf{P}_{k|k-1} = \mathbf{F}_d\mathbf{P}_{k-1|k-1}\mathbf{F}_d^T + \mathbf{Q}_d
+$$
+
+. . .
+
+The nominal state runs through the nonlinear mechanization; the error-state mean
+stays at zero between updates.
+
+::: {.notes}
+G maps the four white noises [w_a, w_g, w_ba, w_bg] in: C_hat on the velocity
+and attitude rows, identity on the bias rows. First-order discretization is
+accurate when ||F|| tau << 1; Van Loan is exact for longer steps (next chapter).
+:::
+
+## What the model leaves out, and why that is fine
+
+::: {.smaller-text}
+| Neglected coupling | Size |
+|---|---|
+| $-\boldsymbol{\omega}_{in}^n \times \delta\boldsymbol{\theta}$ in the attitude row | rate at most $\omega_{ie} \approx 7 \times 10^{-5}$ s⁻¹ |
+| Transport-rate error $\approx \delta\mathbf{v}/R$ | $10^{-7}$ rad/s per m/s, against MEMS gyro biases of $10^{-3}$ rad/s |
+| Coriolis and transport rate acting on $\delta\mathbf{v}$ | rate at most $2\omega_{ie} \approx 1.5 \times 10^{-4}$ s⁻¹ |
+| Gravity gradient | $2g/R \approx 3 \times 10^{-6}$ s⁻² per meter of height |
+| Curvature in the position row | $v/R \approx 5 \times 10^{-6}$ s⁻¹ |
+:::
+
+. . .
+
+The retained couplings are about $g \approx 10$ m/s² per radian and one per unit
+bias. Over a one-minute GNSS gap the neglected ones change the error by about
+**1%**.
+
+. . .
+
+::: {.key}
+A short-horizon MEMS model: the dropped terms matter over tens of minutes, when a
+phone INS is long gone. Tactical grade or long outages: put them back.
+:::
+
+## Does the linear model predict the real drift?
+
+```{python}
+F_rest, _ = error_state_model(C0, f_rest)
+dx0 = np.concatenate([np.zeros(9), b_a_mems, b_g_mems])
+t_lin = np.arange(0, 61)
+dx_lin = np.array([expm(F_rest * t) @ dx0 for t in t_lin])
+err_nl = stationary["MEMS biases, full mechanization"]["err_1hz"]
+fig, ax = plt.subplots(figsize=(12, 4.3))
+for idx, name, color in [(0, "north", "C0"), (1, "east", "C1"), (2, "down", "C2")]:
+    ax.plot(t_lin, err_nl[:, idx], color=color, linewidth=2.6, alpha=0.75, label=f"{name}, nonlinear")
+    ax.plot(t_lin, dx_lin[:, idx], "--", color="k", linewidth=1.1)
+ax.plot([], [], "--", color="k", linewidth=1.1, label="15-state linear model")
+ax.set_xlabel("time [s]")
+ax.set_ylabel("position error [m]")
+ax.legend(loc="lower left", fontsize=12, ncol=2)
+fig.tight_layout()
+plt.show()
+```
+
+. . .
+
+The stationary phone from before: hundreds of meters, predicted within several
+percent. The gap is second order (8.5° of attitude error by then), not the
+neglected couplings.
+
+::: {.notes}
+The chapter also checks F the honest way: perturb the nominal state along each
+of the 15 error directions, run both copies through the nonlinear strapdown_step,
+and compare with expm(F tau) for a car turning at 8 deg/s. Retained blocks match
+to one part in a thousand; the other residuals are exactly the neglected terms,
+at exactly the sizes in the table. Divide the gyro biases by three and the two
+curves here agree to about a percent. With a fix every second, attitude errors
+never get near 8 degrees.
+:::
+
+## The lever arm puts attitude in $\mathbf{H}$ {auto-animate=true}
+
+::: {data-id="meas"}
+$$
+\mathbf{z} = \delta\mathbf{p} + \mathbf{C}_b^n\boldsymbol{\ell}^b + \boldsymbol{\eta},
+\qquad
+\boldsymbol{\eta} \sim \mathcal{N}(\mathbf{0}, \mathbf{R}_k)
+$$
+:::
+
+The fix, in NED meters about the nominal IMU: the true IMU's offset plus the
+antenna on its lever arm. ($\boldsymbol{\eta}$, because $\mathbf{v}$ is
+velocity in this chapter.)
+
+## The lever arm puts attitude in $\mathbf{H}$ {auto-animate=true}
+
+::: {data-id="meas"}
+$$
+\mathbf{z} = \delta\mathbf{p} + \mathbf{C}_b^n\boldsymbol{\ell}^b + \boldsymbol{\eta},
+\qquad
+\boldsymbol{\eta} \sim \mathcal{N}(\mathbf{0}, \mathbf{R}_k)
+$$
+:::
+
+::: {data-id="innov"}
+$$
+\boldsymbol{\nu} = \mathbf{z} - \hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b
+= \delta\mathbf{p} + [\delta\boldsymbol{\theta}]_\times\hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b + \boldsymbol{\eta}
+$$
+:::
+
+Predict with the nominal attitude, then substitute
+$\mathbf{C}_b^n \approx (\mathbf{I} + [\delta\boldsymbol{\theta}]_\times)\hat{\mathbf{C}}_b^n$.
+
+## The lever arm puts attitude in $\mathbf{H}$ {auto-animate=true}
+
+::: {data-id="meas"}
+$$
+\mathbf{z} = \delta\mathbf{p} + \mathbf{C}_b^n\boldsymbol{\ell}^b + \boldsymbol{\eta},
+\qquad
+\boldsymbol{\eta} \sim \mathcal{N}(\mathbf{0}, \mathbf{R}_k)
+$$
+:::
+
+::: {data-id="innov"}
+$$
+\boldsymbol{\nu}
+= \delta\mathbf{p} - [\hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b]_\times\delta\boldsymbol{\theta} + \boldsymbol{\eta}
+$$
+:::
+
+$$
+\mathbf{H} =
+\begin{bmatrix}
+\mathbf{I}_3 & \mathbf{0}_3 & -[\hat{\mathbf{C}}_b^n\boldsymbol{\ell}^b]_\times & \mathbf{0}_3 & \mathbf{0}_3
+\end{bmatrix}
+$$
+
+. . .
+
+A 1.5 m mast moves 26 cm sideways when a boat rolls 10°. A phone's antenna is
+centimeters from its IMU: negligible, but the code costs nothing.
+
+::: {.notes}
+The swap uses a x b = -b x a. The chapter checks H against finite differences of
+the nonlinear measurement function, lever arm and all: they agree to 3.5e-7.
+:::
+
+## Lever-arm velocity, course, and timing
+
+::: {.incremental}
+- The antenna also moves with rotation:
+  $\mathbf{v}_{ant}^n \approx \mathbf{v}^n + \mathbf{C}_b^n(\boldsymbol{\omega}_{nb}^b \times \boldsymbol{\ell}^b)$.
+  A car turning at 20°/s, antenna 1 m behind: 0.35 m/s
+- Speed and course give $\mathbf{z}_v = [s\cos\chi,\ s\sin\chi]^T$: two rows,
+  skipped below a few m/s where course is noise
+- Velocity updates see tilt and accelerometer bias sooner than position updates
+- Compare the fix with the INS state **at the fix time**: 100 ms late at 30 m/s
+  is a 3 m innovation before any noise
+:::
+
+. . .
+
+::: {.key}
+Tape-measure the lever arm and get its sign right. The measurement is cheap; the
+sign error is expensive.
+:::
+
+::: {.notes}
+R_v comes from propagating the speed and course variances through the
+conversion. Smartphones are especially creative with timestamps: sensor and GNSS
+clocks can differ, and the offset is worth estimating before you blame the filter.
+If a measurement arrives late, buffer or interpolate the INS state.
+:::
+
+## Update, inject, reset
+
+::: {.fragment .semi-fade-out fragment-index=1}
+$$
+\begin{aligned}
+\mathbf{S}_k &= \mathbf{H}\mathbf{P}_{k|k-1}\mathbf{H}^T + \mathbf{R}_k,
+\qquad
+\mathbf{K}_k = \mathbf{P}_{k|k-1}\mathbf{H}^T\mathbf{S}_k^{-1},
+\qquad
+\delta\hat{\mathbf{x}} = \mathbf{K}_k\boldsymbol{\nu}_k \\
+\mathbf{P}_{k|k} &= (\mathbf{I} - \mathbf{K}_k\mathbf{H})\mathbf{P}_{k|k-1}(\mathbf{I} - \mathbf{K}_k\mathbf{H})^T + \mathbf{K}_k\mathbf{R}_k\mathbf{K}_k^T
+\end{aligned}
+$$
+:::
+
+::: {.fragment fragment-index=1}
+**Inject:** velocity and biases add; position goes back through the radii;
+attitude on the **left**, because the error lives in navigation axes:
+$\hat{\mathbf{q}}_b^n \leftarrow \mathbf{q}(\delta\hat{\boldsymbol{\theta}}) \otimes \hat{\mathbf{q}}_b^n$
+
+**Reset:** $\delta\hat{\mathbf{x}} \leftarrow \mathbf{0}$,
+$\;\mathbf{P} \leftarrow \mathbf{G}_r\mathbf{P}\mathbf{G}_r^T$,
+$\;\mathbf{G}_r = \operatorname{blkdiag}\!\left(\mathbf{I},\ \mathbf{I},\ \mathbf{I} + [\tfrac{1}{2}\delta\hat{\boldsymbol{\theta}}]_\times,\ \mathbf{I},\ \mathbf{I}\right)$
+:::
+
+. . .
+
+Log the NIS, $\boldsymbol{\nu}_k^T\mathbf{S}_k^{-1}\boldsymbol{\nu}_k \sim \chi^2_3$,
+from the first run. It is also the natural gate for multipath.
+
+::: {.notes}
+Solve for the gain instead of forming S inverse; Joseph form because the update
+runs thousands of times and the short form loses symmetry and positive
+definiteness. The prior error-state mean is zero, so delta x = K nu. With
+frequent small corrections G_r is nearly I and many implementations skip it; the
+first fix after a long outage or a large heading correction is when it earns its
+keep.
+:::
+
+## Closing the loop: a simulated drive
+
+```{python}
+#| include: false
+rng = np.random.default_rng(2024)
+tau_sim, t_sim_end = 0.01, 120.0
+n_sim = round(t_sim_end / tau_sim)
+t_sim = np.arange(n_sim + 1) * tau_sim
+
+
+def maneuver(t):
+    if 10.0 <= t < 20.0:
+        return 1.5, 0.0
+    if 50.0 <= t < 60.0:
+        return 0.0, np.radians(9.0)
+    if 90.0 <= t < 100.0:
+        return -0.8, 0.0
+    return 0.0, 0.0
+
+
+x_true = NavState(lat0, lon0, h0, np.zeros(3), quat_from_euler(0.0, 0.0, np.radians(20.0)))
+truth_states = [x_true]
+f_imu, w_imu = np.zeros((n_sim, 3)), np.zeros((n_sim, 3))
+for k in range(n_sim):
+    a_along, yaw_rate = maneuver(t_sim[k])
+    C = quat_to_dcm(x_true.q)
+    a_n = a_along * C[:, 0] + yaw_rate * np.linalg.norm(x_true.v) * C[:, 1]
+    w_ie = earth_rate_ned(x_true.lat)
+    w_en = transport_rate_ned(x_true.lat, x_true.h, x_true.v)
+    g_n = np.array([0.0, 0.0, gravity(x_true.lat, x_true.h)])
+    f_imu[k] = C.T @ (a_n - g_n + np.cross(w_en + 2.0 * w_ie, x_true.v))
+    w_imu[k] = np.array([0.0, 0.0, yaw_rate]) + C.T @ (w_ie + w_en)
+    x_true = strapdown_step(x_true, f_imu[k], w_imu[k], tau_sim)
+    truth_states.append(x_true)
+
+N_a_sim, N_g_sim = 0.06 / 60.0, np.radians(0.3) / 60.0
+b_a_true = np.array([0.03, -0.02, 0.05])
+b_g_true = np.radians([0.05, -0.04, 0.06])
+f_meas = f_imu + b_a_true + N_a_sim / np.sqrt(tau_sim) * rng.standard_normal((n_sim, 3))
+w_meas = w_imu + b_g_true + N_g_sim / np.sqrt(tau_sim) * rng.standard_normal((n_sim, 3))
+
+lever = np.array([0.4, 0.0, -1.2])
+sigma_gnss = np.array([1.5, 1.5, 3.0])
+R_gnss = np.diag(sigma_gnss**2)
+gnss_every = round(1.0 / tau_sim)
+
+sigma0 = np.concatenate([[3.0, 3.0, 5.0], [0.1] * 3, np.radians([1.0, 1.0, 10.0]),
+                         [0.1] * 3, np.radians([0.1] * 3)])
+P = np.diag(sigma0**2)
+dx_init = np.concatenate([[2.0, -2.0, 3.0], [0.0] * 3, np.radians([0.5, -0.5, 8.0]), [0.0] * 6])
+x_est = replace(inject(truth_states[0], -dx_init), b_a=np.zeros(3), b_g=np.zeros(3))
+T_c_sim = 100.0
+q_ba_sim = (0.1e-3 * 9.80665) ** 2 / T_c_sim
+q_bg_sim = np.radians(10.0 / 3600.0) ** 2 / T_c_sim
+Q_c_sim = np.diag(np.concatenate([[N_a_sim**2] * 3, [N_g_sim**2] * 3, [q_ba_sim] * 3, [q_bg_sim] * 3]))
+
+
+def with_true_biases(x):
+    return replace(x, b_a=b_a_true, b_g=b_g_true)
+
+
+errors, sigmas = np.zeros((n_sim + 1, 15)), np.zeros((n_sim + 1, 15))
+errors[0], sigmas[0] = error_between(with_true_biases(truth_states[0]), x_est), sigma0
+nis_log = []
+for k in range(n_sim):
+    F_k, G_k = error_state_model(quat_to_dcm(x_est.q), f_meas[k] - x_est.b_a)
+    F_d = np.eye(15) + F_k * tau_sim
+    P = F_d @ P @ F_d.T + G_k @ Q_c_sim @ G_k.T * tau_sim
+    x_est = strapdown_step(x_est, f_meas[k], w_meas[k], tau_sim)
+    if (k + 1) % gnss_every == 0:
+        lat_a, lon_a, h_a = antenna_position(truth_states[k + 1], lever)
+        R_Ma, R_Na = radii(lat_a)
+        noise = sigma_gnss * rng.standard_normal(3)
+        nu, H = gnss_position_residual(x_est, lat_a + noise[0] / (R_Ma + h_a),
+                                       lon_a + noise[1] / ((R_Na + h_a) * np.cos(lat_a)),
+                                       h_a - noise[2], lever)
+        x_est, P, nis = eskf_update(x_est, P, nu, H, R_gnss)
+        nis_log.append(nis)
+    errors[k + 1] = error_between(with_true_biases(truth_states[k + 1]), x_est)
+    sigmas[k + 1] = np.sqrt(np.diag(P))
+
+nis_log = np.array(nis_log)
+nis_lo, nis_hi = chi2.ppf([0.025, 0.975], 3 * len(nis_log)) / len(nis_log)
+t_fix = np.arange(1, len(nis_log) + 1) * gnss_every * tau_sim
+MANEUVERS = [(10, 20, "accelerate"), (50, 60, "turn"), (90, 100, "brake")]
+
+
+def shade_maneuvers(ax, label=False):
+    for start, stop, name in MANEUVERS:
+        ax.axvspan(start, stop, color="0.9", zorder=0)
+        if label:
+            ax.text(0.5 * (start + stop), 1.0, name, transform=ax.get_xaxis_transform(),
+                    ha="center", va="bottom", fontsize=11, color="0.35")
+```
+
+::: {.incremental}
+- Two minutes at 42° N: parked 10 s, accelerate to 15 m/s, cruise, a 90° right
+  turn, cruise, brake
+- Smartphone IMU at 100 Hz: biases of a few mg and 150 to 220°/h, plus white noise
+- GNSS once per second, 1.5 m horizontal and 3 m vertical, from an antenna 1.2 m
+  above and 0.4 m ahead of the IMU
+- The filter starts with zero bias estimates and an 8° heading error, and is told
+  it could be 10°
+:::
+
+. . .
+
+Truth comes from the mechanization itself: design the motion, compute what a
+perfect IMU would sense, integrate. Truth and IMU data agree by construction.
+
+## Heading waits for the car to move
+
+```{python}
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.0), gridspec_kw={"width_ratios": [1.6, 1]})
+ax = axes[0]
+ax.fill_between(t_sim, -3 * np.degrees(sigmas[:, 8]), 3 * np.degrees(sigmas[:, 8]), color=ACCENT,
+                alpha=0.15, label=r"$\pm 3\sigma$")
+ax.plot(t_sim, np.degrees(errors[:, 8]), color=ACCENT, linewidth=1.8, label="heading error")
+ax.set_ylim(-32, 32)
+ax.set_xlabel("time [s]")
+ax.set_ylabel("heading error [deg]")
+ax.legend(loc="lower right", fontsize=12, ncol=2)
+shade_maneuvers(ax, label=True)
+ax = axes[1]
+ax.plot(t_sim, np.degrees(sigmas[:, 14]) * 3600.0, color="C0", linewidth=2)
+ax.set_ylim(0, 400)
+ax.set_xlabel("time [s]")
+ax.set_ylabel("z-gyro bias σ [deg/h]")
+shade_maneuvers(ax, label=True)
+fig.tight_layout()
+plt.show()
+```
+
+. . .
+
+Parked: σ cannot move. Accelerating: 10° falls toward 3°. Cruising: it creeps up.
+The turn: about 1.5°, and the vertical gyro bias finally shows.
+
+::: {.notes}
+While parked the only specific force is vertical, so a heading error has no
+measurable effect. The acceleration tips the sensed acceleration sideways; the
+uncertainty keeps falling after it ends, because position fixes reveal the
+sideways velocity error only once it has integrated, and because the change in
+specific force separates heading from accelerometer bias. On the cruise the
+vertical gyro bias is still unknown and integrates into heading. The turn brings
+the z-gyro bias sigma from 360 to under 150 deg/h.
+:::
+
+## Is the filter honest?
+
+```{python}
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.0), gridspec_kw={"width_ratios": [1.6, 1]})
+ax = axes[0]
+for idx, name, color in [(0, "north", "C0"), (1, "east", "C1")]:
+    ax.fill_between(t_sim, -3 * sigmas[:, idx], 3 * sigmas[:, idx], color=color, alpha=0.15)
+    ax.plot(t_sim, errors[:, idx], color=color, linewidth=1.5, label=f"{name} error")
+ax.set_ylim(-12, 12)
+ax.set_xlabel("time [s]")
+ax.set_ylabel("position error [m]")
+ax.legend(loc="lower right", fontsize=12, ncol=2)
+shade_maneuvers(ax)
+ax = axes[1]
+ax.semilogy(t_fix, nis_log, "o", color="C2", markersize=3.5)
+for p in (0.025, 0.975):
+    ax.axhline(chi2.ppf(p, 3), color="k", linestyle="--", linewidth=1)
+ax.set_xlabel("time [s]")
+ax.set_ylabel("NIS per fix")
+shade_maneuvers(ax)
+fig.tight_layout()
+plt.show()
+```
+
+. . .
+
+```{python}
+#| output: asis
+inside = np.mean(np.abs(errors) <= 3 * sigmas)
+print(f"Time-averaged NIS {nis_log.mean():.2f}, inside its 95% bounds "
+      f"[{nis_lo:.2f}, {nis_hi:.2f}]; {100 * inside:.0f}% of all error samples "
+      f"inside 3σ. The covariance can be trusted.")
+```
+
+::: {.notes}
+Position at the meter level is the easy part: GNSS measures it directly. Dashed
+lines on the right: single-sample 95% bounds for three degrees of freedom.
+Project 3 asks for the same filter on real phone data, where the timestamps are
+messy, the noise is not white, the biases wander, and there is no truth. The
+structure does not change.
+:::
+
+## Practical failure modes
+
+::: {.smaller-text}
+:::: {.columns}
+::: {.column width="50%"}
+- Latitude and longitude errors mixed with meters
+- ENU and NED signs mixed
+- Gravity with the wrong sign, or applied in the body frame
+- Earth rate subtracted with the wrong sign
+- Quaternion order conventions mixed (SciPy stores scalar last)
+- Mean-sea-level height used as ellipsoidal
+:::
+::: {.column width="50%"}
+- Lever arm ignored, or with the wrong sign
+- GNSS processed with stale timestamps
+- GNSS trusted through multipath or outages
+- Covariance updated in an unstable form
+- Attitude correction on the wrong side of the quaternion, or with the wrong sign
+:::
+::::
+:::
+
+. . .
+
+::: {.key}
+Not glamorous, but these are the ones that waste time. Test standing still, in a
+straight line, and through short outages before a complex trajectory, and log the
+NIS from the very first run.
+:::
+
+# INS Error Models and IMU Characterization {#inserrors}
+
+Every small IMU error is integrated. Some of them three times.
+
+[Chapter: INS Error Models and IMU Characterization](https://jbrodovsky.github.io/advanced_navigation/chapters/05-global/ins-errors.html)
+
+## A perfect mechanization still drifts
+
+[Why does an INS drift when its equations are perfect?]{.question}
+
+. . .
+
+$$
+\begin{aligned}
+\tilde{\mathbf{f}}^b &= \mathbf{M}_a\mathbf{f}^b + \mathbf{b}_a + \mathbf{b}_a(T) + \mathbf{n}_a + \mathbf{q}_a \\
+\tilde{\boldsymbol{\omega}}_{ib}^b &= \mathbf{M}_g\boldsymbol{\omega}_{ib}^b + \mathbf{b}_g + \mathbf{b}_g(T) + \mathbf{n}_g + \mathbf{q}_g
+\end{aligned}
+$$
+
+. . .
+
+::: {.incremental}
+- $\mathbf{M}$: scale factor and misalignment; $\mathbf{b}$: slowly varying bias;
+  $\mathbf{b}(T)$: temperature; $\mathbf{n}$: noise; $\mathbf{q}$: quantization
+- Calibrate scale factor and misalignment; estimate the residual **biases** in
+  the filter
+- States the trajectory cannot observe make a filter look more sophisticated and
+  behave less reliably
+:::
+
+::: {.notes}
+The goal is not to turn anyone into an IMU test engineer; it is a filter design
+you can defend instead of one tuned by vibes. Groves and IEEE Std 952 are the
+references to keep nearby. Units: milli-g and micro-g use standard gravity
+9.80665 m/s^2 as a conversion constant.
+:::
+
+## Three kinds of error
+
+:::: {.columns}
+::: {.column width="33%"}
+**Deterministic**: calibrate
+
+- Bias at a reference temperature
+- Scale factor
+- Misalignment, cross-axis sensitivity
+- Mounting-angle error
+:::
+::: {.column width="33%"}
+**Stochastic**: model
+
+- White noise (angle and velocity random walk)
+- Bias instability
+- Bias random walk
+- Quantization
+- Turn-on bias
+:::
+::: {.column width="33%"}
+**Environmental**: test
+
+- Temperature
+- Vibration and rectification
+- Magnetic sensitivity
+- g-dependent gyro errors
+- Flexure between sensors
+:::
+::::
+
+. . .
+
+::: {.key}
+Turn-on bias straddles the line: constant within a run, so the filter can
+estimate it; different at every power-up, so a factory calibration cannot.
+:::
+
+## Bias wins
+
+:::: {.columns}
+::: {.column width="50%"}
+**Accelerometer bias**, integrated twice:
+
+$$
+\Delta p(t) \approx \tfrac{1}{2}\,b_a t^2
+$$
+
+1 mg for a minute: **17.7 m**
+:::
+::: {.column width="50%"}
+::: {.fragment}
+**Gyro bias**: a tilt $\delta\theta \approx b_g t$ leaks $g_0\,\delta\theta$ of gravity:
+
+$$
+\Delta p(t) \approx \tfrac{1}{6}\,g_0 b_g t^3
+$$
+
+10°/h for a minute: **17 m**, and pulling ahead
+:::
+:::
+::::
+
+. . .
+
+**White noise** integrates too, but partly cancels:
+
+$$
+\sigma_p^{\text{VRW}}(t) = \frac{N_a\,t^{3/2}}{\sqrt{3}},
+\qquad
+\sigma_p^{\text{ARW}}(t) = \frac{g_0 N_g\,t^{5/2}}{\sqrt{20}}
+$$
+
+. . .
+
+::: {.key}
+Attitude is not just an output of the INS. It is part of the acceleration model.
+:::
+
+::: {.notes}
+The noise formulas come from the variance of repeated integrals of white noise;
+a triple integral of white noise with density q has variance q t^5 / 20. The
+chapter checks both with a Monte Carlo. Exercise 1 derives them.
+:::
+
+## A phone IMU's first minute
+
+```{python}
+#| include: false
+G0 = 9.80665
+N_a = 0.06 / 60.0
+N_g = np.radians(0.3) / 60.0
+b_a_turn_on, b_g_turn_on = 10e-3 * G0, np.radians(0.1)
+b_a_cal, b_g_cal = 1e-3 * G0, np.radians(10.0 / 3600.0)
+
+
+def drift_terms(t, b_a, b_g):
+    return {"accel bias": 0.5 * b_a * t**2,
+            "gyro bias (tilt)": G0 * b_g * t**3 / 6.0,
+            "VRW (1 sigma)": N_a * t**1.5 / np.sqrt(3.0),
+            "ARW via tilt (1 sigma)": G0 * N_g * t**2.5 / np.sqrt(20.0)}
+
+
+BUDGET_COLORS = {"accel bias": "C0", "gyro bias (tilt)": "C3", "VRW (1 sigma)": "C2",
+                 "ARW via tilt (1 sigma)": "C4"}
+BUDGET_STAGES = [["accel bias"], ["accel bias", "gyro bias (tilt)"],
+                 ["accel bias", "gyro bias (tilt)", "VRW (1 sigma)", "ARW via tilt (1 sigma)"]]
+t_budget = np.logspace(-1, np.log10(300.0), 200)
+
+
+def plot_budget(stage):
+    """Stage 0-2 adds terms with turn-on biases; stage 3 adds the calibrated biases."""
+    fig, ax = plt.subplots(figsize=(11.0, 3.8))
+    shown = BUDGET_STAGES[min(stage, 2)]
+    for name, values in drift_terms(t_budget, b_a_turn_on, b_g_turn_on).items():
+        if name in shown:
+            ax.loglog(t_budget, values, color=BUDGET_COLORS[name], linewidth=2.2, label=name)
+    if stage >= 3:
+        for name, values in drift_terms(t_budget, b_a_cal, b_g_cal).items():
+            if "bias" in name:
+                ax.loglog(t_budget, values, color=BUDGET_COLORS[name], linestyle="--", linewidth=2,
+                          label=f"{name}, calibrated")
+    ax.axvline(60.0, color="0.5", linewidth=1)
+    ax.set_xlim(t_budget[0], t_budget[-1])
+    ax.set_ylim(1e-5, 1e5)
+    ax.set_xlabel("time since last fix [s]")
+    ax.set_ylabel("position error [m]")
+    ax.grid(True, which="both", alpha=0.25)
+    ax.legend(loc="upper left", fontsize=11, ncol=2)
+    fig.tight_layout()
+    pin_figure_size(fig)
+    plt.show()
+```
+
+::: {.r-stack}
+```{python}
+plot_budget(0)
+```
+::: {.fragment}
+```{python}
+plot_budget(1)
+```
+:::
+::: {.fragment}
+```{python}
+plot_budget(2)
+```
+:::
+::: {.fragment}
+```{python}
+plot_budget(3)
+```
+:::
+:::
+
+Turn-on biases (10 mg, 360°/h): the gyro term takes over after about 17 s and
+reaches about 600 m at a minute. Calibration buys a factor of ten, not a new shape.
+
+::: {.notes}
+Click through: accelerometer bias, then the gyro bias through tilt, then the two
+white-noise terms, then (dashed) the bias terms after a stationary calibration (1
+mg, 10 deg/h). Within seconds, bias beats noise: that is the case for estimating
+biases in the filter. These polynomials describe the first minutes of free-inertial
+navigation, the regime that matters for MEMS. Over tens of minutes to hours the
+couplings the short-horizon model leaves out bend these curves; that long-horizon
+behavior belongs to navigation-grade systems and is beyond what this course needs.
+:::
+
+## IMU grades
+
+::: {.smaller-text}
+| Grade | Typical use | Gyro bias (°/h) | ARW (°/√h) | Accel bias | Free-inertial drift |
+|---|---|---|---|---|---|
+| Consumer | phones | 10–100; turn-on 100–1000+ | 0.2–1 | 1–30 mg | ~1 km in a minute |
+| Industrial | cars, drones, robots | 1–10 | 0.1–0.3 | 0.1–1 mg | tens of m in a minute |
+| Tactical | UAVs, munitions | 0.1–10 | 0.02–0.1 | 50–1000 µg | meters in a minute |
+| Navigation | airliners, ships | ≤ 0.01 | ≤ 0.002 | 10–100 µg | ~1 nmi in an hour |
+| Strategic | submarines | ≤ 0.001 | ≤ 0.0005 | ≤ 1–10 µg | ~1 nmi in a day |
+:::
+
+. . .
+
+A phone gyro's bias is 10 to 100 times Earth rate: no north, and a free-inertial
+solution gone in a minute. A navigation-grade gyro resolves Earth rate to a part in
+a thousand.
+
+. . .
+
+The price difference: pocket change versus a house.
+
+::: {.notes}
+Orders of magnitude; vendors draw the boundaries differently. Bias stability is
+the in-run bias instability from an Allan deviation; for consumer parts the
+run-to-run turn-on bias is far larger and is what an uncalibrated system sees.
+Drift figures assume no aiding after a good alignment; for navigation and
+strategic grades they are long-horizon literature figures, not the polynomials.
+:::
+
+## Two bias models
+
+:::: {.columns}
+::: {.column width="48%"}
+**Random walk** (this course):
+$\dot{\mathbf{b}} = \mathbf{w}_b$, so $\sigma_b(t) = \sqrt{q_b t}$, unbounded
+
+**First-order Gauss-Markov:**
+
+$$
+\dot{\mathbf{b}} = -\frac{1}{T_c}\mathbf{b} + \mathbf{w}_b,
+\qquad
+q_b = \frac{2\sigma_b^2}{T_c}
+$$
+
+$$
+Q_b = \sigma_b^2\left(1 - e^{-2\Delta t/T_c}\right)
+$$
+:::
+::: {.column width="52%"}
+```{python}
+T_c_demo, sigma_b_demo, dt_b = 100.0, 1.0, 1.0
+t_b = np.arange(0.0, 500.0 + dt_b, dt_b)
+q_b_demo = 2.0 * sigma_b_demo**2 / T_c_demo
+rng_b = np.random.default_rng(3)
+fig, ax = plt.subplots(figsize=(5.8, 4.2))
+for i in range(3):
+    w = rng_b.standard_normal(t_b.size - 1)
+    rw, gm = [0.0], [0.0]
+    for wk in w:
+        rw.append(rw[-1] + np.sqrt(q_b_demo * dt_b) * wk)
+        gm.append(np.exp(-dt_b / T_c_demo) * gm[-1]
+                  + sigma_b_demo * np.sqrt(1.0 - np.exp(-2.0 * dt_b / T_c_demo)) * wk)
+    ax.plot(t_b, rw, color="C1", linewidth=1, alpha=0.6)
+    ax.plot(t_b, gm, color="C0", linewidth=1, alpha=0.6)
+for sign in (1, -1):
+    ax.plot(t_b, sign * np.sqrt(q_b_demo * t_b), color="C1", linewidth=2.4,
+            label="random walk σ" if sign > 0 else None)
+    ax.plot(t_b, sign * sigma_b_demo * np.sqrt(1.0 - np.exp(-2.0 * t_b / T_c_demo)), color="C0",
+            linewidth=2.4, label="Gauss-Markov σ" if sign > 0 else None)
+ax.axvline(T_c_demo, color="0.5", linewidth=1)
+ax.text(T_c_demo * 1.05, -3.1, r"$T_c$", fontsize=12)
+ax.set_ylim(-3.4, 3.4)
+ax.set_xlabel("time [s]")
+ax.set_ylabel(r"bias [$\sigma_b$]")
+ax.legend(loc="upper left", fontsize=12)
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+. . .
+
+For $t \ll T_c$ they are indistinguishable. Gauss-Markov assumes the bias stays
+bounded; random walk is the conservative choice.
+
+## Allan deviation
+
+If I average this sensor for $\tau$ seconds, how much does one average differ
+from the next?
+
+$$
+\sigma_A^2(\tau) = \tfrac{1}{2}\,\mathbb{E}\!\left[\left(\bar{y}_{i+1}(\tau) - \bar{y}_i(\tau)\right)^2\right]
+$$
+
+. . .
+
+```{.python code-line-numbers="|2|5|6|8|1-9"}
+def allan_deviation(samples, dt, cluster_sizes):
+    cumulative = np.concatenate([[0.0], np.cumsum(samples)])
+    taus, deviations = [], []
+    for m in cluster_sizes:
+        averages = (cumulative[m:] - cumulative[:-m]) / m    # every window of m samples
+        differences = averages[m:] - averages[:-m]           # adjacent, non-overlapping
+        taus.append(m * dt)
+        deviations.append(np.sqrt(0.5 * np.mean(differences**2)))
+    return np.asarray(taus), np.asarray(deviations)
+```
+
+. . .
+
+Record the sensor perfectly still, for hours, at constant temperature.
+
+::: {.notes}
+This is the core of the chapter's overlapping_allan_deviation, minus the default
+cluster sizes. The cumulative sum makes every window average one subtraction, so
+the overlapping estimator costs O(n) per cluster size. The IEEE gyro test
+standard (Std 952) is the reference.
+:::
+
+## Reading the slopes
+
+```{python}
+#| include: false
+def overlapping_allan_deviation(samples, dt):
+    samples = np.asarray(samples, dtype=float)
+    n = samples.size
+    cluster_sizes = np.unique(np.logspace(0, np.log10(max(2, n // 10)), num=60).astype(int))
+    taus, deviations = [], []
+    cumulative = np.concatenate([[0.0], np.cumsum(samples)])
+    for m in cluster_sizes:
+        if 2 * m >= n:
+            continue
+        averages = (cumulative[m:] - cumulative[:-m]) / m
+        differences = averages[m:] - averages[:-m]
+        taus.append(m * dt)
+        deviations.append(np.sqrt(0.5 * np.mean(differences**2)))
+    return np.asarray(taus), np.asarray(deviations)
+
+
+rng = np.random.default_rng(952)
+fs, hours = 100.0, 4.0
+dt_allan = 1.0 / fs
+n_allan = round(hours * 3600.0 * fs)
+N_true = np.radians(0.3) / 60.0
+K_true = np.radians(30.0 / 3600.0) / 60.0
+quantum = 3e-5
+rate = (N_true / np.sqrt(dt_allan) * rng.standard_normal(n_allan)
+        + np.cumsum(K_true * np.sqrt(dt_allan) * rng.standard_normal(n_allan)))
+angle_out = np.floor(np.cumsum(rate) * dt_allan / quantum) * quantum
+rate_out = np.diff(angle_out, prepend=0.0) / dt_allan
+taus, adev = overlapping_allan_deviation(rate_out, dt_allan)
+tau_cross = np.sqrt(3.0) * N_true / K_true
+in_arw = (taus >= 1.0) & (taus <= tau_cross / 10.0)
+in_rrw = taus >= 4.0 * tau_cross
+N_hat = np.exp(np.mean(np.log(adev[in_arw]) + 0.5 * np.log(taus[in_arw])))
+K_hat = np.exp(np.mean(np.log(adev[in_rrw]) - 0.5 * np.log(taus[in_rrw] / 3.0)))
+to_dph = np.degrees(1.0) * 3600.0
+```
+
+:::: {.columns}
+::: {.column width="44%"}
+::: {.smaller-text}
+| Slope | Noise term | Read the line at |
+|---:|---|---|
+| $-1$ | quantization | $Q$ at $\tau = \sqrt{3}$ s |
+| $-\tfrac12$ | angle (velocity) random walk | $N$ at $\tau = 1$ s |
+| $0$ | bias instability | $B = \sigma_{\min}/0.664$ |
+| $+\tfrac12$ | rate (acceleration) random walk | $K$ at $\tau = 3$ s |
+| $+1$ | rate ramp | $R$ at $\tau = \sqrt{2}$ s |
+:::
+:::
+::: {.column width="56%"}
+```{python}
+M_clusters = n_allan * dt_allan / taus
+rel_unc = 1.0 / np.sqrt(2.0 * (M_clusters - 1.0))
+fig, ax = plt.subplots(figsize=(6.2, 4.2))
+ax.loglog(taus, adev * to_dph, "C0", linewidth=2, label="Allan deviation")
+ax.fill_between(taus, adev * to_dph * (1 - rel_unc), adev * to_dph * (1 + rel_unc), color="C0", alpha=0.2)
+tau_line = np.logspace(-2, 4, 100)
+ax.loglog(tau_line, N_hat / np.sqrt(tau_line) * to_dph, "C1--", label=r"fitted $N/\sqrt{\tau}$")
+ax.loglog(tau_line, K_hat * np.sqrt(tau_line / 3.0) * to_dph, "C3--", label=r"fitted $K\sqrt{\tau/3}$")
+ax.plot([1.0], [N_hat * to_dph], "o", color="C1")
+ax.plot([3.0], [K_hat * to_dph], "o", color="C3")
+ax.set_xlim(1e-2, 2e3)
+ax.set_ylim(0.3, 5e3)
+ax.set_xlabel(r"averaging time $\tau$ [s]")
+ax.set_ylabel(r"$\sigma_A(\tau)$ [deg/h]")
+ax.grid(True, which="both", alpha=0.25)
+ax.legend(loc="upper right", fontsize=11)
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+```{python}
+#| output: asis
+print(f"Four simulated hours at 100 Hz: $N$ = 0.30 °/√h in, {np.degrees(N_hat) * 60:.2f} out; "
+      f"$K$ = 30 °/h/√h in, {K_hat * to_dph * 60:.0f} out.")
+```
+
+::: {.notes}
+White rate noise integrates to an angle that random-walks: the angle random walk
+N, in rad/sqrt(s) or deg/sqrt(h). The -1/2 line at tau = 1 s is the noise density
+itself, which is why data sheets quote either. A bias that random-walks gives the
++1/2 slope, K. Bias instability is flicker noise, the flat bottom. Quantization
+(slope -1) shows at the shortest tau because this synthetic gyro reports
+quantized angle increments, like a ring-laser gyro counting fringes; it is rarely
+visible in MEMS rate outputs.
+:::
+
+## Three ways to misread an Allan plot
+
+::: {.incremental}
+- **Reading the curve, not the fitted line:** the wrong $N$ whenever another term
+  still contributes at $\tau = 1$ s
+- **Trusting the right end:** $M$ clusters leave about $1/\sqrt{2(M-1)}$ relative
+  uncertainty, still 20% at $\tau = 20$ min from four hours. Rerun with new seeds:
+  $N$ moves a couple of percent, $K$ by 20% or more
+- **Inventing a floor:** this gyro has no flicker noise, so its minimum is just
+  where two lines cross. Dividing it by 0.664 conjures a bias instability that is
+  not there
+:::
+
+. . .
+
+On a real sensor the floor is usually flat for a decade or more. Data-sheet rate
+random walks deserve the same skepticism as yours.
+
+## Calibrate first, filter second
+
+:::: {.columns}
+::: {.column width="50%"}
+**A calibration workflow**
+
+::: {.incremental}
+1. Zero-rate gyro test (it includes Earth rate)
+2. Six-position accelerometer test
+3. Temperature sweep
+4. Dynamic validation against GNSS, motion capture, or a known path
+:::
+:::
+::: {.column width="50%"}
+**Temperature and vibration**
+
+$b(T) = b_0 + \beta_1\Delta T + \beta_2\Delta T^2$,
+$\;\Delta T = T - T_{ref}$
+
+- Log the temperature; test the warm-up
+- Vibration rectifies into apparent bias; coning and sculling are its kinematic
+  cousins
+:::
+::::
+
+. . .
+
+::: {.key}
+Static calibration finds the initial parameters; the filter estimates the
+residuals. A Kalman filter is no substitute for basic calibration.
+:::
+
+::: {.notes}
+Earth rate (about 15 deg/h) in a zero-rate test is below the noise of a MEMS
+gyro's estimate, not of a tactical one's. A bias found in the first ten seconds
+after power-on may not be the bias at thermal equilibrium. Be skeptical of data
+sheets measured under conditions unlike your application.
+:::
+
+## From a data sheet to $\mathbf{Q}_c$
+
+::: {.smaller-text}
+| Data-sheet entry (smartphone class) | Gyroscope | Accelerometer |
+|---|---|---|
+| Noise | ARW 0.3 °/√h | VRW 0.06 m/s/√h |
+| Bias instability | 10 °/h | 0.1 mg |
+| Turn-on bias (1σ, run to run) | 0.1 °/s | 10 mg |
+:::
+
+. . .
+
+$$
+N_g = 0.3 \cdot \frac{\pi}{180} \cdot \frac{1}{60} = 8.7 \times 10^{-5}\ \tfrac{\text{rad}}{\sqrt{\text{s}}},
+\qquad
+N_a = \frac{0.06}{60} = 1.0 \times 10^{-3}\ \tfrac{\text{m/s}}{\sqrt{\text{s}}}
+$$
+
+. . .
+
+::: {.incremental}
+- One $\sqrt{\text{h}}$ is $60\sqrt{\text{s}}$. A density is the PSD's square root,
+  so $N^2$ goes into $\mathbf{Q}_c$; the per-sample σ is $N/\sqrt{\Delta t}$
+- Bias instability $B$ to a random-walk density: $q_b = B^2/T_c$
+  (Gauss-Markov: $2B^2/T_c$), with $T_c \approx 100$ s from the Allan floor
+:::
+
+::: {.notes}
+A rad/sqrt(s) is the same unit as (rad/s)/sqrt(Hz), so a data sheet that quotes
+noise density needs only a degrees-to-radians or micro-g conversion: 1e-3
+m/s^2/sqrt(Hz) is about 100 micro-g/sqrt(Hz). If the data sheet gives a rate
+random walk K instead of B, q_b = K^2 directly. T_c is rarely on the data sheet;
+tens to hundreds of seconds is typical for MEMS.
+:::
+
+## Turn-on bias goes in $\mathbf{P}_0$, not $\mathbf{Q}$
+
+```{python}
+#| include: false
+def van_loan(A, G, Qc, dt):
+    n = A.shape[0]
+    M = np.zeros((2 * n, 2 * n))
+    M[:n, :n], M[:n, n:], M[n:, n:] = -A, G @ Qc @ G.T, A.T
+    E = expm(M * dt)
+    Phi = E[n:, n:].T
+    Q_d = Phi @ E[:n, n:]
+    return Phi, 0.5 * (Q_d + Q_d.T)
+
+
+T_c = 100.0
+q_bg = np.radians(10.0 / 3600.0) ** 2 / T_c
+q_ba = (0.1e-3 * G0) ** 2 / T_c
+Q_c = np.diag(np.concatenate([[N_a**2] * 3, [N_g**2] * 3, [q_ba] * 3, [q_bg] * 3]))
+C_level = np.array([[np.cos(0.8), -np.sin(0.8), 0.0], [np.sin(0.8), np.cos(0.8), 0.0], [0.0, 0.0, 1.0]])
+F_lv, G_lv = error_state_model(C_level, C_level.T @ np.array([0.0, 0.0, -G0]))
+tau_q = 0.01
+Q_first = G_lv @ Q_c @ G_lv.T * tau_q
+Phi_vl, _ = van_loan(F_lv, G_lv, Q_c, tau_q)
+P_fine = np.zeros((15, 15))
+F_d_lv = np.eye(15) + F_lv * tau_q
+for _ in range(round(60.0 / tau_q)):
+    P_fine = F_d_lv @ P_fine @ F_d_lv.T + Q_first
+Phi_1s, Q_1s = van_loan(F_lv, G_lv, Q_c, 1.0)
+P_vl, P_coarse = np.zeros((15, 15)), np.zeros((15, 15))
+for _ in range(60):
+    P_vl = Phi_1s @ P_vl @ Phi_1s.T + Q_1s
+    P_coarse = (np.eye(15) + F_lv) @ P_coarse @ (np.eye(15) + F_lv).T + G_lv @ Q_c @ G_lv.T * 1.0
+P_turn_on = np.zeros((15, 15))
+P_turn_on[9:12, 9:12] = (10e-3 * G0) ** 2 * np.eye(3)
+P_turn_on[12:15, 12:15] = np.radians(0.1) ** 2 * np.eye(3)
+Phi_60 = np.linalg.matrix_power(Phi_vl, round(60.0 / tau_q))
+P_with_turn_on = Phi_60 @ P_turn_on @ Phi_60.T + P_fine
+```
+
+::: {.incremental}
+- Constant for the run, unknown at start-up: $(10\ \text{mg})^2$ and
+  $(0.1\ ^\circ/\text{s})^2$ go on the bias diagonals of $\mathbf{P}_0$
+- In $\mathbf{Q}$ it claims the bias jumps that much every second: the estimates
+  chase every innovation, and outages balloon
+:::
+
+. . .
+
+```{python}
+#| output: asis
+rows = [("first-order $\\mathbf{Q}_d$ at 100 Hz", P_fine), ("Van Loan at 1 Hz", P_vl),
+        ("first-order $\\mathbf{Q}_d$ at 1 Hz", P_coarse),
+        ("noise **plus turn-on biases** in $\\mathbf{P}_0$", P_with_turn_on)]
+print("::: {.smaller-text}")
+print("| 60 s of free inertial, from the data sheet | north σ |")
+print("|---|---:|")
+for name, P_60 in rows:
+    sigma_north = np.sqrt(P_60[0, 0])
+    print(f"| {name} | {sigma_north:.2f} m |" if sigma_north < 100 else f"| {name} | {sigma_north:.0f} m |")
+print(":::")
+```
+
+. . .
+
+Estimating the biases is the whole game. And raising random numbers until the plot
+looks better is not tuning; it is surrender with extra steps.
+
+::: {.notes}
+At the IMU rate the first-order Q_d and Van Loan agree to a fraction of a percent.
+Propagate less often (say once per GNSS epoch) and use Van Loan: the first-order
+formula at 1 Hz comes out several percent optimistic, more so when the vehicle
+maneuvers. Then tune against innovation statistics; a quiet bench data sheet
+often understates the noise on a vibrating vehicle by several times.
+:::
+
+## Heading hides in straight lines
+
+[What can GNSS position fixes teach the filter about heading?]{.accent}
+
+$$
+\delta\dot{\mathbf{v}} = -[\hat{\mathbf{f}}^n]_\times\delta\boldsymbol{\theta} - \hat{\mathbf{C}}_b^n\delta\mathbf{b}_a
+$$
+
+. . .
+
+Straight, level, constant speed: $\hat{\mathbf{f}}^n = [0, 0, -g]^T$ and
+
+$$
+-[\hat{\mathbf{f}}^n]_\times\delta\boldsymbol{\theta} =
+\begin{bmatrix} -g\,\delta\theta_E \\ g\,\delta\theta_N \\ 0 \end{bmatrix}
+$$
+
+. . .
+
+$\delta\theta_D$ is gone: no innovation, ever. Heading is **unobservable**, not
+merely weak.
+
+. . .
+
+Horizontal specific force brings it back; only its *changes* separate heading
+from accelerometer bias.
+
+## Which maneuvers reveal what
+
+```{python}
+#| include: false
+H_pos = np.hstack([np.eye(3), np.zeros((3, 12))])
+
+
+def stacked_observability(segments, fix_interval=1.0):
+    rows, Phi_total = [], np.eye(15)
+    for heading, f_n, duration in segments:
+        C = Rotation.from_euler("z", heading).as_matrix()
+        F, _ = error_state_model(C, C.T @ np.asarray(f_n))
+        Phi = expm(F * fix_interval)
+        for _ in range(round(duration / fix_interval)):
+            Phi_total = Phi @ Phi_total
+            rows.append(H_pos @ Phi_total)
+    return np.vstack(rows)
+
+
+cruise = [0.0, 0.0, -G0]
+accel = [1.5 * np.cos(0.3), 1.5 * np.sin(0.3), -G0]
+turn = [(0.3 + np.radians(9.0) * (k + 0.5),
+         2.4 * np.array([-np.sin(0.3 + np.radians(9.0) * (k + 0.5)),
+                         np.cos(0.3 + np.radians(9.0) * (k + 0.5)), 0.0]) + cruise, 1.0)
+        for k in range(10)]
+observability_cases = [
+    ("straight, constant speed", [(0.3, cruise, 30.0)]),
+    ("constant acceleration", [(0.3, accel, 30.0)]),
+    ("cruise, then accelerate", [(0.3, cruise, 15.0), (0.3, accel, 15.0)]),
+    ("cruise, 90° turn, cruise", [(0.3, cruise, 10.0), *turn, (0.3 + np.pi / 2, cruise, 10.0)]),
+]
+```
+
+```{python}
+#| output: asis
+print("::: {.smaller-text}")
+print("| 30 s of 1 Hz position fixes | observable directions | heading |")
+print("|---|:---:|:---:|")
+for name, segments in observability_cases:
+    _, sv, Vt = np.linalg.svd(stacked_observability(segments))
+    rank = int(np.sum(sv > 1e-9 * sv[0]))
+    yaw_hidden = np.linalg.norm(Vt[rank:, 8]) > 0.5
+    print(f"| {name} | {rank} of 15 | {'hidden' if yaw_hidden else 'observable'} |")
+print(":::")
+```
+
+. . .
+
+::: {.incremental}
+- Cruising hides yaw, the vertical gyro bias, and two tilt and accelerometer-bias
+  blends (the leveling ambiguity)
+- A turn rotates the body-fixed biases against the tilt and separates them all
+:::
+
+. . .
+
+::: {.key}
+A filter cannot learn what the motion never reveals.
+:::
+
+::: {.notes}
+Rank of the observability matrix of the 15-state model, stacked over 30 s of fixes,
+for a level vehicle. Holding a constant acceleration does not help: a constant
+horizontal specific force times a heading error looks just like a constant
+accelerometer bias. Starting or stopping an acceleration does. Vertical
+accelerometer bias and height error are tangled with gravity modeling and GNSS
+vertical quality. Exercise 3: stop-and-go without turns.
+:::
+
+## Choosing states
+
+Start with the 15. Add a state only when
+
+::: {.incremental}
+1. the error source is large enough to matter,
+2. the measurements **and the motion** can observe it, and
+3. you have a reasonable process model and initialization for it.
+:::
+
+. . .
+
+Scale factors, misalignment, lever arm, GNSS timing offset, barometer bias: for
+Project 3, usually distractions.
+
+. . .
+
+::: {.key}
+During a GNSS outage the covariance must grow; if it does not, the process model
+is overconfident. And do not trust a heading σ that shrinks on a long straight.
+:::
+
+# Project 3: INS/GNSS Integration {#project3}
+
+A phone in a car, a fix every second, and a covariance that has to tell the truth.
+
+[Handout: Project 3](https://jbrodovsky.github.io/advanced_navigation/assignments/m3-ins-gnss.html)
+
+## The job
+
+```text
+phone IMU (1 Hz) --> mount rotation (given) --> mechanization (Part A) --> L, lambda, h, v, q
+                                                       |
+GNSS fix (1 Hz) --> residual, lever arm (Part B) --> ESKF: F, Q_d, update, reset (Part B)
+                                                       |
+x_hat, P every second --> outages, NIS, errors (Part C) --> map matching, guidance, control
+```
+
+. . .
+
+::: {.incremental}
+- A 15-state loosely coupled ESKF on smartphone MEMS data, following the book's
+  model exactly
+- The consumer (route guidance, a controller, Project 1's perception) wants a
+  continuous pose with a covariance it can believe, in the tunnel too
+- Judged on what happens when GNSS is **withheld**, and on whether $\mathbf{P}$
+  tells the truth about it
+:::
+
+. . .
+
+[25% of the course grade. Recommended in weeks 12 and 13; due by the end of week 16.]{.muted}
+
+::: {.notes}
+The 747 entered service in 1970 with three Delco Carousel inertial navigators,
+each drifting on the order of a nautical mile per hour; crossing an ocean meant
+comparing them with each other and with any radio fix the crew could get. Today
+the inertial sensor in your pocket drifts about a kilometer per minute. Same
+engineering problem, different time constants.
+:::
+
+## The data
+
+```{python}
+from ins_gnss.datasets import load_mems_nav_trial, recommended_trials
+
+trial_name = recommended_trials()[1]                 # 2023-08-09_163741, the short one
+trial = load_mems_nav_trial(None, trial_name)
+fixes = trial.gnss_samples
+t_min = np.array([s.time_s for s in fixes]) / 60.0
+lat_g = np.array([s.latitude_rad for s in fixes])
+lon_g = np.array([s.longitude_rad for s in fixes])
+speed_g = np.array([np.nan if s.speed_mps is None else s.speed_mps for s in fixes])
+acc_g = np.array([np.nan if s.horizontal_accuracy_m is None else s.horizontal_accuracy_m for s in fixes])
+R_Mg, R_Ng = radii(lat_g[0])
+north_km = (R_Mg * (lat_g - lat_g[0])) / 1e3
+east_km = (R_Ng * np.cos(lat_g[0]) * (lon_g - lon_g[0])) / 1e3
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.0), gridspec_kw={"width_ratios": [1, 1.5]})
+ax = axes[0]
+sc = ax.scatter(east_km, north_km, c=speed_g, s=3, cmap="viridis")
+ax.set_aspect("equal", adjustable="datalim")
+ax.set_xlabel("east [km]")
+ax.set_ylabel("north [km]")
+fig.colorbar(sc, ax=ax, label="speed [m/s]")
+ax = axes[1]
+ax.plot(t_min, acc_g, color=ACCENT, linewidth=1)
+ax.set_xlabel("time [min]")
+ax.set_ylabel("reported accuracy [m]")
+ax.set_title(f"trial {trial_name}: one fix per second", fontsize=12)
+fig.tight_layout()
+plt.show()
+```
+
+An Android phone in a car around Philadelphia, the Jersey Shore, and Long Island:
+17 trials, 5 recommended. `uv run python scripts/fetch_data.py mems-nav-dataset`
+
+::: {.notes}
+The instructor's own dataset. Every trial also has a baseline reference solution
+and the phone's barometer, magnetometer, and own orientation in trial.auxiliary.
+recommended_trials() returns the five vetted ones; TRIAL_NOTES explains every
+trial's status, including the three excluded ones.
+:::
+
+## Read the data before you trust it
+
+::: {.incremental}
+- **1 Hz everything, the IMU included.** Whole-second timestamps; each interval
+  is propagated with the average of its two IMU samples
+- **Phone axes** ($x$ right, $y$ up the screen, $z$ out of it). Rotate to vehicle
+  forward-right-down with `estimate_mount_rotation` first
+- **Height is already ellipsoidal** (shore fixes read $-33$ to $-49$ m). Use it as $h$
+- **The baseline is not truth.** Labelled 1 s early, kilometers off in some gaps,
+  2 to 14 m off in height. Compare horizontally where `reference_valid_mask`
+  holds; never fuse it
+- **The phone's own orientation:** gravity right, heading tens of degrees off.
+  Sanity checks only
+:::
+
+::: {.notes}
+The loader now adds the 1 s baseline offset (BASELINE_TIME_OFFSET_S); with it the
+baseline agrees with GNSS to a median of 0.4 to 0.8 m. The upright phone sits near
+-90 degrees of Z-Y-X pitch in phone axes, gimbal lock, another reason to work in
+vehicle axes. Compare attitudes with attitude_error, never by subtracting Euler
+angles. The gyro output looks bias-compensated by the phone. repeated_fix_mask
+flags fixes that repeat while the car moves.
+:::
+
+## Part A: mechanization and alignment
+
+A strapdown INS you can trust before any filter touches it.
+
+::: {.incremental}
+- `mechanize`: pass the sign-strict tests (a perfect IMU at rest at 42° N stays
+  put for a minute; one driving east holds its velocity), plus a test of your own
+  that targets a different bug
+- `coarse_alignment`: level from the minute before departure, heading from the
+  GNSS course. Why not the gyros? What tilt does $b_a/g$ leave?
+- Free-inertial for 60 s after departure and on a parked stretch: which error
+  term dominates at 10 s, and at 60 s?
+- Report each trial's mount rotation, and what breaks without it
+:::
+
+. . .
+
+Expect tens of meters after 10 s and hundreds to thousands after a minute. A
+velocity that runs away in the first second **is** a bug.
+
+## Part B: the error-state filter
+
+```python
+error_state_jacobian(state, specific_force_b)       # -> F, 15 x 15
+discrete_process_noise(state, noise, dt_s)          # -> Q_d, 15 x 15
+gnss_position_residual(state, gnss, lever_arm_b)    # -> (nu, H)
+joseph_update(P, nu, H, R)                          # -> (delta_x, P_plus, nis)
+inject_error_state(state, delta_x)                  # -> NavState
+reset_covariance(P, delta_theta)                    # -> P
+```
+
+. . .
+
+::: {.incremental}
+- $\mathbf{F}$ must match a finite-difference Jacobian of **your** `mechanize`:
+  show the check
+- `IMUNoise` from a consumer data sheet, then **argued** inflation for 1 Hz samples
+- $\mathbf{R}$ from the receiver's accuracy (a 68% radius on Android), justified
+  by the NIS; an optional gate at 16.27 (99.9%, 3 DOF)
+- Sigma and bias plots read through observability: when does yaw wake up?
+:::
+
+::: {.notes}
+INSGNSSFilter strings them together: predict mechanizes and propagates P with
+F_d = I + F dt and your Q_d; update_gnss_position computes your residual, runs
+your update, injects, resets, and logs the NIS. The tests skip until each function
+exists, then check it strictly; they do not check whether your filter is any good
+on real data. The inflation must cover what a once-per-second sample misses:
+vibration, rate changes within the second, road grade.
+:::
+
+## Part C: evaluation
+
+::: {.incremental}
+- **GNSS only vs. loose INS/GNSS** against the valid reference. GNSS only may
+  win by decimeters, because the reference hugs the fixes. Say what the
+  comparison *can* show
+- **Scheduled outages** of 10, 30, 60, and 120 s, scored against the withheld
+  fixes, with the 3σ envelope and a constant-velocity baseline. Expect the INS to
+  win by 2 to 4× at 30 to 60 s, but not always
+- **Consistency:** each NIS against $[0.22, 9.35]$, the mean NIS, outage errors
+  inside 1σ and 3σ. Diagnose, tune, show the effect
+- **Heading:** yaw minus GNSS course above 8 m/s
+:::
+
+. . .
+
+All five recommended trials, one protocol for everyone: `schedule_outages`,
+`outage_errors`, `error_summary`.
+
+::: {.notes}
+Extensions, pick one or two and evaluate them with the same protocol: an RTS
+smoother through the outages, horizontal velocity aiding from speed and course,
+vehicle constraints (non-holonomic pseudo-measurements and zero-velocity updates),
+barometer altitude, or tight coupling, which needs your own raw GNSS logs (talk
+to the instructor first). Mean NIS far above 3: overconfident. Far below:
+underconfident, or GNSS errors correlated in time, which they are.
+:::
+
+## Pitfalls
+
+::: {.incremental}
+- Filtering in phone axes, or before checking the mount rotation
+- Scoring against the unshifted baseline, or fusing it
+- Turn-on bias in $\mathbf{Q}$; inflation of anything without an argument
+- One-second steps: first-order $\mathbf{Q}_d$ is several percent optimistic at 1 Hz
+- A gate whose rejections you never looked at
+- Repeated fixes while moving (`repeated_fix_mask`)
+:::
+
+. . .
+
+::: {.key}
+A copied filter that runs earns little. One you can test, tune, and break on
+purpose earns a lot.
+:::
+
+::: {.notes}
+You may adapt the book's mechanization, error model, and filter, with attribution
+in a code comment and in the report. The grading weight is on what the book cannot
+do for you: evidence that signs and Jacobians are right, a defensible noise model,
+behavior on real data, and an honest account of consistency.
+:::
+
+## Part 6 in one slide
+
+::: {.incremental}
+- **GNSS:** pseudoranges and Gauss-Newton; geometry sets quality; errors are
+  correlated and sometimes hostile
+- **Loose coupling:** receiver fixes as measurements; meters versus radians; lever
+  arm; timing
+- **Mechanization:** Earth rate, transport rate, Coriolis, normal gravity; test it
+  standing still
+- **Alignment:** gravity gives roll and pitch; a phone needs heading from
+  somewhere else
+- **ESKF:** 15 states, a short-horizon MEMS model, Joseph update, inject, reset
+- **Error models:** bias beats noise within seconds; turn-on bias goes in
+  $\mathbf{P}_0$
+- **Observability:** heading waits for the vehicle to accelerate or turn
+:::
+
+## Next: Part 7
+
+[Practical Implementation Guide →](07-practical.html)
+
+From a filter that runs on a laptop to one that runs on a vehicle.
+
+::: {.notes}
+Bridge: timestamps, frames, and lever arms were the pitfalls of this part; the
+next part makes them configuration, interfaces, and time synchronization on a real
+navigation package.
+:::
