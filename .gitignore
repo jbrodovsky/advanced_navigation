@@ -20,6 +20,10 @@ __pycache__/
 book/output/
 book/**/*_files/
 !book/_freeze/**/*_files/
+slides/output/
+slides/.quarto/
+slides/**/*_files/
+!slides/_freeze/**/*_files/
 
 # LaTeX build products for book/images/src
 book/images/src/*.aux

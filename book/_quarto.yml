@@ -26,6 +26,10 @@ book:
         text: Home
       - href: chapters/00-intro/syllabus.qmd
         text: Syllabus
+      # The lecture slides are a separate Quarto project (slides/) that CI
+      # copies into the site, so the link is absolute.
+      - href: https://jbrodovsky.github.io/advanced_navigation/slides/
+        text: Slides
       - text: "Module 1: Visual-Inertial Navigation"
         menu:
           - href: assignments/m1-drone-pipeline.qmd

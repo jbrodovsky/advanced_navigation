@@ -1,0 +1,1519 @@
+---
+title: "Introduction"
+subtitle: "Part 1 · Advanced Robot Navigation"
+part: 1
+footer: "Advanced Robot Navigation · Introduction"
+book-sources:
+  - book/chapters/00-intro/intro.qmd
+  - book/chapters/00-intro/navigation-overview.qmd
+  - book/chapters/00-intro/syllabus.qmd
+---
+
+## Part 1 at a glance
+
+```{python}
+#| include: false
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.patches import Circle, FancyBboxPatch
+
+plt.rcParams.update({
+    "font.size": 16,
+    "axes.grid": True,
+    "grid.alpha": 0.25,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "legend.frameon": False,
+})
+
+# Part colours from theme/course.scss, so figures match the decks.
+PART_COLORS = {1: "#3730a3", 2: "#1d4ed8", 3: "#0e7490", 4: "#047857",
+               5: "#b45309", 6: "#b91c1c", 7: "#be185d", 8: "#7e22ce"}
+ACCENT, TINT = PART_COLORS[1], "#eef2ff"
+```
+
+1. [Introduction to advanced navigation](#/intro)
+2. [Guidance, navigation, and control](#/gnc)
+3. [Syllabus](#/syllabus)
+
+::: {.key}
+Submarine, drone, or warehouse robot, it is the same math: propagate a state,
+correct it with fixes from the outside world, and tell the rest of the system how
+far to trust it.
+:::
+
+::: {.notes}
+Week 1 of the schedule: course orientation and GNC (frames and attitude follow in
+Part 2). The intro and syllabus are logistics, so move through them briskly. The
+GNC chapter is the real lecture.
+:::
+
+# Introduction to Advanced Navigation {#intro}
+
+Same math, from submarines to drones.
+
+[Chapter: Introduction to Advanced Navigation](https://jbrodovsky.github.io/advanced_navigation/chapters/00-intro/intro.html)
+
+## It was all the same math
+
+[What do a submarine and a drone have in common?]{.question}
+
+. . .
+
+::: {.incremental}
+- Penn State's Applied Research Laboratory: navigation for submarines
+- Then a company building autonomous flying vehicles
+- Modern robotics borrowed its navigation from aerospace and maritime engineering
+:::
+
+. . .
+
+What changes is the **scale** of the problem and the **curvature of the Earth**.
+
+::: {.notes}
+The surprise from the first months at ARL: the big navigation systems of
+submarines run on the same math as small robots. Machine versus robot is a
+lecture on philosophy; skip it. This is a course on how a computer system works
+out where it is by perceiving its environment, whether the answer goes to a
+human navigator or to a robot's controller. (Intro chapter, "Why Write This
+Course?")
+:::
+
+## About me
+
+::: {.incremental}
+- PhD candidate in mechanical engineering, Temple University: navigation without
+  GPS on small, low-power vehicles with MEMS-grade sensors
+- Before that: Penn State ARL, for the Office of Naval Research and the
+  submarine fleet
+- Philadelphia, US Eastern time (same as Worcester)
+- I aim to reply within 24 h on weekdays, 48 h on weekends
+- Minor debugging help: on the discussion boards, not one-on-one
+:::
+
+::: {.notes}
+Online students are spread over many time zones, so be patient with replies.
+Urgent: email or the Canvas discussion boards. Debugging support is in Python
+only, because the starter code is Python. (Intro chapter, "About Me" and
+"Project Guidance".)
+:::
+
+## Theory and code, side by side
+
+Inspired by Roger Labbe's *Kalman and Bayesian Filters in Python*: every idea
+gets a Python implementation you can run.
+
+. . .
+
+| Code in the notes | Is a | Promises |
+|----------------|-------------|-------------------------|
+| Executed Python block | runnable example | it runs; any randomness is seeded |
+| Marked `eval: false` | interface sketch | the shape, not the full implementation |
+| Text or pseudocode | control flow | who owns what; not executable |
+
+. . .
+
+A concise contract beats a deceptively incomplete "complete system."
+
+::: {.notes}
+Executed blocks run every time the book renders. Python because it makes
+numerical ideas easy to test and visualize; the conventions and algorithms carry
+over directly to C++, Rust, and other production languages. (Intro chapter,
+"Code Conventions".)
+:::
+
+## Why the course lives on GitHub
+
+::: {.incremental}
+- Always available, and easy to refer back to
+- Spring 2026: a cyberattack took Canvas down for several days, right at the end
+  of grading. Two sources beat one.
+- Version control instead of hand-maintaining a learning management system
+- Everyone starts from the same starter packages, in their **own public
+  repository**
+:::
+
+::: {.notes}
+Canvas still matters for WPI students: submissions and the official policies
+live there.
+:::
+
+## What to bring
+
+:::: {.columns}
+::: {.column width="60%"}
+**Assumed**, at an intermediate level
+
+- Probability: conditionals, distributions
+- Linear algebra: matrices, eigenvectors
+- A language: Python 3.11+, C++, Rust
+- The Bayes and Kalman filters
+:::
+::: {.column width="40%"}
+**Refreshed** in Part 2, Foundations
+
+- Frames and attitude conventions
+- Linear algebra
+- Probability
+- Scientific Python
+:::
+::::
+
+. . .
+
+::: {.key}
+Foundations is a compact reference, not a second undergraduate degree in
+mathematics. Read it first if anything feels rusty; come back when an
+implementation needs it.
+:::
+
+::: {.notes}
+Audience: second-semester master's students or second-year graduate students in
+robotics, mechanical, electrical, or computer engineering. Programming is a major
+component. (Intro chapter, "How to Use the Foundations" and "Recommended
+Prerequisites".)
+:::
+
+## The bookshelf
+
+| Book | Why it is here |
+|---------------------------------|--------------|
+| Thrun, Burgard, Fox, *Probabilistic Robotics* | the one to buy |
+| Siciliano, Khatib, *Springer Handbook of Robotics* | WPI library |
+| Corke, *Robotics, Vision and Control* (3rd ed.) | WPI library |
+| Labbe, *Kalman and Bayesian Filters in Python* | free, with code |
+| Groves, *Principles of GNSS, Inertial, and Multisensor ...* | a few chapters |
+
+. . .
+
+The notes are the **minimum**. To excel, read around them.
+
+. . .
+
+::: {.key}
+Do not memorize. Know where the answer lives, and how to find it fast.
+:::
+
+::: {.notes}
+Three ways to use the readings: read first and treat the lecture as the summary;
+lecture first and read to reinforce; or skim, lecture, then read in detail. For
+strategic, marine, or aerospace-grade INS later: Groves plus Titterton and
+Weston, *Strapdown Inertial Navigation Technology*. (Intro chapter, "Textbooks
+and Resources".)
+:::
+
+## The map of the book
+
+| Part | Role in the course | Assessed? |
+|------------------|----------------------------|----------|
+| Foundations | conventions, numerical tools, Python habits | background |
+| Sensing through Filtering | Module 1: a visual-inertial estimator | **yes** |
+| SLAM | Module 2: FastSLAM, data association | **yes** |
+| Global Navigation | Module 3: loose INS/GNSS integration | **yes** |
+| Practical and Advanced | production, smoothing, receiver-level GNSS, research | enrichment |
+
+::: {.notes}
+Each module ends in a project. The practical and advanced parts are enrichment
+unless an assignment says otherwise. (Intro chapter, "Module Roadmaps".)
+:::
+
+## No exams. A portfolio.
+
+::: {.incremental}
+- Closed-book timed exams are an anachronism: your career is open-book
+- So are grades and homework sets, mostly
+- Instead: projects that leave **artifacts** you can show an employer
+:::
+
+. . .
+
+::: {.key}
+The repository you build this semester *is* your portfolio. Keep it public, keep
+it tidy, and make it something you would send a hiring manager.
+:::
+
+::: {.notes}
+The art-school story: my wife, in a graphic design program, did not care about
+her GPA. She built a portfolio and took it to interviews. Graduate engineering
+works the same way: master's projects and theses, and at the PhD level,
+research. (Intro chapter, "Course Philosophy".)
+:::
+
+## Your repository
+
+::: {.incremental}
+1. On the course repository: **Use this template → Create a new repository**,
+   under your account, **public**. Your history, not mine.
+2. Clone it, `uv sync`, then `uv run python scripts/fetch_data.py all`. Datasets
+   are never committed.
+3. Work in the starter packages under `projects/`. Commit early and often.
+4. Reports, figures, and a short write-up of each project live next to the code.
+:::
+
+::: {.notes}
+A template, not a fork: you get a clean copy with none of my commit history, so
+the history on your profile is yours. (Intro chapter, "Your Portfolio
+Repository".)
+:::
+
+## Staying in sync, and honest
+
+```bash
+git remote add course https://github.com/jbrodovsky/advanced_navigation.git
+git fetch course
+git merge course/main --allow-unrelated-histories   # first time; later a plain merge
+```
+
+On a conflict: keep **your** code, take **mine** for the notes.
+
+. . .
+
+::: {.incremental}
+- Notes CC BY-NC-SA 4.0, code MIT: keep both in your repository
+- Adapted code from the book? Say so in a comment **and** in the report
+- Copying a classmate is plagiarism, and public repositories make it easy to spot
+:::
+
+## Write it like a research paper
+
+:::: {.columns}
+::: {.column width="60%"}
+::: {.incremental}
+1. **Introduction** [1--2 ¶, context, not the handout]{.muted}
+2. **Methods** [3--5 ¶, how and why, with code]{.muted}
+3. **Results** [present: figures and tables]{.muted}
+4. **Discussion** [3--5 ¶, talk: critique, contrast]{.muted}
+5. **Conclusion** [one paragraph, at most]{.muted}
+:::
+:::
+::: {.column width="40%"}
+::: {.fragment}
+- 15--20 paragraphs, 3--5 pages
+- Single column
+- Few bullet points
+:::
+:::
+::::
+
+::: {.fragment}
+::: {.key}
+"Short phrase -- longer explanation" bullets for every section are a dead
+giveaway of a chatbot. (Slides get a pass. Reports do not.)
+:::
+:::
+
+::: {.notes}
+Questions every report should answer: what problem, why it matters, the
+approach, the results, the limitations, the next steps, what you learned, and
+what may have gone wrong. Single column because two-column IEEE layouts shrink
+figures and read badly in the Canvas PDF viewer. (Intro chapter, "Project
+Guidance".)
+:::
+
+## Code is read more often than it is written
+
+:::: {.columns}
+::: {.column width="33%"}
+**Readable**
+
+- Inputs, outputs, and purpose documented
+- Descriptive names
+- Comments where it is not obvious
+:::
+::: {.column width="33%"}
+**Modular**
+
+- Small functions
+- Separation of concerns
+- Meaningful error messages
+- Unit tests
+:::
+::: {.column width="33%"}
+**Versioned**
+
+- Git, in your public repository
+- Submit on Canvas, file by file, no archives
+:::
+::::
+
+. . .
+
+Starter code is Python, and so is debugging help. Matlab is accepted, but my
+first debugging suggestion will be to rewrite it in Python.
+
+::: {.notes}
+The philosophy is borrowed from Google's C++ style guide. Code is graded mainly
+as an anti-plagiarism check: to show you did the work yourself. References:
+Google's Python Style Guide, PEP 8, and the Hitchhiker's Guide to Python. (Intro
+chapter, "Code style guide" and "Project Guidance".)
+:::
+
+## AI is a junior partner
+
+When this course began: chatbots helped with mundane code and could not do the
+projects.
+
+. . .
+
+[Three years later, they can do your homework projects.]{.accent}
+
+. . .
+
+::: {.incremental}
+- Not banned. Use them thoughtfully; I do, for this course and at work.
+- A junior partner: someone has to check its work
+- Checking means understanding the material and reading the code
+- What is graded is **your** understanding
+:::
+
+## The `filterpy` rule
+
+Any software package is allowed, including pre-built filters such as `filterpy`.
+But:
+
+| You submit | Expect |
+|-----------------------------|--------------|
+| Code that runs, the required output, and a report | A passing C |
+| Predict and update written yourself, with `numpy`/`scipy` only | Room for a higher grade |
+| A filtering library, **plus** a report that explains every design choice (state, models, covariance initialization) well enough to reproduce | Room for a higher grade, with a much higher bar for a B |
+
+::: {.notes}
+The library route is not banned; the filters are the point of the course, so
+using one means the report has to carry the understanding instead. (Intro
+chapter, "AI Policy and Software Dependencies".)
+:::
+
+# Guidance, Navigation, and Control {#gnc}
+
+The boundaries are where real systems break.
+
+[Chapter: Guidance, Navigation, and Control](https://jbrodovsky.github.io/advanced_navigation/chapters/00-intro/navigation-overview.html)
+
+## Two vocabularies, one problem
+
+[What does navigation owe the rest of the robot?]{.question}
+
+. . .
+
+| Aerospace and maritime | Robotics |
+|---|---|
+| Guidance | Path planning |
+| Navigation | Localization |
+| Control | Control |
+
+. . .
+
+Control is always control. If I ever call it something else, please inform my
+wife: I have probably had a stroke.
+
+::: {.notes}
+Two fields invented and reinvented the same topics. Autonomous GNC sits between
+manned aerospace and maritime engineering (semi-autonomous systems) and unmanned
+robotics; the differences are the vocabulary, the applications, and whether a
+human is in the decision loop. I will mix the terms; so does the literature.
+:::
+
+## Guidance, navigation, and control on a graph
+
+```{python}
+#| include: false
+graph_pos = {
+    "A": (0.0, 1.0), "x1": (1.7, 2.0), "x2": (2.0, 0.4), "x5": (3.9, 2.2),
+    "x3": (4.4, 1.0), "x4": (3.7, -0.2), "x6": (6.2, 1.9), "x7": (6.0, 0.1),
+    "B": (7.8, 1.0),
+}
+graph_edges = [("A", "x1"), ("A", "x2"), ("x1", "x2"), ("x1", "x5"), ("x2", "x3"),
+               ("x2", "x4"), ("x2", "x5"), ("x5", "x6"), ("x3", "x6"), ("x3", "x7"),
+               ("x4", "x7"), ("x4", "x5"), ("x6", "B"), ("x7", "B")]
+guidance_path = [("A", "x2"), ("x2", "x3"), ("x3", "x6"), ("x6", "B")]
+NODE_R = 0.3
+graph_titles = ["States and the transitions between them",
+                "Guidance: choose a path from A to B",
+                "Navigation: which state is the vehicle actually in?",
+                "Control: execute the next arrow"]
+
+
+def draw_graph_edge(ax, a, b, color, lw, alpha=1.0, rad=0.0, z=1):
+    p0, p1 = np.array(graph_pos[a]), np.array(graph_pos[b])
+    u = (p1 - p0) / np.linalg.norm(p1 - p0)
+    ax.annotate("", xy=p1 - NODE_R * u, xytext=p0 + NODE_R * u, zorder=z,
+                arrowprops=dict(arrowstyle="-|>", color=color, lw=lw, alpha=alpha,
+                                shrinkA=0, shrinkB=0, mutation_scale=18,
+                                connectionstyle=f"arc3,rad={rad}"))
+
+
+def plot_gnc_graph(stage):
+    """Toy GNC graph; later stages add guidance, navigation, control."""
+    fig = plt.figure(figsize=(12, 4.1))
+    ax = fig.add_axes([0.0, 0.0, 1.0, 0.88])
+    on_path = {n for e in guidance_path for n in e} if stage >= 1 else set()
+    for a, b in graph_edges:
+        draw_graph_edge(ax, a, b, "0.6", 1.4, rad=-0.15 if (a, b) == ("x4", "x5") else 0.0)
+    for a, b in guidance_path:
+        draw_graph_edge(ax, a, b, "C0", 3.5, alpha=1.0 if stage >= 1 else 0.0, z=2)
+    draw_graph_edge(ax, "x3", "x6", "C2", 6.0, alpha=1.0 if stage >= 3 else 0.0, z=2)
+    for name, (x, y) in graph_pos.items():
+        here = stage >= 2 and name == "x3"
+        ax.add_patch(Circle((x, y), NODE_R, zorder=4, lw=2.2,
+                            facecolor="C1" if here else "white",
+                            edgecolor="C0" if name in on_path else "0.4"))
+        label = name if name in "AB" else f"$x_{name[1]}$"
+        ax.text(x, y, label, ha="center", va="center", zorder=5, fontsize=20,
+                color="white" if here else "black")
+    ax.add_patch(Circle(graph_pos["x3"], 2.0 * NODE_R, color="C1", zorder=0,
+                        alpha=0.25 if stage >= 2 else 0.0))
+    ax.text(4.4, 0.18, "you are here", ha="center", va="center", fontsize=17, color="C1",
+            alpha=1.0 if stage >= 2 else 0.0)
+    ax.text(5.45, 1.12, r"action $u$", ha="left", fontsize=17, color="C2",
+            alpha=1.0 if stage >= 3 else 0.0)
+    ax.set_xlim(-0.5, 8.3)
+    ax.set_ylim(-0.6, 2.6)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_title(graph_titles[stage], fontsize=19)
+    plt.show()
+```
+
+::: {.r-stack}
+```{python}
+plot_gnc_graph(0)
+```
+::: {.fragment}
+```{python}
+plot_gnc_graph(1)
+```
+:::
+::: {.fragment}
+```{python}
+plot_gnc_graph(2)
+```
+:::
+::: {.fragment}
+```{python}
+plot_gnc_graph(3)
+```
+:::
+:::
+
+::: {.fragment}
+Navigation is **state estimation**: inferring what cannot be observed directly.
+:::
+
+::: {.notes}
+Guidance picks a complete path from A to B. Navigation is knowing which state
+x_i the vehicle is in as it goes. Control is the set of arrows: the actions that
+move it from one state to the next.
+:::
+
+## Navigation sits in the middle
+
+```{python}
+#| include: false
+# name: (centre, width, height, title, detail, stage, style)
+stack_boxes = {
+    "SEN": ((1.25, 2.3), 2.5, 1.25, "Sensors", "IMU, GNSS, camera,\nlidar, wheel encoders", 0, "plain"),
+    "PER": ((3.6, 3.55), 2.6, 1.1, "Perception", "features, detections,\nPnP, scan matching", 0, "plain"),
+    "MAP": ((3.6, 1.15), 2.4, 0.85, "Maps, priors,", "calibration", 0, "slow"),
+    "NAV": ((6.2, 2.3), 2.0, 1.25, "Navigation", "(state estimator)", 0, "nav"),
+    "MIS": ((10.45, 3.65), 2.5, 0.8, "Mission logic", "and operators", 1, "plain"),
+    "GUI": ((10.45, 2.3), 2.5, 0.8, "Guidance and", "planning", 1, "plain"),
+    "CON": ((10.45, 1.0), 2.5, 0.65, "Control", "", 1, "plain"),
+    "VEH": ((5.6, 0.33), 3.4, 0.5, "Vehicle and environment", "", 2, "plain"),
+}
+# (start, end, label, label position, ha, va, stage, slow?, connection style)
+stack_edges = [
+    ((1.9, 2.925), (2.3, 3.3), "images, scans,\ntimestamps", (2.0, 3.3), "right", "bottom", 0, False, None),
+    ((2.5, 2.3), (5.2, 2.3), "IMU, GNSS, odometry:\ntime, frame, noise model", (3.85, 2.4), "center", "bottom", 0, False, None),
+    ((4.9, 3.2), (5.6, 2.925), "z and R, time\nof validity", (5.05, 3.3), "left", "bottom", 0, False, None),
+    ((4.8, 1.3), (5.5, 1.675), "map, lever arms,\ntime offsets", (5.0, 1.2), "left", "top", 0, True, None),
+    ((7.2, 2.3), (9.2, 2.3), "state, covariance,\nframe, timestamp", (8.2, 2.4), "center", "bottom", 1, False, None),
+    ((6.9, 1.675), (9.2, 1.0), "smooth,\nhigh rate,\nlow latency", (8.0, 1.2), "center", "top", 1, False, None),
+    ((6.9, 2.925), (9.2, 3.65), "mode, active aids,\nintegrity flags", (8.05, 3.73), "center", "bottom", 1, True,
+     "angle,angleA=90,angleB=0,rad=0"),
+    ((10.45, 3.25), (10.45, 2.7), "goals, mode\nchanges", (10.55, 2.975), "left", "center", 1, True, None),
+    ((10.45, 1.9), (10.45, 1.325), "reference\ntrajectory", (10.55, 1.61), "left", "center", 1, False, None),
+    ((10.45, 0.675), (7.3, 0.33), "actuator commands", (8.8, 0.25), "center", "top", 2, False,
+     "angle,angleA=90,angleB=0,rad=0"),
+    ((3.9, 0.33), (1.25, 1.675), "motion (physics)", (2.7, 0.4), "center", "bottom", 2, False,
+     "angle,angleA=0,angleB=90,rad=0"),
+]
+
+
+def plot_stack(stage):
+    """Autonomy stack, built up: inputs, then outputs, then the physical loop.
+    Hidden elements are drawn transparent so every layer has the same size."""
+    fig = plt.figure(figsize=(12, 4.3))
+    ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+    for (x, y), w, h, title, detail, s, style in stack_boxes.values():
+        a = 1.0 if stage >= s else 0.0
+        ax.add_patch(FancyBboxPatch((x - w / 2, y - h / 2), w, h, alpha=a,
+                                    boxstyle="round,pad=0,rounding_size=0.12",
+                                    facecolor=TINT if style == "nav" else "white",
+                                    edgecolor=ACCENT if style == "nav" else "0.35",
+                                    lw=2.6 if style == "nav" else 1.4,
+                                    linestyle="--" if style == "slow" else "-"))
+        if style == "slow":
+            ax.text(x, y, f"{title}\n{detail}", ha="center", va="center", fontsize=16,
+                    fontweight="bold", alpha=a)
+            continue
+        n_lines = detail.count("\n") + 1 if detail else 0
+        title_y = y + {0: 0.0, 1: 0.16, 2: 0.3}[n_lines]
+        ax.text(x, title_y, title, ha="center", va="center", fontsize=17, fontweight="bold",
+                color=ACCENT if style == "nav" else "black", alpha=a)
+        if detail:
+            ax.text(x, title_y - 0.2, detail, ha="center", va="top", fontsize=14.5,
+                    color="0.25", alpha=a)
+    for start, end, label, lxy, ha, va, s, slow, conn in stack_edges:
+        a = 1.0 if stage >= s else 0.0
+        ax.annotate("", xy=end, xytext=start,
+                    arrowprops=dict(arrowstyle="-|>", color="0.3", lw=1.8, alpha=a,
+                                    linestyle=":" if slow else "-", mutation_scale=18,
+                                    connectionstyle=conn or "arc3,rad=0"))
+        ax.text(*lxy, label, ha=ha, va=va, fontsize=13.5, style="italic", color="0.3", alpha=a,
+                linespacing=1.1)
+    ax.set_xlim(0.0, 12.0)
+    ax.set_ylim(-0.1, 4.2)
+    ax.axis("off")
+    plt.show()
+```
+
+::: {.r-stack}
+```{python}
+plot_stack(0)
+```
+::: {.fragment}
+```{python}
+plot_stack(1)
+```
+:::
+::: {.fragment}
+```{python}
+plot_stack(2)
+```
+:::
+:::
+
+::: {.fragment}
+Navigation sits in the middle: everyone else's problems eventually become its
+problems.
+:::
+
+::: {.notes}
+First layer: what navigation consumes. Second: who consumes navigation. Third:
+the loop closes through the vehicle's physics, because what control does changes
+what the sensors see next. Solid arrows carry data every cycle; dotted ones carry
+slower map, calibration, health, and mode information.
+:::
+
+## Measurements, not facts
+
+::: {.incremental}
+- **Sensors:** IMU specific force and angular rate, GNSS, wheel counts, each
+  stamped with the time it was **valid**, not the time the packet arrived
+- **Perception:** feature tracks, landmark detections, PnP poses, scan matches
+- **Maps and calibration:** intrinsics, lever arms, clock offsets
+:::
+
+. . .
+
+Every measurement needs a noise model $\mathbf{R}$.
+[A PnP pose without a covariance is a rumor.]{.accent}
+
+. . .
+
+::: {.key}
+Get the calibration wrong and the estimator will helpfully "fix" it for you by
+bending the trajectory.
+:::
+
+::: {.notes}
+Project 1 Part B is an extended exercise in turning a perception algorithm into
+a measurement with an honest R.
+:::
+
+## The output is a contract
+
+::: {.smaller-text}
+| Clause | What it contains | Who leans on it |
+|----------|-------------------------------------|-----------------------|
+| State | position, velocity, attitude, angular rate | everyone downstream |
+| Frames | a named frame for every quantity (which NED origin?) | anyone who transforms states |
+| Covariance | uncertainty consistent with the actual errors | planners, gating, mission logic |
+| Time | when the state is valid; its latency when published | control, fusion |
+| Rate | output rate and its jitter | control loops |
+| Health | mode, active aids, NIS alarms, time since last fix | mission logic, operators |
+:::
+
+. . .
+
+::: {.key}
+A stale, unlabeled, or overconfident state is not a complete navigation solution.
+:::
+
+::: {.notes}
+Every one of these clauses has caused a real failure somewhere when it was
+missing.
+:::
+
+## The contract, as code
+
+```{.python code-line-numbers="|3-4|5|6-9|10|11-14|1-14"}
+@dataclass(frozen=True)
+class NavSolution:
+    t_valid: float          # time at which the state is valid [s]
+    t_published: float      # time the message left the estimator [s]
+    frame_id: str           # which NED frame p_n and v_n are expressed in
+    p_n: np.ndarray         # position in n [m]
+    v_n: np.ndarray         # velocity relative to Earth, resolved in n [m/s]
+    q_bn: np.ndarray        # attitude q_b^n = [qw, qx, qy, qz]
+    omega_b: np.ndarray     # bias-corrected angular rate in b [rad/s]
+    P: np.ndarray           # error covariance, order [dp, dv, dtheta], (9, 9)
+    mode: str               # e.g. "INS+GNSS", "INS coasting", "aligning"
+    aids: tuple[str, ...]   # aiding sources used since the last message
+    time_since_fix: float   # [s] since the last absolute position update
+    nis_alarm: bool         # True if recent innovations fail the NIS test
+```
+
+Latency is `t_published - t_valid`. The point is not the syntax but the fields.
+
+::: {.notes}
+Walk through it: time, frame, state, covariance, health. Book conventions: NED
+navigation frame n, FRD body frame b, Hamilton scalar-first quaternion, errors
+defined as true minus estimate. The book's version adds `latency` and
+`horizontal_sigma` helpers.
+:::
+
+## Different customers, different needs
+
+:::: {.columns}
+::: {.column width="33%"}
+**Control**
+
+Smooth, high rate, low latency. A position step becomes a force step; a stale
+state is phase lag.
+:::
+::: {.column width="33%"}
+**Guidance and planning**
+
+Global consistency and an honest covariance. 3σ margins are only as safe as the
+σ.
+:::
+::: {.column width="33%"}
+**Mission logic and operators**
+
+Health: nominal, coasting on inertial, or failed? And for how long?
+:::
+::::
+
+. . .
+
+So many systems publish **two** products: a smooth, slowly drifting stream for
+control, and a globally consistent pose that may jump, for planning. ROS calls
+them `odom` and `map` (REP 105).
+
+## Why we may draw boxes {auto-animate=true}
+
+::: {data-id="plant"}
+$$
+\dot{\mathbf{x}} = \mathbf{A}\mathbf{x} + \mathbf{B}\mathbf{u},
+\qquad
+\mathbf{y} = \mathbf{H}\mathbf{x},
+\qquad
+\mathbf{u} = -\mathbf{K}_c\hat{\mathbf{x}}
+$$
+:::
+
+::: {data-id="observer"}
+$$
+\dot{\hat{\mathbf{x}}} = \mathbf{A}\hat{\mathbf{x}} + \mathbf{B}\mathbf{u}
++ \mathbf{L}(\mathbf{y} - \mathbf{H}\hat{\mathbf{x}}),
+\qquad
+\mathbf{e} = \mathbf{x} - \hat{\mathbf{x}}
+$$
+:::
+
+A linear plant, an observer with gain $\mathbf{L}$, and a controller that acts
+on the **estimate**, not the state.
+
+## Why we may draw boxes {auto-animate=true}
+
+::: {data-id="plant"}
+$$
+\dot{\mathbf{x}} = \mathbf{A}\mathbf{x} + \mathbf{B}\mathbf{u},
+\qquad
+\mathbf{y} = \mathbf{H}\mathbf{x},
+\qquad
+\mathbf{u} = -\mathbf{K}_c\hat{\mathbf{x}}
+$$
+:::
+
+::: {data-id="separation"}
+$$
+\frac{d}{dt}
+\begin{bmatrix} \mathbf{x} \\ \mathbf{e} \end{bmatrix}
+=
+\begin{bmatrix}
+\mathbf{A} - \mathbf{B}\mathbf{K}_c & \mathbf{B}\mathbf{K}_c \\
+\mathbf{0} & \mathbf{A} - \mathbf{L}\mathbf{H}
+\end{bmatrix}
+\begin{bmatrix} \mathbf{x} \\ \mathbf{e} \end{bmatrix}
+$$
+:::
+
+. . .
+
+Block triangular: the closed-loop eigenvalues are those of
+$\mathbf{A} - \mathbf{B}\mathbf{K}_c$ together with those of
+$\mathbf{A} - \mathbf{L}\mathbf{H}$.
+
+. . .
+
+::: {.key}
+The estimation engineer and the control engineer can work in different buildings.
+:::
+
+::: {.notes}
+For linear Gaussian systems with quadratic cost, the separation principle goes
+further: the optimal controller is LQR applied to the Kalman filter's estimate
+as if it were the truth (certainty equivalence). Exercise 5 derives the block
+matrix.
+:::
+
+## Where the separation leaks
+
+::: {.incremental}
+- **Latency:** the estimate is valid at $t - \tau$ and arrives later still, a
+  delay $e^{-s\tau}$ that neither designer accounted for
+- **Nonlinearity:** separation holds only approximately, and observability
+  depends on the trajectory (INS/GNSS heading while driving straight)
+- **Overconfident covariances:** good measurements rejected at the gate, margins
+  too thin, and a report that everything is fine
+:::
+
+. . .
+
+Even when every assumption holds, separation promises optimality, not robustness.
+Doyle (1978) on guaranteed stability margins for LQG regulators, in full:
+[*"There are none."*]{.accent}
+
+::: {.notes}
+Doyle's note has a three-word abstract. Late measurements also produce
+corrections that land as jumps, which is the next experiment.
+:::
+
+## One controller, four navigation feeds
+
+```{python}
+#| include: false
+# The chapter's closed-loop experiment: a unit mass tracks a smooth reference with
+# PD feedback plus acceleration feedforward, in a gusty wind, using only what
+# navigation hands it.
+dt = 0.01
+t = np.arange(0.0, 30.0, dt)
+n = t.size
+r = np.sin(0.4 * t) + 0.5 * np.sin(0.9 * t + 1.0)
+r_dot = 0.4 * np.cos(0.4 * t) + 0.45 * np.cos(0.9 * t + 1.0)
+r_ddot = -0.16 * np.sin(0.4 * t) - 0.405 * np.sin(0.9 * t + 1.0)
+wn, zeta = 4.0, 0.7
+kp, kd = wn**2, 2.0 * zeta * wn
+
+rng = np.random.default_rng(4)
+gust = np.zeros(n)
+phi = np.exp(-dt / 1.0)
+for k in range(1, n):
+    gust[k] = phi * gust[k - 1] + 0.3 * np.sqrt(1 - phi**2) * rng.standard_normal()
+white = rng.standard_normal((n, 2))
+drift_sign = rng.choice([-1.0, 1.0], size=n)
+
+
+def navigation_output(case, k, p, v):
+    if case == "truth":
+        return p[k], v[k]
+    if case == "noisy":                     # unbiased white noise: 8 cm, 4 cm/s
+        return p[k] + 0.08 * white[k, 0], v[k] + 0.04 * white[k, 1]
+    if case == "delayed":                   # perfect, but valid 150 ms ago
+        j = max(k - 15, 0)
+        return p[j], v[j]
+    i, m = divmod(k, 200)                   # jumpy: 5 cm/s drift, fix every 2 s
+    b = 0.05 * drift_sign[i]
+    return p[k] + b * m * dt, v[k] + b
+
+
+def fly(case):
+    p, v = np.zeros(n), np.zeros(n)
+    p[0], v[0] = r[0], r_dot[0]
+    p_hat, u = np.zeros(n), np.zeros(n)
+    for k in range(n):
+        p_hat[k], v_hat = navigation_output(case, k, p, v)
+        u[k] = r_ddot[k] + kp * (r[k] - p_hat[k]) + kd * (r_dot[k] - v_hat)
+        if k + 1 < n:
+            a = u[k] + gust[k]
+            p[k + 1] = p[k] + v[k] * dt + 0.5 * a * dt**2
+            v[k + 1] = v[k] + a * dt
+    return p, p_hat, u
+
+
+feed_colors = {"truth": "k", "noisy": "tab:blue", "delayed": "tab:orange", "jumpy": "tab:purple"}
+runs = {case: fly(case) for case in feed_colors}
+keep = t >= 2.0
+est_rmse = {c: 100 * np.sqrt(np.mean((ph - p)[keep] ** 2)) for c, (p, ph, u) in runs.items()}
+trk_rmse = {c: 100 * np.sqrt(np.mean((p - r)[keep] ** 2)) for c, (p, ph, u) in runs.items()}
+
+
+def plot_rmse_bars(show_tracking):
+    fig, ax = plt.subplots(figsize=(6.0, 4.3))
+    x = np.arange(len(feed_colors))
+    est = [est_rmse[c] for c in feed_colors]
+    trk = [trk_rmse[c] for c in feed_colors]
+    ax.bar(x - 0.19, est, 0.36, color="0.65", label="estimate error the controller saw")
+    ax.bar(x + 0.19, trk, 0.36, color="tab:red", alpha=1.0 if show_tracking else 0.0,
+           label="where the vehicle went" if show_tracking else None)
+    for xi, (e, tr) in enumerate(zip(est, trk)):
+        ax.text(xi - 0.19, e + 0.2, f"{e:.1f}", ha="center", fontsize=15, color="0.35")
+        ax.text(xi + 0.19, tr + 0.2, f"{tr:.1f}", ha="center", fontsize=15, color="tab:red",
+                alpha=1.0 if show_tracking else 0.0)
+    ax.set_xticks(x, list(feed_colors))
+    ax.set_ylabel("RMSE [cm]")
+    ax.set_ylim(0, 13)
+    ax.grid(axis="x", visible=False)
+    ax.legend(loc="upper left", fontsize=15)
+    plt.show()
+```
+
+A unit mass tracks a smooth reference: PD plus feedforward, $\omega_n = 4$ rad/s,
+$\zeta = 0.7$, in a gusty wind. It sees only what navigation hands it:
+
+::: {.incremental}
+1. **truth**
+2. **noisy:** unbiased white noise, 8 cm and 4 cm/s
+3. **delayed:** perfect, but 150 ms old
+4. **jumpy:** dead reckoning with a 5 cm/s velocity error, snapped back by a fix
+   every 2 s
+:::
+
+. . .
+
+All three imperfect feeds have an RMSE of roughly 6 to 8 cm.
+[Which one flies worst?]{.accent}
+
+::: {.notes}
+Take a vote before moving on. The controller was designed assuming a perfect
+state. The jumpy feed is what a filter does with sparse or late updates and no
+smoothing of its corrections.
+:::
+
+## RMSE ranks them backwards
+
+:::: {.columns}
+::: {.column width="52%"}
+::: {.r-stack}
+```{python}
+plot_rmse_bars(False)
+```
+::: {.fragment}
+```{python}
+plot_rmse_bars(True)
+```
+:::
+:::
+:::
+::: {.column width="48%"}
+::: {.incremental}
+- **noisy:** the worst estimate, nearly the best flight. The vehicle's inertia
+  is a low-pass filter.
+- **delayed:** perfect at its own timestamp, yet about **4×** the tracking error
+  of the truth
+- **jumpy:** the vehicle dutifully follows the sawtooth
+:::
+:::
+::::
+
+::: {.notes}
+Scored offline against truth at its own timestamp, the delayed feed has zero
+error. Scored when the controller uses it, its error is about 6 cm. White noise
+well above the loop bandwidth averages away before it can move anything with
+mass.
+:::
+
+## What the controller felt
+
+```{python}
+win = (t >= 8.0) & (t <= 20.0)
+fig, axes = plt.subplots(1, 2, figsize=(12, 3.2))
+for case in ["noisy", "truth", "delayed", "jumpy"]:
+    p, p_hat, u = runs[case]
+    lw, alpha = (0.7, 0.45) if case == "noisy" else (1.8, 1.0)
+    axes[0].plot(t[win], 100 * (p - r)[win], color=feed_colors[case], lw=lw, alpha=alpha,
+                 label=case)
+    axes[1].plot(t[win], u[win], color=feed_colors[case], lw=lw, alpha=alpha, label=case)
+axes[0].set_ylabel("tracking error [cm]")
+axes[1].set_ylabel("command $u$ [m/s²]")
+for ax in axes:
+    ax.set_xlabel("time [s]")
+handles, labels = axes[0].get_legend_handles_labels()
+order = [labels.index(c) for c in feed_colors]
+axes[0].legend([handles[i] for i in order], list(feed_colors), ncol=4, loc="upper center",
+               bbox_to_anchor=(1.1, 1.25), fontsize=16)
+fig.tight_layout()
+plt.show()
+```
+
+150 ms of delay eats about 53° of a 65° phase margin; each fix is a step in the
+command; noise makes it chatter.
+
+. . .
+
+::: {.key}
+Bounded, reported latency; smoothed corrections; a usable output rate. These go
+in the specification, next to the RMSE.
+:::
+
+::: {.notes}
+The steps are felt by passengers, payload, or the camera gimbal; chatter wears
+actuators and shows up as motor noise and heat. Low-pass filtering the noisy
+feed trades chatter for latency. Exercise 4 sweeps the delay. The Project 1
+handout opens with this picture: a quadrotor whose flight controller wants a
+state, and a reason to believe it, fifty times a second.
+:::
+
+## Four ways to know where you are
+
+Robotics did not invent navigation.
+
+::: {.smaller-text}
+| Classical method | What it measures | Modern counterpart | In this course |
+|---|---|---|---|
+| Dead reckoning | heading, speed, elapsed time | wheel odometry, IMU mechanization, visual odometry | motion models; Project 1 Part A |
+| Piloting | bearings and ranges to charted landmarks | landmark and map-based localization: AprilTags, tree trunks, lidar features | PnP, SLAM; Project 2 |
+| Celestial | angles to bodies whose positions are predictable | star trackers, sun sensors | global navigation (ephemerides play the almanac) |
+| Radio | timing or direction of radio signals | GNSS, ultra-wideband ranging | INS/GNSS; Project 3 |
+:::
+
+. . .
+
+[SLAM is piloting with a chart you draw as you go.]{.accent}
+
+::: {.notes}
+Directions to a friend's house ("north two blocks, left at the gas station")
+mix dead reckoning and piloting in one sentence. The standard reference for the
+classical methods is Bowditch's *American Practical Navigator*, first published
+in 1802 and still maintained by the U.S. government.
+:::
+
+## Dead reckoning: computed, not measured
+
+```{python}
+#| include: false
+def plot_dead_reckoning(show_fixes):
+    """Error growth of dead reckoning: a heading error and an unmeasured current."""
+    fig, axes = plt.subplots(1, 2, figsize=(12, 3.7))
+    run = np.linspace(0.0, 120.0, 200)                     # distance run [nmi]
+    ax = axes[0]
+    ax.plot(run, run * np.sin(np.radians(1.0)), color="C0", lw=2.2)
+    ax.plot([60.0], [60.0 * np.sin(np.radians(1.0))], "o", color="C0", ms=8)
+    ax.annotate("1-in-60: about 1 nmi off track\nfor every 60 nmi run", xy=(60, 1.05),
+                xytext=(4, 1.75), fontsize=15, arrowprops=dict(arrowstyle="->", color="0.3"))
+    ax.set_xlabel("distance run [nmi]")
+    ax.set_ylabel("cross-track error [nmi]")
+    ax.set_title("1° heading error", fontsize=17)
+    ax.set_ylim(0, 2.6)
+    ax = axes[1]
+    hours = np.linspace(0.0, 24.0, 1201)
+    ax.plot(hours, 1.0 * hours, color="C3", lw=2.2, label="dead reckoning only")
+    ax.plot(hours, 1.0 * np.mod(hours, 6.0), color="C2", lw=2.2,
+            alpha=1.0 if show_fixes else 0.0,
+            label="with a fix every 6 h" if show_fixes else None)
+    ax.text(23.5, 24.5, "24 nmi a day", ha="right", va="bottom", fontsize=15, color="C3")
+    ax.set_xlabel("time [h]")
+    ax.set_ylabel("position error [nmi]")
+    ax.set_title("unmeasured 1-knot current", fontsize=17)
+    ax.set_xticks([0, 6, 12, 18, 24])
+    ax.set_ylim(0, 31)
+    ax.legend(loc="upper left")
+    fig.tight_layout()
+    plt.show()
+```
+
+Noon at the harbor mouth, due east at 6 knots: at 2 pm, 12 nmi east. Nothing observed.
+
+::: {.r-stack}
+```{python}
+plot_dead_reckoning(False)
+```
+::: {.fragment}
+```{python}
+plot_dead_reckoning(True)
+```
+:::
+:::
+
+The other three methods exist to bound that growth with fixes.
+
+::: {.notes}
+Errors grow without bound. Heading errors push you sideways; a fouled log pushes
+you along track; current and leeway are worse, because a log measures speed
+through the water and the heading says where the bow points, not where the ship
+goes. Every distance is a speed times a time, so a bad clock corrupts everything.
+A navigator distinguishes the DR position (ordered course and speed) from the
+estimated position (allowing for current, leeway, and steering error): nominal
+propagation versus one that accounts for disturbances, which is Part 4 in
+miniature. "Dead" from "deduced" is probably a later invention, but a good
+mnemonic. The fix every 6 h is an illustration, not a number from the chapter.
+:::
+
+## How flat is flat enough?
+
+```{python}
+#| include: false
+R_earth = 6371e3
+```
+
+:::: {.columns}
+::: {.column width="46%"}
+Travel $s$ along the surface; it falls below the flat tangent plane by
+
+$$
+d \approx \frac{s^2}{2R}, \qquad R \approx 6371 \text{ km}
+$$
+
+::: {.incremental}
+- "Down" tilts by $s/R$: one arcminute per nautical mile
+- Horizontal distances barely notice: millimeters at 10 km
+:::
+:::
+::: {.column width="54%"}
+```{python}
+s_km = np.logspace(-1, 3, 300)
+d_m = np.sqrt(R_earth**2 + (1e3 * s_km) ** 2) - R_earth
+fig, ax = plt.subplots(figsize=(6.2, 3.9))
+ax.loglog(s_km, d_m, color=ACCENT, lw=2.4)
+for s_mark, text, offset in [(6.2, "3 m: a 3 m object\nsinks from view", (0.12, 25)),
+                             (10.0, "7.8 m", (25, 1.5)),
+                             (100.0, "785 m", (8, 3000))]:
+    d_mark = np.sqrt(R_earth**2 + (1e3 * s_mark) ** 2) - R_earth
+    ax.plot([s_mark], [d_mark], "o", color="C1", ms=8)
+    ax.annotate(text, xy=(s_mark, d_mark), xytext=offset, fontsize=15,
+                arrowprops=dict(arrowstyle="->", color="0.4"))
+ax.set_xlabel("distance travelled $s$ [km]")
+ax.set_ylabel("drop below tangent $d$ [m]")
+ax.set_xlim(0.1, 1000)
+ax.set_ylim(1e-3, 1e5)
+plt.show()
+```
+:::
+::::
+
+::: {.fragment}
+[A flat frame: fine for a warehouse or a field, wrong across an ocean.]{.accent}
+:::
+
+::: {.notes}
+The vertical is what a flat-Earth model gets wrong; horizontal error grows like
+s^3/R^2, a few millimeters at 10 km and a few meters at 100 km. History: Greek
+writers took a spherical Earth seriously early; Eratosthenes, around 240 BCE,
+got 250,000 stadia from noon shadows at Syene and Alexandria (within roughly 2
+to 16 percent of the modern 40,075 km, depending on the stadion). Newton (1687)
+argued for an equatorial bulge, confirmed by French expeditions in the 1730s and
+1740s; WGS84 is the modern descendant. Large-scale navigation uses a frame that
+moves with the vehicle (Part 6).
+:::
+
+## Latitude is easy; longitude is a clock problem
+
+Latitude: one good sight of Polaris, or of the Sun at noon.
+
+. . .
+
+Longitude has no natural zero: the sky passes over every meridian in turn.
+
+$$
+\frac{360^\circ}{24 \text{ h}} = 15^\circ \text{ per hour}
+$$
+
+. . .
+
+Local noon, and a clock keeping reference time reads 13:00: you are
+**15° west** of the reference meridian.
+
+. . .
+
+Gemma Frisius proposed carrying such a clock in 1530. No clock of the day could
+keep time at sea for weeks.
+
+::: {.notes}
+Before a solution: latitude sailing, which means reach the destination's latitude
+and run east or west until something appears, hoping it is not rocks. Galileo
+proposed the eclipses of Jupiter's moons as a sky clock (1610); fine on land,
+hopeless on a rolling deck. Cassini's tables (1668) moved France's west coast
+east on the maps; Louis XIV reportedly complained his astronomers had cost him
+more territory than his enemies. Time zones, about 15° wide, are a fossil of the
+same arithmetic. Units: one second of time is 15 arcseconds of longitude.
+:::
+
+## A clock worth £20,000
+
+::: {.incremental}
+- **1707:** a British fleet, unsure of its position, runs onto the Isles of
+  Scilly. Four warships and well over a thousand sailors lost.
+- **1714:** the Longitude Act. £10,000 for 1°, £15,000 for 40′, £20,000 for 30′.
+- **1761--62:** Harrison's H4, 81 days to Jamaica, loses 5.1 s after allowing
+  for its known rate
+:::
+
+. . .
+
+$5.1 \text{ s} \times 15''/\text{s} = 76.5'' \approx 1.3'$ of longitude: roughly
+a nautical mile.
+
+. . .
+
+The rival answer: lunar distances. A sextant, an almanac, and an hour of
+arithmetic. Chronometers needed money.
+
+::: {.notes}
+Harrison, a self-taught Yorkshire clockmaker, spent four decades from H1 (1735)
+to H4 (1759, about 13 cm across). He never received the prize as such;
+Parliament granted him £8,750 in 1773. Lunars: Mayer's tables (1755) and
+Maskelyne's Nautical Almanac (first edition for 1767). Cook carried Kendall's
+copy of H4 on his second voyage. Around 1910, radio time signals finished the
+problem by distributing the time instead of carrying it.
+:::
+
+## An accelerometer does not measure acceleration
+
+Three gyros and three accelerometers, integrated: an INS is dead reckoning with
+the physics done properly.
+
+. . .
+
+It measures **specific force**: non-gravitational force per unit mass, its
+acceleration relative to free fall.
+
+. . .
+
+:::: {.columns}
+::: {.column width="50%"}
+On a desk: about 9.8 m/s² **upward**, going nowhere.
+:::
+::: {.column width="50%"}
+In free fall: **zero**, accelerating at 1 g.
+:::
+::::
+
+. . .
+
+::: {.key}
+To recover acceleration, add gravity back. That requires knowing which way is
+down, so attitude errors leak straight into velocity and position.
+:::
+
+::: {.notes}
+"Most of what makes inertial navigation hard is that fact plus sensor bias."
+Background: steel hulls and electrical machinery spoiled magnetic compasses,
+hence the gyrocompass (Anschütz around 1908, Sperry in 1911, with Einstein as an
+expert in their patent dispute). Specific force is developed in the motion
+models chapter (Part 3).
+:::
+
+## Apollo: the architecture of this course
+
+::: {.incremental}
+- **1953:** Draper's MIT Instrumentation Laboratory flies a B-29 from
+  Massachusetts to Los Angeles on inertial navigation alone
+- **1958:** USS *Nautilus* crosses under the Arctic ice and the North Pole on an
+  inertial system
+- **Apollo:** the Primary Guidance, Navigation, and Control System, PGNCS
+  ("pings"), from Draper's lab
+- Its inertial platform drifted, so astronauts sighted stars through a sextant to
+  realign it
+:::
+
+. . .
+
+::: {.key}
+A high-rate inertial solution kept honest by occasional external fixes: the
+architecture of this entire course.
+:::
+
+## Satellites: clocks, again
+
+::: {.incremental}
+- **1957:** Guier and Weiffenbach (Johns Hopkins APL) find Sputnik's orbit from
+  the Doppler shift of its beacon. Turn it around: a known orbit tells you where
+  **you** are.
+- **Transit:** operational 1964, open to civilian ships in 1967
+- **GPS:** one-way ranging timed by atomic clocks. First satellite 1978, fully
+  operational 1995.
+:::
+
+. . .
+
+Harrison solved longitude with a good clock; GPS solves position the same way.
+One nanosecond of timing error is about 30 cm of range.
+
+. . .
+
+::: {.aside-box}
+The signals arrive weaker than the background radio noise, from 20,000 km away,
+so they are easy to jam or spoof. In 2015 the U.S. Naval Academy put celestial
+navigation back in its curriculum.
+:::
+
+## KAL 007: mode is part of the contract
+
+::: {.incremental}
+- **1 September 1983:** Korean Air Lines Flight 007 strays hundreds of
+  kilometers off course into Soviet airspace and is shot down. All 269 people
+  aboard are killed.
+- The ICAO investigation: the crew most likely left the autopilot in heading-hold
+  instead of letting the INS steer, and did not notice for more than five hours
+- Two weeks later, President Reagan announced GPS for civil use once complete
+:::
+
+. . .
+
+::: {.key}
+A navigation system is only as good as the rest of the stack's awareness of what
+mode it is in. That is why mode and health are clauses of the contract.
+:::
+
+::: {.notes}
+Second lesson: public infrastructure can grow out of a military program.
+Selective Availability was switched off in May 2000, and GPS now shares the sky
+with GLONASS, Galileo, and BeiDou. Exercise 3 asks what in your design would
+make five hours in the wrong mode impossible to miss, and whose job it is to
+notice.
+:::
+
+## The same pattern, with better hardware
+
+**Propagate** with a motion model. **Correct** with fixes from outside. **Track**
+how far to trust each.
+
+. . .
+
+:::: {.columns}
+::: {.column width="50%"}
+**Harrison's customer:** a navigator who took a fix once a day and steered by
+hand
+:::
+::: {.column width="50%"}
+**Ours:** a flight controller that wants a state and covariance fifty times a
+second, and acts without asking
+:::
+::::
+
+. . .
+
+::: {.incremental}
+- **Project 1:** inertial dead reckoning for a quadrotor, piloting off AprilTags
+- **Project 2:** draw your own chart from the tree trunks of Victoria Park
+- **Project 3:** an inertial navigator on a rotating, curved Earth, corrected by
+  satellites
+:::
+
+::: {.notes}
+Along the way IMUs prove noisy, biased, and temperamental. Much of the craft is
+knowing exactly how wrong your sensors are and telling the rest of the stack the
+truth about it.
+:::
+
+# Syllabus {#syllabus}
+
+Sixteen weeks, three projects, one portfolio.
+
+[Chapter: Syllabus](https://jbrodovsky.github.io/advanced_navigation/chapters/00-intro/syllabus.html)
+
+## By the end of the course
+
+[What will you be able to do?]{.question}
+
+::: {.incremental}
+1. Place navigation in an autonomy stack: what it consumes, what it owes
+2. Turn raw sensor data into measurement models, with evidence for the noise
+3. Implement and compare Bayesian, Kalman-style, and Monte Carlo estimators
+4. Build landmark SLAM: data association, map growth, consistency
+5. Integrate INS with GNSS on the curved Earth in an error-state filter
+6. Evaluate accuracy, uncertainty, consistency, and cost, then report it
+:::
+
+::: {.notes}
+Outcome 1 is today's lecture. Outcome 6 is in every project: evidence, not just
+a plot that looks good. Kalman-style means EKF, UKF, and error-state filters.
+:::
+
+## Three projects: 50, 25, 25
+
+```{python}
+fig = plt.figure(figsize=(12, 1.9))
+ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+segments = [("data", 5, "#a5b4fc"), ("Part A", 10, "#818cf8"), ("Part B", 10, "#6366f1"),
+            ("Part C", 15, "#4f46e5"), ("eval.", 10, ACCENT),
+            ("Project 2 · FastSLAM", 25, "0.55"), ("Project 3 · INS/GNSS", 25, "0.4")]
+left = 0.0
+for label, width, color in segments:
+    ax.barh(0, width, left=left, color=color, edgecolor="white", lw=2, height=0.8)
+    ax.text(left + width / 2, 0, f"{label}\n{width}%", ha="center", va="center",
+            color="white", fontsize=13 if width < 10 else 16, fontweight="bold")
+    left += width
+ax.annotate("", xy=(0, 0.62), xytext=(50, 0.62),
+            arrowprops=dict(arrowstyle="|-|", color=ACCENT, lw=1.6, mutation_scale=6))
+ax.text(25, 0.72, "Project 1 · visual-inertial navigation · 50%", ha="center", va="bottom",
+        color=ACCENT, fontsize=17, fontweight="bold")
+ax.set_xlim(0, 100)
+ax.set_ylim(-0.45, 1.15)
+ax.axis("off")
+plt.show()
+```
+
+[Shares of the course grade; the handout weights Project 1's parts 10, 20, 20, 30, 20%.]{.muted .smaller-text}
+
+::: {.incremental}
+- [Project 1](https://jbrodovsky.github.io/advanced_navigation/assignments/m1-drone-pipeline.html):
+  AprilTag PnP, its measurement model and noise, then an inertial navigator as an
+  EKF, a UKF, and a particle filter, compared
+- [Project 2](https://jbrodovsky.github.io/advanced_navigation/assignments/m2-victoria-park.html):
+  tree landmarks from laser scans, then the path and map with FastSLAM
+- [Project 3](https://jbrodovsky.github.io/advanced_navigation/assignments/m3-ins-gnss.html):
+  a strapdown INS on the curved Earth, aided by GNSS in an error-state filter
+:::
+
+::: {.notes}
+Project 1's split, as a share of the project: dataset understanding and loading
+10%, Part A (mechanization and dead reckoning) 20%, Part B (PnP observation model
+and covariance) 20%, Part C (EKF, UKF, particle filter) 30%, cross-method
+evaluation and technical communication 20%. The projects build on one another but
+are assessed separately. Each submission is code plus a technical report.
+:::
+
+## Sixteen weeks, front-loaded
+
+```{python}
+schedule = [  # (part, label, first week, last week)
+    (1, "Introduction", 1, 1), (2, "Foundations", 1, 2), (3, "Sensing", 3, 5),
+    (4, "Filtering", 6, 9), (5, "SLAM", 10, 11), (6, "Global", 12, 13),
+    (7, "Practical", 14, 14), (8, "Advanced (optional)", 15, 15),
+]
+milestones = [(3, "1A"), (5, "1B"), (8, "1C"), (9, "P1"), (11, "P2"), (13, "P3"),
+              (16, "all due")]
+fig, ax = plt.subplots(figsize=(11.2, 4.4))
+rows = len(schedule)
+for i, (part, label, w0, w1) in enumerate(schedule):
+    y = rows - i
+    ax.barh(y, w1 - w0 + 0.84, left=w0 - 0.42, height=0.66, color=PART_COLORS[part],
+            hatch="//" if part == 8 else None, edgecolor="white")
+ax.axvspan(15.55, 16.45, color="0.9", zorder=0)
+ax.text(16, rows / 2 + 0.5, "integration\nand review", rotation=90, ha="center",
+        va="center", fontsize=14, color="0.35")
+y_ms = rows + 1.1
+for week, label in milestones:
+    ax.plot(week, y_ms, "D", color="k" if label != "all due" else "C3", ms=9)
+    ax.text(week, y_ms + 0.38, label, ha="center", va="bottom", fontsize=15,
+            color="k" if label != "all due" else "C3", fontweight="bold")
+ax.set_yticks([rows + 1.1] + [rows - i for i in range(rows)],
+              ["projects"] + [f"{p}  {label}" for p, label, *_ in schedule])
+ax.set_xticks(range(1, 17))
+ax.set_xlabel("week")
+ax.set_xlim(0.4, 16.6)
+ax.set_ylim(0.4, rows + 2.0)
+ax.grid(axis="y", visible=False)
+ax.spines["left"].set_visible(False)
+ax.tick_params(axis="y", length=0)
+plt.show()
+```
+
+Theory early, room to implement late. The weeks are a pace, not deadlines.
+
+::: {.notes}
+Weekly topics: 1 orientation, GNC, frames and attitude; 2 linear algebra,
+probability, Python; 3 sensors, motion models, IMU errors, dead reckoning
+(Project 1 Part A); 4 measurement models, data association, PnP; 5
+camera-to-robot observation models and covariance (Part B); 6 Bayes and Kalman
+review; 7 EKF, error-state filtering, consistency; 8 UKF, information and
+particle filters (Part C); 9 filter comparison and integration (Project 1
+complete); 10 mapping and landmark SLAM; 11 FastSLAM, visual navigation, loop
+closure (Project 2); 12 global frames, GNSS, IMU error models; 13 curved-Earth
+INS/GNSS and observability (Project 3); 14 timing, health, validation,
+production software; 15 optional advanced topics; 16 integration and review.
+Rows are the deck colours, one per part.
+:::
+
+## How it is graded
+
+:::: {.columns}
+::: {.column width="62%"}
+Each rubric component is rated **Excellent**, **Acceptable**, **Marginal**, or
+**Unacceptable**. Acceptable is roughly a **B**.
+
+::: {.fragment}
+Code that runs is necessary. It is not evidence that the navigation model is
+correct.
+:::
+
+::: {.fragment}
+Higher ratings need clear justification of the state, measurement, covariance,
+and validation choices.
+:::
+:::
+::: {.column width="38%"}
+| Grade | Percentage |
+|---|---:|
+| A | 90--100 |
+| B | 80--89 |
+| C | 70--79 |
+| D | 60--69 |
+| F | below 60 |
+:::
+::::
+
+::: {.notes}
+The model is the WPI Robotics Engineering PhD technical qualifier, where an
+average of roughly a B+ (two A's and one B) demonstrates expertise. (Intro
+chapter, "Grading and Project Submission", and the syllabus grading policy.)
+:::
+
+## Policies in one slide
+
+::: {.incremental}
+- **Deadlines:** everything by the end of week 16. Submit early to get feedback
+  while you can still act on it.
+- **Extensions** past the semester: extreme circumstances only, in writing,
+  requested beforehand
+- **Your own work:** cite code adapted from the book; never copy from a
+  classmate's repository
+- **AI and libraries:** encouraged, with the `filterpy` rule
+- **WPI policies** (integrity, accommodations, incompletes, support) are on
+  Canvas
+:::
+
+::: {.notes}
+For WPI students, Canvas and the official academic calendar are the
+authoritative sources for policies and deadlines. Many online students work full
+time and have families; the end-of-semester deadline is there to absorb that.
+:::
+
+## Part 1 in one slide
+
+::: {.incremental}
+- **Same math** from submarines to drones, with Python next to every equation
+- **Your repository is your portfolio:** public, tidy, and your own work
+- **Navigation is state estimation with a contract:** state, frames, covariance,
+  time, rate, health
+- **Separation** lets us draw boxes; latency, nonlinearity, and overconfidence
+  make them leak
+- **RMSE is not the whole story:** delays and jumps hurt more than noise
+- **History repeats:** propagate, correct with fixes, track the trust; and mind
+  the clock
+:::
+
+## Next: Part 2
+
+[Foundations →](02-foundations.html)
+
+Frames, attitude, linear algebra, probability, and Python: the shared language
+for everything that follows.
+
+::: {.notes}
+Week 1 continues with coordinate-frame and attitude conventions; week 2 is the
+linear algebra, probability, and scientific Python refresh.
+:::

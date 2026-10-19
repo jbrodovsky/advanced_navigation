@@ -1,5 +1,0 @@
-Content source: the course book under book/.
-
-No external assets or externally researched claims were added to this deck. Each
-chapter slide names its exact book source in speaker notes; the book is intended
-to remain the detailed lecture script.

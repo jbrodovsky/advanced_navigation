@@ -1,0 +1,2567 @@
+---
+title: "Foundations"
+subtitle: "Part 2 · Advanced Robot Navigation"
+part: 2
+footer: "Advanced Robot Navigation · Foundations"
+book-sources:
+  - book/chapters/01-foundations/frames-and-attitude.qmd
+  - book/chapters/01-foundations/linear-algebra.qmd
+  - book/chapters/01-foundations/probability-theory.qmd
+  - book/chapters/01-foundations/modern-python.qmd
+---
+
+## Part 2 at a glance
+
+```{python}
+#| include: false
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.patches import Arc
+from scipy.spatial.transform import Rotation
+
+plt.rcParams.update({
+    "font.size": 13,
+    "axes.grid": True,
+    "grid.alpha": 0.25,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "legend.frameon": False,
+})
+
+
+def gaussian_pdf(x, mean, sigma):
+    return np.exp(-0.5 * ((x - mean) / sigma) ** 2) / (np.sqrt(2.0 * np.pi) * sigma)
+
+
+def covariance_ellipse(mean, cov, k=1.0, n_points=200):
+    """Points on the k-sigma ellipse of a 2D Gaussian, as a 2 x n_points array."""
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+    angle = np.linspace(0.0, 2.0 * np.pi, n_points)
+    circle = np.vstack([np.cos(angle), np.sin(angle)])
+    return mean[:, None] + k * eigenvectors @ np.diag(np.sqrt(eigenvalues)) @ circle
+```
+
+1. [Coordinate frames and attitude](#/frames): the convention contract
+2. [Linear algebra](#/linalg): the operations every filter runs on
+3. [Probability](#/probability): the Gaussian toolkit, and the house
+4. [Modern Python](#/python): habits for code you can trust
+
+::: {.key}
+Every number needs a **frame**, every estimate needs an **uncertainty**, and
+every function needs a **test**.
+:::
+
+::: {.notes}
+Weeks 1 and 2 of the schedule. Frames come first because every later chapter
+makes the same choices, only less visibly. The three refreshers move quickly:
+they align notation and build the toolkit. Derivations, exercises, and the full
+code stay in the book.
+:::
+
+# Coordinate Frames and Attitude {#frames}
+
+A number without a frame is a rumor.
+
+[Chapter: Coordinate Frames and Attitude](https://jbrodovsky.github.io/advanced_navigation/chapters/01-foundations/frames-and-attitude.html)
+
+## Same numbers, different worlds
+
+[What does $[3,\ 4,\ -1]^T$ mean?]{.question}
+
+. . .
+
+Nothing yet. Say which frame.
+
+::: {.incremental}
+- In NED: 3 m north, 4 m east, 1 m **up**
+- In ENU: 3 m east, 4 m north, 1 m **down**
+- Positions, velocities, and quaternions can all look perfectly reasonable while
+  describing different worlds
+:::
+
+::: {.notes}
+Chapter opening. This chapter fixes the conventions before the IMU, camera,
+GNSS, and filter chapters make the same choices less visibly. Ask the room who
+has lost an afternoon to a sign or a frame. Everybody has.
+:::
+
+## The convention contract {auto-animate=true}
+
+::: {data-id="contract"}
+$$
+\mathbf{v}^{\color{#1d4ed8}{a}} = \mathbf{C}_{\color{#b45309}{b}}^{\color{#1d4ed8}{a}}\,\mathbf{v}^{\color{#b45309}{b}}
+$$
+:::
+
+::: {.incremental}
+- [Superscript]{style="color:#1d4ed8; font-weight:600"}: the frame the
+  coordinates are **written in**
+- [Subscript]{style="color:#b45309; font-weight:600"}: the frame they **came
+  from**
+- Read right to left: a $b$-vector goes in, an $a$-vector comes out. The
+  subscript of $\mathbf{C}$ must match the superscript it meets.
+:::
+
+::: {.notes}
+The Convention Contract section. Spend time here: every later equation in the
+course is written in this notation. C for a rotation (direction-cosine) matrix,
+always; R is measurement noise.
+:::
+
+## The convention contract {auto-animate=true}
+
+::: {data-id="contract"}
+$$
+\mathbf{v}^{\color{#1d4ed8}{a}} = \mathbf{C}_{\color{#b45309}{b}}^{\color{#1d4ed8}{a}}\,\mathbf{v}^{\color{#b45309}{b}}
+$$
+:::
+
+The inverse is the transpose (proper rotations):
+$\;\mathbf{C}_a^b = (\mathbf{C}_b^a)^T$
+
+. . .
+
+Chains compose when the inner indices match:
+
+$$
+\mathbf{C}_c^a = \mathbf{C}_b^a\,\mathbf{C}_c^b
+\qquad
+\mathbf{q}_c^a = \mathbf{q}_b^a \otimes \mathbf{q}_c^b
+$$
+
+. . .
+
+::: {.key}
+Body-to-navigation, $\mathbf{C}_b^n$, unless written otherwise. Never switch
+silently between active and passive language: name both frames, then **test the
+transform with a known vector**.
+:::
+
+## Book-wide conventions
+
+::: {.smaller-text}
+| | Convention |
+|---|---|
+| Navigation frame $n$ | North-east-down (NED) |
+| Body frame $b$ | Forward-right-down (FRD); Project 1's drone body is $z$-up |
+| Camera frame $c$ | Optical: $x$ right, $y$ down, $z$ along the optical axis |
+| Angular rate | $\boldsymbol{\omega}_{ab}^c$: frame $b$ relative to $a$, resolved in $c$ |
+| Quaternions | Hamilton, scalar first $[q_w, q_x, q_y, q_z]^T$, with $\mathbf{C}(\mathbf{q}_b^n) = \mathbf{C}_b^n$ |
+| Euler angles | Z-Y-X (yaw, pitch, roll), for display and initialization only |
+| Errors | True minus estimate, $\delta\mathbf{x} = \mathbf{x} - \hat{\mathbf{x}}$; attitude errors are small rotations in $n$ |
+| Rotation matrix | Always $\mathbf{C}$, never $\mathbf{R}$: $\mathbf{R}$ is measurement noise |
+:::
+
+. . .
+
+When a dataset or library differs, convert **at the boundary** and say so in a
+comment. The one deliberate exception: Project 1 uses its dataset's Z-X-Y Euler
+sequence.
+
+::: {.notes}
+Book-Wide Conventions section. This is a reference slide; it appears at once.
+Point out the Earth model letters too: this book follows Farrell (R_M meridian,
+R_N prime vertical), and Groves uses different letters for the same radii.
+Check a reference's convention before copying an equation from it.
+:::
+
+## NED is not ENU with new labels
+
+```{python}
+#| include: false
+def arrow(ax, tip, label, offset, color="k"):
+    ax.annotate("", xy=tip, xytext=(0.0, 0.0),
+                arrowprops=dict(arrowstyle="-|>", color=color, lw=2.0, mutation_scale=18))
+    ax.text(tip[0] + offset[0], tip[1] + offset[1], label, ha="center", va="center")
+
+
+def vertical_axis(ax, out_of_page, label):
+    ax.plot(0, 0, marker="o", ms=18, mfc="white", mec="k", mew=1.5, zorder=4)
+    ax.plot(0, 0, marker="." if out_of_page else "x", ms=11 if out_of_page else 10,
+            color="k", mew=2, zorder=5)
+    ax.text(0.0, -0.32, label, ha="center", va="center")
+```
+
+:::: {.columns}
+::: {.column width="44%"}
+$$
+\mathbf{C}_{\text{NED}}^{\text{ENU}} =
+\begin{bmatrix} 0 & 1 & 0 \\ 1 & 0 & 0 \\ 0 & 0 & -1 \end{bmatrix}
+$$
+
+::: {.incremental}
+- Horizontal axes swap, the vertical flips
+- A half turn about the north-east bisector: its own inverse
+- Bodies too: FRD to FLU is $\operatorname{diag}(1, -1, -1)$
+- Yaw: $\psi_{\text{ENU}} = \pi/2 - \psi_{\text{NED}}$
+:::
+:::
+::: {.column width="56%"}
+```{python}
+heading_ned = 30.0
+hdg = np.deg2rad(heading_ned)
+tip = np.array([np.sin(hdg), np.cos(hdg)])          # page: east right, north up
+fig, axes = plt.subplots(1, 2, figsize=(6.0, 3.4))
+for ax, title in zip(axes, ["NED (this book)", "ENU (ROS)"]):
+    ax.set_xlim(-0.55, 1.5)
+    ax.set_ylim(-0.5, 1.45)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_title(title)
+    ax.annotate("", xy=tip, xytext=(0.0, 0.0),
+                arrowprops=dict(arrowstyle="-|>", color="C3", lw=3.0, mutation_scale=20))
+ax = axes[0]
+arrow(ax, (0.0, 1.15), "$x$: north", (0.0, 0.15))
+arrow(ax, (1.15, 0.0), "$y$: east", (0.0, -0.17))
+vertical_axis(ax, out_of_page=False, label="$z$: down")
+ax.add_patch(Arc((0, 0), 0.9, 0.9, theta1=90 - heading_ned, theta2=90, color="C3", lw=1.5))
+ax.text(0.07, 1.02, rf"$\psi = {heading_ned:.0f}^\circ$", color="C3", ha="left")
+ax = axes[1]
+arrow(ax, (1.15, 0.0), "$x$: east", (0.0, -0.17))
+arrow(ax, (0.0, 1.15), "$y$: north", (0.0, 0.15))
+vertical_axis(ax, out_of_page=True, label="$z$: up")
+ax.add_patch(Arc((0, 0), 0.8, 0.8, theta1=0, theta2=90 - heading_ned, color="C3", lw=1.5))
+ax.text(0.47, 0.2, rf"$\psi = {90 - heading_ned:.0f}^\circ$", color="C3", ha="left")
+fig.tight_layout()
+plt.show()
+```
+
+[One vehicle (red), seen from above.]{.muted}
+:::
+::::
+
+::: {.notes}
+Common Navigation Frames and the local NED frame section. NED yaw is measured
+clockwise from north, ENU yaw counterclockwise from east. ROS uses ENU world
+frames and FLU bodies (REP 103), so any ROS adapter must make the conversion
+explicit.
+:::
+
+## Euler angles are for display
+
+$$
+\mathbf{C}_b^n = \mathbf{R}_z(\psi)\,\mathbf{R}_y(\theta)\,\mathbf{R}_x(\phi)
+$$
+
+Roll $\phi$, pitch $\theta$, yaw $\psi$; in SciPy, `Rotation.from_euler("ZYX", [yaw, pitch, roll])`.
+
+. . .
+
+Reading them back:
+$\phi = \operatorname{atan2}(C_{32}, C_{33})$,
+$\;\theta = -\arcsin C_{31}$,
+$\;\psi = \operatorname{atan2}(C_{21}, C_{11})$
+
+. . .
+
+At $\theta = \pm 90^\circ$ roll and yaw turn the body about the same axis, and
+the extraction divides zero by zero: **gimbal lock**.
+
+```{python}
+#| echo: true
+#| output-location: fragment
+a = Rotation.from_euler("ZYX", [30, 90, 10], degrees=True)   # yaw, pitch, roll
+b = Rotation.from_euler("ZYX", [50, 90, 30], degrees=True)
+print("same attitude:", np.allclose(a.as_matrix(), b.as_matrix()))
+```
+
+::: {.notes}
+Rotation Matrices and Euler Angles section. Every sequence has a singularity
+where its middle rotation reaches 90 degrees: pitch for Z-Y-X, roll for Project
+1's Z-X-Y. At pitch +90 only yaw minus roll matters, so the two triples above
+are one attitude. Hence Euler angles for display, plotting, and initialization,
+never as internal states. Heading is not automatically yaw either (later slide).
+:::
+
+## Rotation vectors and the exponential map
+
+Euler's rotation theorem: any rotation is one turn by $\theta$ about a unit axis
+$\mathbf{u}$. Pack both into $\boldsymbol{\theta} = \theta\mathbf{u}$.
+
+::: {.incremental}
+- Three parameters, no singularity near the identity
+- Exactly where navigation works: a gyro increment, an attitude error, a filter
+  correction
+:::
+
+. . .
+
+$$
+\mathbf{C} = \exp\!\left([\boldsymbol{\theta}]_\times\right)
+= \mathbf{I} + \sin\theta\,[\mathbf{u}]_\times + (1 - \cos\theta)\,[\mathbf{u}]_\times^2
+$$
+
+. . .
+
+The series closes because $[\mathbf{u}]_\times^3 = -[\mathbf{u}]_\times$: odd
+powers collect into $\sin\theta$, even powers into $1 - \cos\theta$.
+
+. . .
+
+Quaternion: $\mathbf{q} = [\cos(\theta/2),\ \mathbf{u}^T\sin(\theta/2)]^T$. The
+**half angle** is why $\mathbf{q}$ and $-\mathbf{q}$ are the same attitude.
+
+::: {.notes}
+Rotation Vectors and the Exponential Map section (Rodrigues' formula). The
+derivation uses [u]x^2 = u u^T - I for a unit vector. The axis is fixed by the
+rotation (Cu = u), so it has the same coordinates in both frames. The inverse
+map (the logarithm) goes through tr C = 1 + 2 cos(theta) and is ill-conditioned
+near theta = pi; libraries switch methods there.
+:::
+
+## Quaternions in software
+
+Hamilton and scalar first, $\mathbf{q} = [q_w, q_x, q_y, q_z]^T$. SciPy is
+Hamilton too, but stores `[x, y, z, w]`.
+
+```{.python code-line-numbers="|1-4|6-7|9-10|1-10"}
+def scipy_to_scalar_first(q_xyzw):
+    """Convert SciPy's [x, y, z, w] order to [w, x, y, z]."""
+    x, y, z, w = q_xyzw
+    return np.array([w, x, y, z])
+
+rotation_b_to_n = Rotation.from_euler("z", 90.0, degrees=True)
+q_wxyz = scipy_to_scalar_first(rotation_b_to_n.as_quat())   # [0.707, 0, 0, 0.707]
+
+# A body-forward vector points east after a positive 90-degree NED yaw.
+rotation_b_to_n.apply([1.0, 0.0, 0.0])                       # [0, 1, 0]
+```
+
+. . .
+
+Convert deliberately at every boundary. Normalizing a quaternion controls
+numerical drift; it does **not** repair a wrong convention.
+
+::: {.notes}
+Quaternions in Software section. The last line is the "known vector" test from
+the contract: a quarter turn with an answer you can predict.
+:::
+
+## Attitude kinematics
+
+Over $\delta t$ the body turns by $\boldsymbol{\omega}_{nb}^b\,\delta t$, in body
+axes, because that is where the gyros ride:
+
+$$
+\dot{\mathbf{C}}_b^n = \mathbf{C}_b^n\,[\boldsymbol{\omega}_{nb}^b]_\times ,
+\qquad
+\dot{\mathbf{q}}_b^n = \tfrac{1}{2}\,\mathbf{q}_b^n \otimes \begin{bmatrix} 0 \\ \boldsymbol{\omega}_{nb}^b \end{bmatrix}
+$$
+
+. . .
+
+Constant rate over $\Delta t$ integrates exactly:
+$\mathbf{q}_{k+1} = \mathbf{q}_k \otimes \mathbf{q}(\boldsymbol{\omega}_{nb}^b\Delta t)$.
+The rotation vector is the natural attitude increment.
+
+. . .
+
+A gyro measures rotation relative to **inertial** space:
+
+$$
+\boldsymbol{\omega}_{nb}^b = \boldsymbol{\omega}_{ib}^b - \mathbf{C}_n^b\,\boldsymbol{\omega}_{in}^n,
+\qquad
+\boldsymbol{\omega}_{in}^n = \boldsymbol{\omega}_{ie}^n + \boldsymbol{\omega}_{en}^n
+$$
+
+A drone over a lab floor can ignore $\boldsymbol{\omega}_{in}^n$. A ship or
+aircraft navigating for hours cannot.
+
+::: {.notes}
+Attitude Kinematics section. Production strapdown algorithms refine the
+constant-rate update when the rate vector changes direction within an interval
+(coning; Savage). The INS/GNSS chapter in Part 6 builds the full mechanization
+on the second equation.
+:::
+
+## Renormalize, but know what it fixes
+
+```{python}
+#| include: false
+def quat_multiply(q1, q2):
+    """Hamilton product of two scalar-first quaternions."""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array([
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ])
+
+
+def quat_exp(rotvec):
+    angle = np.linalg.norm(rotvec)
+    if angle < 1e-12:
+        return np.array([1.0, *(0.5 * rotvec)])
+    return np.array([np.cos(angle / 2), *(np.sin(angle / 2) * rotvec / angle)])
+
+
+def quat_to_dcm(q):
+    """Homogeneous quaternion-to-DCM formula; returns |q|^2 * C for a non-unit q."""
+    w, x, y, z = q
+    return np.array([[w*w + x*x - y*y - z*z, 2*(x*y - w*z), 2*(x*z + w*y)],
+                     [2*(x*y + w*z), w*w - x*x + y*y - z*z, 2*(y*z - w*x)],
+                     [2*(x*z - w*y), 2*(y*z + w*x), w*w - x*x - y*y + z*z]])
+
+
+def scalar_first(rotation):
+    x, y, z, w = rotation.as_quat()
+    return np.array([w, x, y, z])
+
+
+dt_imu, duration = 1.0 / 200.0, 10.0                         # 200 Hz IMU for 10 s
+omega_nb_b = np.deg2rad(90.0) * np.array([0.6, 0.0, 0.8])     # constant 90 deg/s
+q0 = scalar_first(Rotation.from_euler("ZYX", [30.0, 5.0, -3.0], degrees=True))
+omega_quat = np.array([0.0, *omega_nb_b])
+dq_exact = quat_exp(omega_nb_b * dt_imu)
+g_n = np.array([0.0, 0.0, 9.80665])
+names = ["first order", "first order + renormalize", "exponential"]
+q_now = {name: q0.copy() for name in names}
+hist = {name: {"norm": [], "att": [], "grav": []} for name in names}
+n_imu = round(duration / dt_imu)
+t_imu = dt_imu * np.arange(1, n_imu + 1)
+R0 = Rotation.from_quat(np.roll(q0, -1))
+for k in range(n_imu):
+    q = q_now["first order"]
+    q_now["first order"] = q + 0.5 * quat_multiply(q, omega_quat) * dt_imu
+    q = q_now["first order + renormalize"]
+    q = q + 0.5 * quat_multiply(q, omega_quat) * dt_imu
+    q_now["first order + renormalize"] = q / np.linalg.norm(q)
+    q_now["exponential"] = quat_multiply(q_now["exponential"], dq_exact)
+    truth = R0 * Rotation.from_rotvec(omega_nb_b * t_imu[k])
+    for name in names:
+        q = q_now[name]
+        hist[name]["norm"].append(np.linalg.norm(q))
+        hist[name]["att"].append(np.degrees(
+            (Rotation.from_quat(np.roll(q, -1)).inv() * truth).magnitude()))
+        hist[name]["grav"].append(abs(np.linalg.norm(quat_to_dcm(q).T @ g_n) - 9.80665))
+```
+
+```{python}
+styles = {"first order": ("C3", "-"), "first order + renormalize": ("C0", "--"),
+          "exponential": ("C2", "-")}
+fig, axes = plt.subplots(1, 3, figsize=(12, 4.0))
+for name in names:
+    color, ls = styles[name]
+    axes[0].plot(t_imu, hist[name]["norm"], color=color, linestyle=ls, linewidth=2.5, label=name)
+    axes[1].semilogy(t_imu, np.maximum(hist[name]["att"], 1e-13), color=color, linestyle=ls,
+                     linewidth=2.5)
+    axes[2].plot(t_imu, hist[name]["grav"], color=color, linestyle=ls, linewidth=2.5)
+axes[0].set_title(r"$\|\mathbf{q}\|$")
+axes[1].set_title("attitude error [deg]")
+axes[2].set_title(r"phantom gravity [m/s$^2$]")
+for ax in axes:
+    ax.set_xlabel("time [s]")
+fig.legend(*axes[0].get_legend_handles_labels(), loc="upper center", ncol=3,
+           bbox_to_anchor=(0.5, 1.0))
+fig.tight_layout(rect=(0, 0, 1, 0.9))
+plt.show()
+```
+
+```{python}
+#| output: asis
+fo, rn = hist["first order"], hist["first order + renormalize"]
+print(f"90°/s for 10 s at 200 Hz. First order: $\\|\\mathbf{{q}}\\| = {fo['norm'][-1]:.4f}$, so "
+      f"$\\mathbf{{C}}(\\mathbf{{q}})$ inflates gravity by {fo['grav'][-1]:.2f} m/s². "
+      f"Renormalized: no phantom gravity, and the **same** {rn['att'][-1]:.3f}° attitude error.")
+```
+
+::: {.notes}
+Attitude Kinematics section. A first-order step multiplies the norm by
+sqrt(1 + |w|^2 dt^2 / 4) every step. The quaternion-to-DCM formula applied to s q
+returns s^2 C, which stretches every vector it touches, gravity included: a
+phantom acceleration that wrecks a velocity solution within seconds.
+Renormalizing does not remove integration error, because scaling a quaternion
+does not change the rotation; accuracy comes from the integrator, and the
+exponential update is exact for a constant rate. The same goes for a DCM:
+replace it periodically by its nearest rotation, U V^T from its SVD.
+:::
+
+## Attitude errors are small rotations
+
+$$
+\mathbf{C}_b^n = \exp([\delta\boldsymbol{\theta}]_\times)\,\hat{\mathbf{C}}_b^n
+\approx \left(\mathbf{I} + [\delta\boldsymbol{\theta}]_\times\right)\hat{\mathbf{C}}_b^n,
+\qquad
+\mathbf{q}_b^n \approx \delta\mathbf{q} \otimes \hat{\mathbf{q}}_b^n,
+\quad
+\delta\mathbf{q} \approx \begin{bmatrix} 1 \\ \tfrac12\delta\boldsymbol{\theta} \end{bmatrix}
+$$
+
+[Why not estimate the four quaternion components directly?]{.fragment}
+
+::: {.incremental}
+- Four numbers, three degrees of freedom: a **singular** $4 \times 4$ covariance
+- An additive update pushes $\mathbf{q}$ off the unit sphere
+- $\delta\boldsymbol{\theta}$: minimal, unconstrained, near zero; north and east
+  are **tilt**
+:::
+
+. . .
+
+::: {.key}
+Tilt puts gravity on the wrong axes, $\delta\boldsymbol{\theta} \times \hat{\mathbf{f}}^n$:
+1 mrad of tilt is about $9.8\ \text{mm/s}^2$ of false horizontal acceleration.
+:::
+
+::: {.notes}
+Small-Angle Attitude Errors section. A filter that has estimated the error
+corrects with C_hat <- exp([dtheta_hat]x) C_hat. That is why error-state filters
+carry delta-theta and leave the quaternion in the nominal state (the EKF chapter,
+Part 4). The neglected terms are of order |dtheta|^2 / 2; near zero,
+linearization is accurate and nothing is singular.
+:::
+
+## The Earth-referenced frames
+
+```{python}
+#| include: false
+WGS84_A = 6378137.0
+WGS84_E2 = (1 / 298.257223563) * (2 - 1 / 298.257223563)
+
+
+def radii(lat):
+    """Meridian R_M and prime-vertical R_N radii of curvature [m]."""
+    den = 1.0 - WGS84_E2 * np.sin(lat) ** 2
+    return WGS84_A * (1.0 - WGS84_E2) / den**1.5, WGS84_A / np.sqrt(den)
+
+
+def geodetic_to_ecef(lat, lon, h):
+    R_N = radii(lat)[1]
+    return np.array([(R_N + h) * np.cos(lat) * np.cos(lon),
+                     (R_N + h) * np.cos(lat) * np.sin(lon),
+                     (R_N * (1.0 - WGS84_E2) + h) * np.sin(lat)])
+
+
+def C_e_to_n(lat, lon):
+    sL, cL, sl, cl = np.sin(lat), np.cos(lat), np.sin(lon), np.cos(lon)
+    return np.array([[-sL * cl, -sL * sl, cL], [-sl, cl, 0.0], [-cL * cl, -cL * sl, -sL]])
+```
+
+:::: {.columns}
+::: {.column width="55%"}
+::: {.incremental}
+- **ECI** $i$ and **ECEF** $e$: Earth-centered; ECEF turns with the Earth at
+  $\omega_{ie} = 7.292115 \times 10^{-5}$ rad/s
+- **WGS-84**: $a = 6378137.0$ m, $f = 1/298.257223563$
+- Latitude $L$ and height $h$ follow the ellipsoid **normal**, not the line to
+  the center
+:::
+
+::: {.fragment}
+$$
+\mathbf{r}^e =
+\begin{bmatrix}
+(R_N + h)\cos L\cos\lambda \\
+(R_N + h)\cos L\sin\lambda \\
+\left(R_N(1 - e^2) + h\right)\sin L
+\end{bmatrix}
+$$
+:::
+:::
+::: {.column width="45%"}
+```{python}
+a_e, b_e = 1.0, 0.62                                  # flattening exaggerated
+t_curve = np.linspace(-0.05, np.pi / 2 + 0.05, 300)
+beta_p = np.deg2rad(38.0)
+P_pt = np.array([a_e * np.cos(beta_p), b_e * np.sin(beta_p)])
+normal = np.array([P_pt[0] / a_e**2, P_pt[1] / b_e**2])
+normal /= np.linalg.norm(normal)
+lat_geodetic = np.degrees(np.arctan2(normal[1], normal[0]))
+foot = P_pt - (P_pt[1] / normal[1]) * normal          # where the normal meets the equator
+top = P_pt + 0.32 * normal
+
+fig, ax = plt.subplots(figsize=(5.0, 4.1))
+ax.plot(a_e * np.cos(t_curve), b_e * np.sin(t_curve), color="C0", linewidth=2.5)
+ax.plot([0, 1.25], [0, 0], color="k", linewidth=0.8)
+ax.plot([0, 0], [0, 0.85], color="k", linewidth=0.8)
+ax.plot([foot[0], top[0]], [foot[1], top[1]], color="C3", linewidth=2.5, label="ellipsoid normal")
+ax.plot([0, P_pt[0]], [0, P_pt[1]], "--", color="0.5", linewidth=1.8, label="line to the center")
+ax.add_patch(Arc(foot, 0.36, 0.36, theta1=0, theta2=lat_geodetic, color="C3", lw=1.8))
+ax.text(foot[0] + 0.21, foot[1] + 0.05, "$L$", color="C3", fontsize=17)
+ax.plot(*P_pt, "o", color="k", zorder=4)
+ax.plot(*top, "o", color="C3", zorder=4)
+mid = 0.5 * (P_pt + top)
+ax.text(mid[0] + 0.04, mid[1] - 0.07, "$h$", color="C3", fontsize=17)
+ax.text(0.0, -0.1, "center", color="0.4")
+ax.text(0.95, -0.1, "equator", color="0.4")
+ax.set_xlim(-0.08, 1.3)
+ax.set_ylim(-0.16, 0.92)
+ax.set_aspect("equal")
+ax.axis("off")
+ax.legend(loc="upper right")
+fig.tight_layout()
+plt.show()
+```
+
+[Flattening exaggerated: the real one is 1 part in 298.]{.muted}
+:::
+::::
+
+::: {.notes}
+Earth-Referenced Frames section. ECI has its origin at Earth's center and axes
+fixed relative to distant stars; it falls around the Sun with Earth, which is
+close enough to inertial for navigation. ECEF shares the origin and z axis, puts
+x through the equator at the prime meridian, and turns at one revolution per
+sidereal day (about 15.04 deg/h). e^2 = f (2 - f) and R_N = a / sqrt(1 - e^2
+sin^2 L). The inverse has no tidy closed form but a fixed-point iteration on
+latitude contracts by roughly e^2 per pass; the chapter has the code, including a
+height formula that behaves at the poles.
+:::
+
+## A flat local frame has a shelf life
+
+:::: {.columns}
+::: {.column width="45%"}
+NED axes at the vehicle; the rows of $\mathbf{C}_e^n$ are north, east, and down
+written in ECEF:
+
+$$
+\Delta\mathbf{r}^n = \mathbf{C}_e^n\left(\mathbf{r}^e - \mathbf{r}_0^e\right)
+$$
+
+::: {.fragment}
+The surface drops below the tangent plane by about $d^2/2R$:
+:::
+
+::: {.incremental}
+- a millimeter over 100 m
+- 8 cm over a kilometer
+- 8 m over 10 km
+:::
+:::
+::: {.column width="55%"}
+```{python}
+lat0, lon0, h0 = np.radians(42.2742), np.radians(-71.8080), 150.0
+R_M0, R_N0 = radii(lat0)
+r0 = geodetic_to_ecef(lat0, lon0, h0)
+C_en0 = C_e_to_n(lat0, lon0)
+dist = np.logspace(1, 5, 60)                           # 10 m to 100 km due north
+drop = np.array([(C_en0 @ (geodetic_to_ecef(lat0 + d / (R_M0 + h0), lon0, h0) - r0))[2]
+                 for d in dist])
+fig, ax = plt.subplots(figsize=(6.0, 4.0))
+ax.loglog(dist, drop, color="C0", linewidth=2.5)
+for d_mark, text in [(100.0, "100 m"), (1_000.0, "1 km"), (10_000.0, "10 km")]:
+    y = np.interp(d_mark, dist, drop)
+    label = f"{y * 1e3:.1f} mm" if y < 0.01 else (f"{y * 100:.1f} cm" if y < 1 else f"{y:.1f} m")
+    ax.plot(d_mark, y, "o", color="C3", ms=8, zorder=4)
+    ax.annotate(f"{text}: {label}", (d_mark, y), textcoords="offset points", xytext=(12, -16))
+ax.axvspan(10, 100, color="C2", alpha=0.12)
+ax.text(12, 3.0, "drone over\na lab floor", color="C2")
+ax.axvspan(5_000, 50_000, color="C3", alpha=0.10)
+ax.text(5_500, 3e-5, "ship crossing\na bay", color="C3")
+ax.set_xlabel("distance due north of WPI [m]")
+ax.set_ylabel("drop below the tangent [m]")
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+The local NED frame section. The curve is computed exactly, with the chapter's
+geodetic_to_ecef and C_e^n, for steps due north of WPI at constant height. For
+small moves the other way: dN = (R_M + h) dL and dE = (R_N + h) cos L dlambda.
+:::
+
+## Earth rate and transport rate
+
+$$
+\boldsymbol{\omega}_{ie}^n = \begin{bmatrix} \omega_{ie}\cos L & 0 & -\omega_{ie}\sin L \end{bmatrix}^T
+\qquad
+\|\boldsymbol{\omega}_{en}^n\| \approx \frac{\text{speed}}{\text{Earth radius}}
+$$
+
+```{python}
+omega_ie = np.degrees(7.292115e-5) * 3600.0            # deg/h
+earth_radius = 6.371e6
+rates = [
+    ("navigation-grade gyro bias", 0.01, "0.6"),
+    ("transport rate: ship at 20 knots", np.degrees(20 * 1852 / 3600 / earth_radius) * 3600, "C0"),
+    ("transport rate: airliner at 250 m/s", np.degrees(250 / earth_radius) * 3600, "C0"),
+    ("MEMS gyro residual bias (example)", 10.0, "0.6"),
+    ("Earth rate, horizontal, at WPI", omega_ie * np.cos(np.radians(42.3)), "C3"),
+    ("Earth rate", omega_ie, "C3"),
+]
+fig, ax = plt.subplots(figsize=(12, 3.3))
+y_pos = np.arange(len(rates))
+ax.barh(y_pos, [r[1] for r in rates], color=[r[2] for r in rates], height=0.65)
+for y, (_, value, _) in zip(y_pos, rates):
+    ax.text(value * 1.15, y, f"{value:.2g} °/h", va="center")
+ax.set_yticks(y_pos, [r[0] for r in rates])
+ax.set_xscale("log")
+ax.set_xlim(0.005, 100)
+ax.set_xlabel("rate [deg/h]")
+ax.grid(axis="y", visible=False)
+fig.tight_layout()
+plt.show()
+```
+
+. . .
+
+A gyrocompass senses the horizontal Earth rate to find true north. A phone's gyro
+bias is as large as the signal, so phones lean on magnetometers.
+
+::: {.notes}
+Earth rate and transport rate section. At WPI (L about 42.3 deg) Earth rate is
+about 11.1 deg/h north and 10.1 deg/h up; a gyrocompass works with gyro biases
+near 0.01 deg/h. Transport rate is the turning of NED relative to ECEF because
+the vehicle moves over a curved surface and north and down keep turning to
+follow it. The 10 deg/h MEMS bias is the example used in the probability
+chapter.
+:::
+
+## The camera looks along $z$
+
+:::: {.columns}
+::: {.column width="52%"}
+Optical frame: $x$ right in the image, $y$ down, $z$ out of the lens, so a point
+in front of the camera has **positive depth**.
+
+::: {.fragment}
+Forward-looking camera on an FRD vehicle: the columns of $\mathbf{C}_c^b$ are the
+camera axes in body coordinates.
+
+$$
+\mathbf{C}_c^b =
+\begin{bmatrix} 0 & 0 & 1 \\ 1 & 0 & 0 \\ 0 & 1 & 0 \end{bmatrix}
+$$
+:::
+:::
+::: {.column width="48%"}
+::: {.incremental}
+- optical $z$ is body forward
+- optical $x$ is body right
+- optical $y$ is body down
+- Real mounts add a small rotation and a lever arm, found by calibration
+- ROS keeps a camera "link" frame (FLU) apart from its "optical" frame
+:::
+:::
+::::
+
+::: {.notes}
+Camera Frames and Homogeneous Transforms section. The PnP chapter in Part 3
+uses this frame for every vision measurement.
+:::
+
+## Rotation alone is not a pose
+
+$$
+\mathbf{p}^a = \mathbf{C}_b^a\mathbf{p}^b + \mathbf{r}_{ab}^a
+\quad\Longrightarrow\quad
+\mathbf{T}_b^a = \begin{bmatrix} \mathbf{C}_b^a & \mathbf{r}_{ab}^a \\ \mathbf{0}^T & 1 \end{bmatrix}
+$$
+
+. . .
+
+$$
+\mathbf{T}_c^a = \mathbf{T}_b^a\mathbf{T}_c^b,
+\qquad
+(\mathbf{T}_b^a)^{-1} = \mathbf{T}_a^b =
+\begin{bmatrix} (\mathbf{C}_b^a)^T & -(\mathbf{C}_b^a)^T\mathbf{r}_{ab}^a \\ \mathbf{0}^T & 1 \end{bmatrix}
+$$
+
+::: {.incremental}
+- $SE(3)$: the same index rule as rotations, and an inverse with no general
+  matrix inverse
+- $\mathbf{T}_b^a$ reads two ways: it maps $b$ into $a$, **and** it is the pose
+  of $b$ in $a$
+- Points get a 1 appended, free vectors a 0. Pushing a velocity through the
+  translation is a classic bug
+:::
+
+::: {.notes}
+Names lie: in the frames chapter's code T_b_w is T_b^w (subscript first, like
+C_b_n), while the PnP chapter follows the robotics habit of destination first,
+so its T_wc is T_c^w. Trust the docstring, not the name. Camera pose in the
+world composes as w <- b <- c: T_c_w = T_b_w @ T_c_b.
+:::
+
+## Heading, course, and yaw
+
+```{python}
+#| include: false
+heading_deg, speed_water = 60.0, 6.0          # where the bow points; speed through the water
+set_deg, drift = 330.0, 2.5                   # current: direction it flows toward, speed
+v_water = speed_water * np.array([np.sin(np.radians(heading_deg)), np.cos(np.radians(heading_deg))])
+v_current = drift * np.array([np.sin(np.radians(set_deg)), np.cos(np.radians(set_deg))])
+v_ground = v_water + v_current                 # (east, north)
+course_deg = np.degrees(np.arctan2(v_ground[0], v_ground[1])) % 360
+```
+
+:::: {.columns}
+::: {.column width="52%"}
+::: {.incremental}
+- **Heading**: where the bow points, clockwise from north
+- **Course over ground**: where the vehicle goes,
+  $\chi = \operatorname{atan2}(v_E, v_N)$
+- **Yaw**: the third angle of a stated Euler sequence. In Z-Y-X with NED it
+  equals heading at any roll, and any pitch short of $\pm 90^\circ$
+:::
+:::
+::: {.column width="48%"}
+```{python}
+def ship_outline(heading, length=2.2, beam=0.7):
+    pts = np.array([[0.0, 0.6], [0.5, 0.25], [0.5, -0.5], [-0.5, -0.5], [-0.5, 0.25]])
+    pts = pts * np.array([beam, length])
+    c, s = np.cos(np.radians(heading)), np.sin(np.radians(heading))
+    rot = np.array([[c, s], [-s, c]])          # clockwise from north, page east-right/north-up
+    return pts @ rot.T
+
+
+fig, ax = plt.subplots(figsize=(5.4, 3.3))
+hull = ship_outline(heading_deg)
+ax.fill(hull[:, 0], hull[:, 1], color="0.8", edgecolor="0.4", zorder=1)
+kw = dict(arrowstyle="-|>", lw=2.8, mutation_scale=20)
+ax.annotate("", xy=v_water, xytext=(0, 0), arrowprops=dict(color="C0", **kw))
+ax.annotate("", xy=v_ground, xytext=v_water, arrowprops=dict(color="C2", **kw))
+ax.annotate("", xy=v_ground, xytext=(0, 0), arrowprops=dict(color="C3", **kw))
+ax.text(0.5 * v_water[0] + 0.5, 0.5 * v_water[1] - 1.0, f"heading {heading_deg:03.0f}°", color="C0")
+ax.text(0.5 * (v_water[0] + v_ground[0]) + 0.35, 0.5 * (v_water[1] + v_ground[1]), "current", color="C2")
+ax.text(0.5 * v_ground[0] - 0.4, 0.5 * v_ground[1] + 0.5, f"course\n{course_deg:03.0f}°", color="C3", ha="right")
+ax.annotate("N", xy=(-2.6, 6.5), xytext=(-2.6, 4.9), ha="center",
+            arrowprops=dict(arrowstyle="-|>", color="k", lw=1.5))
+ax.set_xlim(-3.2, 7.2)
+ax.set_ylim(-1.6, 6.8)
+ax.set_aspect("equal")
+ax.axis("off")
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+. . .
+
+A single-antenna GNSS receiver measures **course**, and course is meaningless at
+low speed. Initializing yaw from GNSS velocity at the dock is a rite of passage
+nobody needs to repeat.
+
+::: {.notes}
+Heading, Course, and Yaw section. Heading and course differ whenever the vehicle
+does not move the way it points: a ship crabbing through a cross current (set
+and drift, to a mariner), an aircraft holding a wind-correction angle, a car
+sliding on ice, a quadrotor strafing. In Project 1's Z-X-Y sequence, yaw and
+heading differ when the vehicle is both rolled and pitched; in ENU, yaw is
+counterclockwise from east.
+:::
+
+## Which north? Which height?
+
+:::: {.columns}
+::: {.column width="50%"}
+**North**
+
+- A compass points to magnetic north: off by the **variation** (about
+  $14^\circ$ W in central Massachusetts)
+- The ship's own steel adds **deviation**, which changes with heading
+- East positive:
+  $\psi_{\text{true}} = \psi_{\text{compass}} + \delta_{\text{dev}} + D_{\text{var}}$
+
+[*Can Dead Men Vote Twice At Elections*: compass, deviation, magnetic,
+variation, true, add east.]{.fragment}
+:::
+::: {.column width="50%"}
+::: {.fragment}
+**Height**
+
+- Ellipsoidal $h$ is not height above mean sea level
+- Geoid undulation $N_g$: $-106$ m to $+85$ m worldwide, about $-28$ m here
+- Orthometric $H \approx h - N_g$; NMEA `GGA` reports $H$
+- Feed $H$ in as $h$: every fix moves tens of meters **vertically**, and every
+  horizontal plot still looks perfect
+:::
+:::
+::::
+
+::: {.notes}
+Heading, Course, and Yaw (north) and the Ellipsoidal versus orthometric height
+section. The World Magnetic Model tabulates variation by position and year; a
+deviation card is recorded by "swinging" the ship through a full circle. A
+robot's magnetometer has both problems: hard- and soft-iron calibration is its
+deviation correction, and the World Magnetic Model supplies the variation. The
+mnemonic is from Bowditch.
+:::
+
+## Checks before trusting a transform
+
+::: {.incremental}
+- Source **and** destination frames in every variable name and docstring
+- $\mathbf{C}^T\mathbf{C} = \mathbf{I}$ within floating-point tolerance
+- An identity, a known quarter turn, and a round trip through the inverse
+- Angle units, quaternion order, and the sign of gravity at every sensor boundary
+- Which north (true or magnetic), which height (ellipsoidal or mean sea level)
+:::
+
+. . .
+
+::: {.key}
+These checks are cheaper than debugging a navigation failure whose plot is only
+wrong by one very persuasive sign.
+:::
+
+# Linear Algebra Refresher {#linalg}
+
+Every filter in this course is a few matrix operations in a particular order.
+
+[Chapter: Linear Algebra Refresher](https://jbrodovsky.github.io/advanced_navigation/chapters/01-foundations/linear-algebra.html)
+
+## The toolbox
+
+[Which matrix operations does navigation actually need?]{.question}
+
+. . .
+
+::: {.smaller-text}
+| Operation | Where it shows up |
+|---|---|
+| Cross product as a matrix, $[\mathbf{a}]_\times$ | Attitude kinematics, Jacobians |
+| $\mathbf{A}\mathbf{P}\mathbf{A}^T$ | Covariance propagation |
+| Solve, never invert | Gains, least squares |
+| Eigendecomposition | The shape of the uncertainty |
+| Cholesky, $\mathbf{P} = \mathbf{L}\mathbf{L}^T$ | Correlated noise, sigma points, the PD test |
+| SVD | Rank, pseudoinverse, the nearest rotation |
+| Matrix exponential, $e^{\mathbf{A}\Delta t}$ | Discretization, Rodrigues |
+:::
+
+::: {.notes}
+The chapter is a concise refresher that pairs each definition with its NumPy
+equivalent; its Quick Reference table is the card to keep open while coding.
+:::
+
+## Math counts from 1, code from 0
+
+:::: {.columns}
+::: {.column width="50%"}
+**Math**: 1-based, inclusive
+
+$v_1$ is the first component;
+$\mathbf{v}_{1:3} = (v_1, v_2, v_3)$
+:::
+::: {.column width="50%"}
+**Code**: 0-based, half-open
+
+`v[0]` is the first component;
+`v[0:3]` holds indices 0, 1, 2
+:::
+::::
+
+. . .
+
+::: {.key}
+Math $v_i$ is `v[i-1]`; math $\mathbf{v}_{i:j}$ is `v[i-1:j]`.
+:::
+
+. . .
+
+A zero-based index is an offset from the start of the array, which is how the
+memory is laid out. Blocks follow the same rule: $\mathbf{A}_{1:2,\,2:3}$ is
+`A[0:2, 1:3]`.
+
+::: {.notes}
+Indexing and slicing section. The book keeps the two conventions strictly apart.
+Negative indices count from the end: v[-1] is the last component.
+:::
+
+## The cross product as a matrix
+
+$$
+\mathbf{a} \times \mathbf{b} = [\mathbf{a}]_\times \mathbf{b},
+\qquad
+[\mathbf{a}]_\times =
+\begin{bmatrix} 0 & -a_3 & a_2 \\ a_3 & 0 & -a_1 \\ -a_2 & a_1 & 0 \end{bmatrix},
+\qquad
+[\mathbf{a}]_\times^T = -[\mathbf{a}]_\times
+$$
+
+. . .
+
+Not for speed: `np.cross` is cheaper. For **algebra**: as a matrix, a cross
+product composes with other linear maps, factors out, and differentiates.
+
+$$
+\frac{\partial (\mathbf{a} \times \mathbf{b})}{\partial \mathbf{b}} = [\mathbf{a}]_\times,
+\qquad
+\frac{\partial (\mathbf{a} \times \mathbf{b})}{\partial \mathbf{a}} = -[\mathbf{b}]_\times
+$$
+
+. . .
+
+That is what makes $\dot{\mathbf{C}}_b^n = \mathbf{C}_b^n[\boldsymbol{\omega}_{nb}^b]_\times$
+and every EKF Jacobian with a rotation in it tractable.
+
+## Rank and observability
+
+Velocity is in the null space of $\mathbf{H} = [1\ \ 0]$. Is it unobservable?
+
+. . .
+
+No: the dynamics carry velocity into future positions. Observability belongs to
+$\mathbf{F}$ and $\mathbf{H}$ together:
+$\mathcal{O} = [\mathbf{H};\ \mathbf{H}\mathbf{F};\ \ldots;\ \mathbf{H}\mathbf{F}^{n-1}]$,
+observable iff $\operatorname{rank}\mathcal{O} = n$.
+
+```{python}
+#| echo: true
+#| output-location: fragment
+F_cv = np.array([[1.0, 0.1], [0.0, 1.0]])        # constant velocity, state [p, v]
+for name, H_meas in [("position", np.array([[1.0, 0.0]])), ("velocity", np.array([[0.0, 1.0]]))]:
+    O = np.vstack([H_meas @ np.linalg.matrix_power(F_cv, k) for k in range(2)])
+    print(f"measure {name}: rank(H) = {np.linalg.matrix_rank(H_meas)}, "
+          f"rank(O) = {np.linalg.matrix_rank(O)}")
+```
+
+. . .
+
+Measure velocity alone and a constant position offset never shows up: the heart
+of why dead reckoning drifts.
+
+::: {.notes}
+Rank and observability section. The null space of O, not of H, holds the
+directions no amount of data can pin down. Part 4 returns to observability with
+the Kalman filter.
+:::
+
+## Solve, never invert
+
+$\mathbf{A}\mathbf{x} = \mathbf{b}$: `np.linalg.solve(A, b)`, not
+`np.linalg.inv(A) @ b`. Faster and more stable.
+
+. . .
+
+Overdetermined: least squares, through the **normal equations**
+
+$$
+\min_{\mathbf{x}} \|\mathbf{Ax} - \mathbf{b}\|_2^2
+\;\Longrightarrow\;
+\mathbf{A}^T\mathbf{A}\,\mathbf{x} = \mathbf{A}^T\mathbf{b}
+$$
+
+but compute it with `np.linalg.lstsq` (QR or SVD inside), never by forming
+$\mathbf{A}^T\mathbf{A}$.
+
+. . .
+
+Weighted, $\min_{\mathbf{x}} \mathbf{r}^T \mathbf{\Sigma}^{-1} \mathbf{r}$:
+down-weight the noisy measurements. The backbone of sensor fusion.
+
+. . .
+
+Before trusting any of it: $\kappa(\mathbf{A}) = \sigma_{\max}/\sigma_{\min}$. A
+large condition number means small changes in $\mathbf{b}$ make large changes in
+$\mathbf{x}$.
+
+::: {.notes}
+Matrix Inverse, Least Squares, and Norms sections. If the columns are dependent
+the problem is unobservable in some direction and the pseudoinverse picks the
+minimum-norm solution.
+:::
+
+## Two forms of one update
+
+Woodbury, with prior $\mathbf{P}$ ($n \times n$) and measurement noise
+$\mathbf{R}$ ($m \times m$):
+
+$$
+\underbrace{\left(\mathbf{P}^{-1} + \mathbf{H}^T\mathbf{R}^{-1}\mathbf{H}\right)^{-1}}_{\text{information form: } n \times n \text{ inverses}}
+=
+\underbrace{\mathbf{P} - \mathbf{P}\mathbf{H}^T\left(\mathbf{H}\mathbf{P}\mathbf{H}^T + \mathbf{R}\right)^{-1}\mathbf{H}\mathbf{P}}_{\text{covariance form: one } m \times m \text{ inverse}}
+$$
+
+::: {.incremental}
+- A 3-component GNSS fix on a 15-state INS filter: the right side
+- Hundreds of feature measurements on a small state: the left side
+- Underneath: block inversion through the **Schur complement**,
+  $\mathbf{S} = \mathbf{D} - \mathbf{C}\mathbf{A}^{-1}\mathbf{B}$
+:::
+
+::: {.notes}
+Block Inversion and the Woodbury Identity section. In the Schur complement, C and
+D are generic blocks of a partitioned matrix, not a rotation. The information
+filter (Part 4) lives on the left side; the Kalman filter on the right.
+:::
+
+## Covariance has a shape
+
+:::: {.columns}
+::: {.column width="52%"}
+$\mathbf{P}$ is symmetric: $\mathbf{P} = \mathbf{V}\mathbf{\Lambda}\mathbf{V}^T$,
+real eigenvalues, orthonormal eigenvectors.
+
+::: {.incremental}
+- Eigenvectors: the **principal axes** of uncertainty
+- Eigenvalues: the **variances** along them
+- $\operatorname{tr}\mathbf{P} = \sum_i \lambda_i = \mathbb{E}[\|\mathbf{x} - \hat{\mathbf{x}}\|^2]$,
+  the total variance
+- Use `np.linalg.eigh` for symmetric matrices
+:::
+:::
+::: {.column width="48%"}
+```{python}
+P_demo = np.array([[3.0, 1.0], [1.0, 2.0]])
+lam, V = np.linalg.eigh(P_demo)
+fig, ax = plt.subplots(figsize=(5.0, 4.1))
+e1 = covariance_ellipse(np.zeros(2), P_demo, k=1.0)
+ax.plot(e1[0], e1[1], color="C0", linewidth=2.5, label="1-sigma ellipse")
+label_spots = [(0.55, -1.75), (-2.45, -1.75)]
+for i, color in zip(range(2), ["C1", "C3"]):
+    tip = np.sqrt(lam[i]) * V[:, i]
+    ax.annotate("", xy=tip, xytext=(0, 0),
+                arrowprops=dict(arrowstyle="-|>", color=color, lw=2.8, mutation_scale=18))
+    ax.text(*label_spots[i], rf"$\sqrt{{\lambda_{i + 1}}} = {np.sqrt(lam[i]):.2f}$", color=color)
+ax.set_aspect("equal")
+ax.set_xlim(-2.5, 2.5)
+ax.set_ylim(-2.1, 2.4)
+ax.set_xlabel("$x_1$")
+ax.set_ylabel("$x_2$")
+ax.legend(loc="upper left")
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+Eigenvalues and Eigenvectors section; the matrix is the chapter's [[3, 1], [1, 2]].
+The arrows are the eigenvectors scaled by the standard deviations along them.
+The trace is invariant under cyclic permutations; the classic minimum-variance
+derivation of the Kalman gain minimizes the trace of the posterior covariance.
+:::
+
+## A covariance that cannot exist
+
+:::: {.columns}
+::: {.column width="42%"}
+Every correlation is in $[-1, 1]$. Is this a valid covariance?
+
+$$
+\mathbf{P}_\text{bad} = \begin{bmatrix} 1 & 0.9 & 0 \\ 0.9 & 1 & 0.9 \\ 0 & 0.9 & 1 \end{bmatrix}
+$$
+
+::: {.fragment}
+$x_1$ tracks $x_2$, $x_2$ tracks $x_3$, yet $x_1$ and $x_3$ are uncorrelated. No
+random vector can do that.
+:::
+:::
+::: {.column width="58%"}
+```{python}
+#| echo: true
+#| output-location: fragment
+P_bad = np.array([[1.0, 0.9, 0.0],
+                  [0.9, 1.0, 0.9],
+                  [0.0, 0.9, 1.0]])
+print("eigenvalues:", np.linalg.eigvalsh(P_bad).round(4))
+try:
+    np.linalg.cholesky(P_bad)    # succeeds iff PD
+except np.linalg.LinAlgError:
+    print("Cholesky fails: not positive definite")
+```
+:::
+::::
+
+. . .
+
+Filters lose definiteness through round-off and asymmetric updates: symmetrize,
+$(\mathbf{P} + \mathbf{P}^T)/2$, and test periodically.
+
+::: {.notes}
+Positive definiteness section. Two practical tests: all eigenvalues positive, or
+a Cholesky factorization that succeeds, which is cheaper and is what most code
+uses. Exercise 4 repairs this matrix.
+:::
+
+## Cholesky: the matrix square root
+
+:::: {.columns}
+::: {.column width="44%"}
+$\mathbf{P} = \mathbf{L}\mathbf{L}^T$, $\mathbf{L}$ lower triangular: half the
+cost of LU, and it exists exactly when $\mathbf{P}$ is positive definite.
+
+::: {.incremental}
+- Correlated noise: $\mathbf{z} \sim \mathcal{N}(\mathbf{0}, \mathbf{I})$ gives
+  $\mathbf{L}\mathbf{z} \sim \mathcal{N}(\mathbf{0}, \mathbf{P})$
+- UKF sigma points: $\hat{\mathbf{x}} \pm$ the columns of
+  $\sqrt{(n + \lambda)\mathbf{P}}$
+- NumPy returns $\mathbf{L}$; SciPy returns $\mathbf{L}^T$ unless `lower=True`
+:::
+:::
+::: {.column width="56%"}
+```{python}
+P_two = np.array([[4.0, 1.2], [1.2, 2.0]])
+L_two = np.linalg.cholesky(P_two)
+rng = np.random.default_rng(7)
+z_white = rng.standard_normal((2, 1500))
+x_corr = L_two @ z_white
+fig, axes = plt.subplots(1, 2, figsize=(6.2, 3.7), sharex=True, sharey=True)
+for ax, pts, cov, title in [(axes[0], z_white, np.eye(2), r"$\mathbf{z}$"),
+                            (axes[1], x_corr, P_two, r"$\mathbf{L}\mathbf{z}$")]:
+    ax.scatter(pts[0], pts[1], s=4, alpha=0.35, color="0.45")
+    for k in (1, 2):
+        e = covariance_ellipse(np.zeros(2), cov, k=k)
+        ax.plot(e[0], e[1], color="C0", linewidth=2)
+    ax.set_title(title)
+    ax.set_aspect("equal")
+axes[0].set_xlim(-6.5, 6.5)
+axes[0].set_ylim(-5.5, 5.5)
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+Cholesky decomposition section. P here is the upper-left block of the chapter's
+P_good; the ellipses are 1 and 2 sigma. Any square root S with S S^T = P
+reproduces the covariance; Cholesky is the cheapest and most stable to compute.
+:::
+
+## The matrix exponential
+
+$$
+\dot{\mathbf{x}} = \mathbf{A}\mathbf{x}
+\;\Longrightarrow\;
+\mathbf{x}(t) = e^{\mathbf{A}t}\mathbf{x}(0),
+\qquad
+e^{\mathbf{A}t} = \mathbf{I} + \mathbf{A}t + \frac{(\mathbf{A}t)^2}{2!} + \frac{(\mathbf{A}t)^3}{3!} + \cdots
+$$
+
+:::: {.columns}
+::: {.column width="50%"}
+::: {.incremental}
+- Continuous model to filter: $\mathbf{F} = e^{\mathbf{A}\Delta t}$
+- Constant velocity: $\mathbf{A}^2 = \mathbf{0}$, so $\mathbf{F} = \mathbf{I} + \mathbf{A}\Delta t$ exactly
+- Skew-symmetric $[\boldsymbol{\theta}]_\times$: the series sums to a rotation (Rodrigues)
+- Process noise: Van Loan's block exponential, in Part 4
+:::
+:::
+::: {.column width="50%"}
+```{python}
+#| echo: true
+#| output-location: fragment
+from scipy.linalg import expm
+
+A_cv = np.array([[0.0, 1.0], [0.0, 0.0]])
+print("expm(A dt):\n", expm(A_cv * 0.1))
+print("np.exp(A dt), elementwise and wrong:\n",
+      np.exp(A_cv * 0.1))
+```
+:::
+::::
+
+## Linear algebra bugs you will meet
+
+::: {.incremental}
+- Shapes: $(m \times k)(k \times n)$ only; NumPy 1-D arrays are neither rows nor
+  columns
+- `inv(A) @ b` where `solve(A, b)` belongs
+- $\mathbf{A}\mathbf{P}\mathbf{A}$ where $\mathbf{A}\mathbf{P}\mathbf{A}^T$ belongs
+- `np.exp(A)` where `scipy.linalg.expm(A)` belongs
+- An upper Cholesky factor where the code expected a lower one
+- Trusting a solution without checking `np.linalg.cond(A)`
+:::
+
+::: {.notes}
+Common Mistakes section, plus off-by-one indexing from earlier. Every one of
+these will show up in somebody's project this semester.
+:::
+
+# Probability Theory Refresher {#probability}
+
+Every navigation system is a machine for managing uncertainty.
+
+[Chapter: Probability Theory Refresher](https://jbrodovsky.github.io/advanced_navigation/chapters/01-foundations/probability-theory.html)
+
+## How wrong might we be?
+
+[...and how do we become less wrong when a measurement arrives?]{.question}
+
+. . .
+
+A random variable maps outcomes to numbers: a robot's position, a gyro's
+turn-on bias, a lidar range.
+
+::: {.incremental}
+- **Discrete-valued**: a PMF with $\sum_x p(x) = 1$ (a die, a grid cell,
+  satellites in view)
+- **Continuous-valued**: a PDF with $\int p(x)\,dx = 1$; probabilities are
+  areas, and a density can exceed one
+- Neither is discrete **time**: a Kalman filter's state is continuous-valued,
+  evaluated at discrete instants $k$
+:::
+
+::: {.notes}
+Random Variables section. Discrete-valued states appear when we chop a
+continuous space into cells (histogram filters, occupancy maps) or when the
+quantity is categorical (which landmark made this measurement). Particle filters
+sit in between.
+:::
+
+## Mean, median, and mode disagree
+
+```{python}
+r_grid = np.linspace(0.0, 4.0, 400)
+rayleigh = r_grid * np.exp(-0.5 * r_grid**2)
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.2), gridspec_kw={"width_ratios": [1.7, 1]})
+ax = axes[0]
+ax.plot(r_grid, rayleigh, color="C0", linewidth=2.5)
+ax.fill_between(r_grid, rayleigh, color="C0", alpha=0.12)
+for value, label, color in [(1.0, r"mode $\sigma$", "C2"),
+                            (np.sqrt(2 * np.log(2)), r"median $1.18\sigma$ (CEP)", "C1"),
+                            (np.sqrt(np.pi / 2), r"mean $1.25\sigma$", "C3")]:
+    ax.axvline(value, color=color, linewidth=2.5, label=label)
+ax.set_xlabel(r"horizontal GNSS error / $\sigma$")
+ax.set_ylabel("density")
+ax.legend(loc="upper right")
+ax = axes[1]
+ax.bar(np.arange(1, 7), np.full(6, 1 / 6), color="0.7", width=0.6)
+ax.axvline(3.5, color="C3", linewidth=2.5, label="expected value 3.5")
+ax.set_xticks(np.arange(1, 7))
+ax.set_ylim(0, 0.3)
+ax.set_xlabel("a fair die")
+ax.legend(loc="upper right")
+fig.tight_layout()
+plt.show()
+```
+
+::: {.incremental}
+- Expectation is a center of mass, not the most likely value: nobody rolls a 3.5
+- Linear, but $\mathbb{E}[g(X)] \neq g(\mathbb{E}[X])$ unless $g$ is linear.
+  That will haunt the EKF.
+:::
+
+::: {.notes}
+Expectation, Mean, Median, and Mode section. Left: the error magnitude of a GNSS
+fix whose north and east errors are independent zero-mean Gaussians with the
+same sigma. The median is what receiver data sheets call CEP. For a symmetric,
+single-peaked distribution all three coincide, which is why engineers get away
+with being sloppy. Mathematicians will give you disapproving looks if you mix up
+the expected value (a property of the distribution) and the sample mean.
+:::
+
+## Covariance: how errors move together
+
+$$
+\boldsymbol{\Sigma} = \mathbb{E}\left[(\mathbf{x}-\boldsymbol{\mu})(\mathbf{x}-\boldsymbol{\mu})^T\right],
+\qquad
+\rho = \frac{\text{Cov}(X,Y)}{\sigma_X \sigma_Y} \in [-1, 1]
+$$
+
+::: {.incremental}
+- Independent means uncorrelated. The converse fails, **except** for jointly
+  Gaussian variables
+- Dead-reckoned position is integrated velocity, so their errors become
+  correlated
+- That off-diagonal term is the channel through which a position fix later
+  corrects velocity
+- Shared causes correlate noise (two antennas on one mast see the same
+  multipath). Ignore it and the filter is overconfident.
+:::
+
+::: {.notes}
+Cross-Covariance, Independence, and Correlation section. In a filter the state
+covariance is written P; the chapter uses Sigma for distributions in general.
+:::
+
+## Bayes' rule
+
+$$
+\underbrace{p(\mathbf{x}\mid\mathbf{z})}_{\text{posterior}}
+= \frac{\overbrace{p(\mathbf{z}\mid\mathbf{x})}^{\text{likelihood}}\;\overbrace{p(\mathbf{x})}^{\text{prior}}}{\underbrace{p(\mathbf{z})}_{\text{evidence}}}
+$$
+
+::: {.incremental}
+- **Prior**: the model-based belief before the measurement
+- **Likelihood**: how consistent the measurement is with each candidate state
+- **Evidence**: the normalizer,
+  $p(\mathbf{z}) = \int p(\mathbf{z}\mid\mathbf{x})\,p(\mathbf{x})\,d\mathbf{x}$
+:::
+
+. . .
+
+Prediction is the law of total probability, the update is Bayes' rule:
+$\;\text{bel}(\mathbf{x}_k) = \eta\, p(\mathbf{z}_k\mid\mathbf{x}_k)\, \overline{\text{bel}}(\mathbf{x}_k)$
+
+::: {.notes}
+Conditional Probability and Bayes' Rule section. A belief is a probability
+distribution over the possible states: picture a histogram with total area one.
+The full recursion is the Bayes filter chapter in Part 4.
+:::
+
+## Bayes' rule on a 1 mm grid
+
+```{python}
+#| include: false
+dx_grid = 0.001
+x_track = np.arange(0.0, 1.0, dx_grid)
+
+
+def to_pmf(weights):
+    return weights / np.sum(weights)
+
+
+def predict_grid(belief, motion_mean, motion_std, dx):
+    """Shift a gridded belief by the commanded motion and blur it by the motion noise."""
+    shifted = np.roll(belief, int(round(motion_mean / dx)))
+    half_width = int(np.ceil(5 * motion_std / dx))
+    offsets = dx * np.arange(-half_width, half_width + 1)
+    kernel = to_pmf(np.exp(-0.5 * (offsets / motion_std) ** 2))
+    return np.convolve(shifted, kernel, mode="same")
+
+
+prior_grid = to_pmf(gaussian_pdf(x_track, 0.30, 0.01) + gaussian_pdf(x_track, 0.60, 0.02))
+prediction_grid = predict_grid(prior_grid, 0.05, 0.01, dx_grid)
+likelihood_grid = gaussian_pdf(x_track, 0.37, 0.02)
+posterior_grid = to_pmf(likelihood_grid * prediction_grid)
+grid_curves = {
+    "prior: two look-alike markers": (prior_grid, "C0", "-"),
+    "predicted: moved 5 cm": (prediction_grid, "C1", "-"),
+    "likelihood: z = 0.37 m (scaled)": (to_pmf(likelihood_grid), "C2", "--"),
+    "posterior": (posterior_grid, "C3", "-"),
+}
+grid_ymax = 1.1 * max(c[0].max() for c in grid_curves.values())
+
+
+def plot_bayes_stage(n_curves):
+    fig, ax = plt.subplots(figsize=(12, 4.2))
+    for i, (label, (y, color, ls)) in enumerate(grid_curves.items()):
+        if i < n_curves:
+            ax.plot(x_track, y, color=color, linestyle=ls, label=label,
+                    linewidth=3.2 if label == "posterior" else 2.2)
+    ax.set_xlim(0.2, 0.8)
+    ax.set_ylim(0, grid_ymax)
+    ax.set_xlabel("position along the track [m]")
+    ax.set_ylabel("probability per mm")
+    ax.legend(loc="upper right")
+    fig.tight_layout()
+    plt.show()
+```
+
+::: {.r-stack}
+```{python}
+plot_bayes_stage(1)
+```
+::: {.fragment}
+```{python}
+plot_bayes_stage(2)
+```
+:::
+::: {.fragment}
+```{python}
+plot_bayes_stage(3)
+```
+:::
+::: {.fragment}
+```{python}
+plot_bayes_stage(4)
+```
+:::
+:::
+
+::: {.fragment}
+The measurement is less precise than the left hypothesis, yet decisive: the right
+hypothesis does not shrink, it vanishes.
+:::
+
+::: {.notes}
+Bayesian Filters in Python section: a robot on a 1 m track saw one of two
+identical-looking markers, then moved 0.05 m (sigma 0.01 m); a sensor reports
+0.37 m (sigma 0.02 m). Measured in combined prediction-plus-measurement sigmas, z
+sits less than one from the left mode and more than nine from the right.
+Prediction only moves and broadens; the posterior is narrower than either the
+predicted mode or the likelihood. A 1000-cell grid is fine in one dimension; a
+15-state inertial error model at the same resolution needs 1000^15 = 10^45
+cells. Hence the Gaussian.
+:::
+
+## "Rare" is a rate
+
+```{python}
+#| output: asis
+import math
+
+rows = ["| $k$ | $P(\\lvert X - \\mu \\rvert < k\\sigma)$ | outside once in | at 100 Hz, every |",
+        "|---:|---:|---:|---:|"]
+for k in (1, 2, 3, 4):
+    p_inside = math.erf(k / math.sqrt(2.0))
+    one_in_n = 1.0 / (1.0 - p_inside)
+    rows.append(f"| {k} | {p_inside:.5f} | {one_in_n:,.1f} samples | {one_in_n / 100.0:,.2f} s |")
+print("\n".join(rows))
+```
+
+. . .
+
+The "rare" three-sigma excursion arrives every few seconds at 100 Hz. A fault
+detector that calls each one a sensor failure will spend its life crying wolf.
+
+::: {.notes}
+The Univariate Gaussian section: the 68-95-99.7 rule, turned into rates because
+sensors sample quickly.
+:::
+
+## Multiplying Gaussians is the update
+
+:::: {.columns}
+::: {.column width="47%"}
+Prior times likelihood: **precisions add**,
+
+$$
+\frac{1}{\sigma^2} = \frac{1}{\sigma_1^2} + \frac{1}{\sigma_2^2}
+$$
+
+::: {.fragment}
+and the mean is precision-weighted. With
+$K = \sigma_1^2 / (\sigma_1^2 + \sigma_2^2)$:
+
+$$
+\begin{aligned}
+\mu &= \mu_1 + K\,(\mu_2 - \mu_1) \\
+\sigma^2 &= (1 - K)\,\sigma_1^2
+\end{aligned}
+$$
+:::
+
+::: {.fragment}
+Rename: the scalar Kalman update.
+:::
+:::
+::: {.column width="53%"}
+```{python}
+s_grid = np.linspace(850.0, 1200.0, 2000)
+prior_m, prior_s, z_radar, r_s = 1000.0, 50.0, 1060.0, 20.0
+gain = prior_s**2 / (prior_s**2 + r_s**2)
+post_m, post_s = prior_m + gain * (z_radar - prior_m), np.sqrt((1 - gain) * prior_s**2)
+fig, ax = plt.subplots(figsize=(5.8, 3.9))
+ax.plot(s_grid, gaussian_pdf(s_grid, prior_m, prior_s), linewidth=2.5,
+        label=r"dead reckoning $\mathcal{N}(1000, 50^2)$")
+ax.plot(s_grid, gaussian_pdf(s_grid, z_radar, r_s), "--", linewidth=2.5,
+        label=r"radar fix $\mathcal{N}(1060, 20^2)$")
+ax.plot(s_grid, gaussian_pdf(s_grid, post_m, post_s), linewidth=3.2,
+        label=rf"posterior $\mathcal{{N}}({post_m:.1f}, {post_s:.1f}^2)$")
+ax.set_xlabel("along-track position [m]")
+ax.set_ylabel("density [1/m]")
+ax.set_ylim(0, 0.034)
+ax.legend(loc="upper left", fontsize=13)
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+. . .
+
+The posterior variance never looks at $z_k$: you can size a sensor **before
+anyone buys one**.
+
+::: {.notes}
+Products of Gaussians section: a coastal vessel's dead-reckoned position fused
+with a radar range to a charted headland. Rename the prior x_hat_{k|k-1},
+P_{k|k-1} and the measurement z_k, R: the gain K = P_{k|k-1} / (P_{k|k-1} + R),
+here 0.86, decides how much of the surprise to believe. The leftover
+constant of the product is the evidence p(z). The update is exact only because
+both inputs are Gaussian; feed it the two-marker prior and it reports a single
+confident answer somewhere in between.
+:::
+
+## The one-sigma ellipse trap
+
+```{python}
+#| include: false
+cov_ne = np.array([[16.0, 9.6], [9.6, 9.0]])          # sigma_N = 4 m, sigma_E = 3 m, rho = 0.8
+rng = np.random.default_rng(2024)
+samples_ne = rng.multivariate_normal(np.zeros(2), cov_ne, size=200_000)
+d2_ne = np.einsum("ij,ij->i", samples_ne, np.linalg.solve(cov_ne, samples_ne.T).T)
+```
+
+:::: {.columns}
+::: {.column width="52%"}
+Squared Mahalanobis distance, in standard deviations along each direction:
+
+$$
+d^2 = (\mathbf{x}-\boldsymbol{\mu})^T \boldsymbol{\Sigma}^{-1} (\mathbf{x}-\boldsymbol{\mu})
+\sim \chi^2_n
+$$
+
+::: {.fragment}
+Inside the $k$-sigma ellipse, in 2D: $1 - e^{-k^2/2}$
+:::
+
+::: {.incremental}
+- $1\sigma$: only **39%**; $\;2\sigma$: 86%; $\;3\sigma$: 99%
+- A 95% ellipse needs $k \approx 2.45$
+:::
+
+::: {.fragment}
+Handed a "one-sigma ellipse"? The vessel is **outside** it more often than
+inside.
+:::
+:::
+::: {.column width="48%"}
+```{python}
+fig, ax = plt.subplots(figsize=(5.0, 4.1))
+ax.scatter(samples_ne[:5000, 1], samples_ne[:5000, 0], s=3, alpha=0.3, color="0.45")
+for k, style in zip((1, 2, 3), ("-", "--", ":")):
+    e = covariance_ellipse(np.zeros(2), cov_ne, k=k)
+    ax.plot(e[1], e[0], linestyle=style, linewidth=2.5, color="C0",
+            label=f"{k}-sigma: {np.mean(d2_ne <= k**2):.0%} of samples")
+ax.set_xlabel("east error [m]")
+ax.set_ylabel("north error [m]")
+ax.set_xlim(-14, 14)
+ax.set_ylim(-15, 17)
+ax.set_aspect("equal")
+ax.legend(loc="upper left", fontsize=13)
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+The Multivariate Gaussian and Covariance Ellipses section: a horizontal position
+error with sigma_N = 4 m, sigma_E = 3 m, and correlation 0.8, plotted as on a
+chart. The k-sigma ellipse has semi-axes k sqrt(lambda_i) along the eigenvectors
+of Sigma. The probability inside depends on the dimension; the 1D 68-95-99.7
+numbers do not carry over. Fractions in the legend come from 200,000 samples.
+:::
+
+## Propagation shears the ellipse
+
+$$
+\mathbf{y} = \mathbf{A}\mathbf{x} + \mathbf{b}
+\;\Rightarrow\;
+\mathbf{y} \sim \mathcal{N}\!\left(\mathbf{A}\boldsymbol{\mu} + \mathbf{b},\; \mathbf{A}\boldsymbol{\Sigma}\mathbf{A}^T\right)
+$$
+
+With $\mathbf{A} = \mathbf{F}$ and independent noise $\mathbf{Q}$, that is the
+prediction step,
+$\mathbf{P}_{k|k-1} = \mathbf{F}\mathbf{P}_{k-1|k-1}\mathbf{F}^T + \mathbf{Q}$.
+
+```{python}
+#| include: false
+F_shear = np.array([[1.0, 1.0], [0.0, 1.0]])           # constant velocity, dt = 1 s
+shear_means, shear_covs = [np.array([0.0, 1.0])], [np.diag([1.0**2, 0.5**2])]
+for _ in range(3):
+    shear_means.append(F_shear @ shear_means[-1])
+    shear_covs.append(F_shear @ shear_covs[-1] @ F_shear.T)      # Q = 0 to isolate the shear
+
+
+def plot_shear(n_shown):
+    fig, ax = plt.subplots(figsize=(12, 3.2))
+    for step in range(n_shown):
+        e = covariance_ellipse(shear_means[step], shear_covs[step], k=1.0)
+        ax.plot(e[0], e[1], linewidth=2.8, color=f"C{step}", label=f"t = {step} s")
+        ax.plot(*shear_means[step], "+", color="k", ms=12)
+    ax.set_xlim(-2.0, 6.0)
+    ax.set_ylim(0.3, 1.75)
+    ax.set_xlabel("position [m]")
+    ax.set_ylabel("velocity [m/s]")
+    ax.legend(loc="upper left", ncol=4)
+    fig.tight_layout()
+    plt.show()
+```
+
+::: {.r-stack}
+```{python}
+plot_shear(1)
+```
+::: {.fragment}
+```{python}
+plot_shear(2)
+```
+:::
+::: {.fragment}
+```{python}
+plot_shear(3)
+```
+:::
+::: {.fragment}
+```{python}
+plot_shear(4)
+```
+:::
+:::
+
+::: {.fragment}
+```{python}
+#| output: asis
+P3 = shear_covs[3]
+print(f"Position uncertainty grows, velocity's stays put, and a correlation of "
+      f"{P3[0, 1] / np.sqrt(P3[0, 0] * P3[1, 1]):.2f} appears from nothing.")
+```
+:::
+
+::: {.notes}
+Linear Transformations section. Mean and covariance of y hold for any
+distribution with finite covariance; the Gaussian property is that y is again
+exactly Gaussian. Q = 0 here to isolate the shear; process noise would fatten
+every ellipse on top of it. The position error at three seconds is mostly
+accumulated velocity error, and that correlation is what the next operation
+exploits.
+:::
+
+## Conditioning: the update in disguise
+
+$$
+\boldsymbol{\mu}_{x|y} = \boldsymbol{\mu}_x + \boldsymbol{\Sigma}_{xy}\boldsymbol{\Sigma}_{yy}^{-1}(\mathbf{y} - \boldsymbol{\mu}_y),
+\qquad
+\boldsymbol{\Sigma}_{x|y} = \boldsymbol{\Sigma}_{xx} - \boldsymbol{\Sigma}_{xy}\boldsymbol{\Sigma}_{yy}^{-1}\boldsymbol{\Sigma}_{yx}
+$$
+
+Marginalizing reads off a block; conditioning leaves a Schur complement.
+
+. . .
+
+For $\mathbf{z} = \mathbf{H}\mathbf{x} + \mathbf{v}$ on the prediction:
+
+$$
+\boldsymbol{\mu}_z = \mathbf{H}\hat{\mathbf{x}}_{k|k-1},
+\qquad
+\boldsymbol{\Sigma}_{xz} = \mathbf{P}_{k|k-1}\mathbf{H}^T,
+\qquad
+\boldsymbol{\Sigma}_{zz} = \mathbf{H}\mathbf{P}_{k|k-1}\mathbf{H}^T + \mathbf{R} = \mathbf{S}_k
+$$
+
+. . .
+
+$$
+\begin{gathered}
+\mathbf{K}_k = \mathbf{P}_{k|k-1}\mathbf{H}^T\mathbf{S}_k^{-1}
+\\
+\hat{\mathbf{x}}_{k|k} = \hat{\mathbf{x}}_{k|k-1} + \mathbf{K}_k(\mathbf{z}_k - \mathbf{H}\hat{\mathbf{x}}_{k|k-1}),
+\qquad
+\mathbf{P}_{k|k} = (\mathbf{I} - \mathbf{K}_k\mathbf{H})\mathbf{P}_{k|k-1}
+\end{gathered}
+$$
+
+. . .
+
+The Kalman filter update. Multiplying densities and conditioning a joint
+Gaussian are one operation seen from two sides.
+
+::: {.notes}
+Marginals and Conditionals section. The short derivation: the residual
+e = x - mu_x - Sigma_xy Sigma_yy^-1 (y - mu_y) is uncorrelated with y, and for
+jointly Gaussian variables uncorrelated means independent, so observing y tells
+us nothing about e. In information form the difficulty reverses: conditioning is
+easy and marginalizing takes work. Part 4 derives the update again from the
+minimum mean square error point of view.
+:::
+
+## Conditioning is slicing
+
+```{python}
+#| include: false
+P_t3, x_t3 = shear_covs[3], shear_means[3]
+H_pos, R_pos, z_obs = np.array([[1.0, 0.0]]), np.array([[0.5**2]]), np.array([4.5])
+S_t3 = H_pos @ P_t3 @ H_pos.T + R_pos
+K_t3 = np.linalg.solve(S_t3, H_pos @ P_t3).T
+x_post_t3 = x_t3 + K_t3 @ (z_obs - H_pos @ x_t3)
+P_post_t3 = P_t3 - K_t3 @ H_pos @ P_t3
+rng = np.random.default_rng(3)
+x_samples = rng.multivariate_normal(x_t3, P_t3, size=500_000)
+z_samples = x_samples[:, 0] + rng.normal(0.0, 0.5, size=500_000)
+keep = np.abs(z_samples - z_obs[0]) < 0.02
+```
+
+:::: {.columns}
+::: {.column width="42%"}
+At $t = 3$ s, measure **position only**: $z = 4.5$ m, $\sigma = 0.5$ m.
+
+::: {.fragment}
+Brute force: draw $(\mathbf{x}, z)$ jointly and keep the samples whose $z$
+landed within 2 cm of the measurement.
+:::
+
+::: {.fragment}
+```{python}
+#| output: asis
+print(f"Velocity std: {np.sqrt(P_t3[1, 1]):.2f} → {np.sqrt(P_post_t3[1, 1]):.2f} m/s "
+      f"(the slice of {keep.sum():,} samples: {x_samples[keep, 1].std():.2f}). "
+      f"**Velocity was never measured.**")
+```
+:::
+:::
+::: {.column width="58%"}
+```{python}
+fig, ax = plt.subplots(figsize=(6.2, 4.1))
+ax.scatter(x_samples[:4000, 0], x_samples[:4000, 1], s=3, alpha=0.3, color="0.6",
+           label="prior samples")
+ax.scatter(x_samples[keep, 0], x_samples[keep, 1], s=3, alpha=0.5, color="C1",
+           label=r"samples with $z \approx 4.5$")
+e_prior = covariance_ellipse(x_t3, P_t3)
+e_post = covariance_ellipse(x_post_t3, P_post_t3)
+ax.plot(e_prior[0], e_prior[1], color="C0", linewidth=2.8, label="prior, 1-sigma")
+ax.plot(e_post[0], e_post[1], color="C3", linewidth=2.8, label="Kalman posterior")
+ax.set_xlim(-2.5, 8.5)
+ax.set_ylim(-0.2, 2.2)
+ax.set_xlabel("position [m]")
+ax.set_ylabel("velocity [m/s]")
+ax.legend(loc="lower right", fontsize=13, markerscale=4)
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+Continues the constant-velocity example of the propagation slide. The
+off-diagonal term Sigma_xz = P H^T carries part of the position correction into
+velocity. The brute-force slice and the formula agree.
+:::
+
+## One Gaussian, two hypotheses
+
+$$
+\text{Var}(X) = \underbrace{\mathbb{E}\big[\text{Var}(X \mid Y)\big]}_{\text{spread within each hypothesis}}
++ \underbrace{\text{Var}\big(\mathbb{E}[X \mid Y]\big)}_{\text{spread between them}}
+$$
+
+```{python}
+prior_mean = np.sum(x_track * prior_grid)
+prior_std = np.sqrt(np.sum((x_track - prior_mean) ** 2 * prior_grid))
+near_mean = prior_grid[np.abs(x_track - prior_mean) < 0.05].sum()
+fig, ax = plt.subplots(figsize=(12, 3.2))
+ax.fill_between(x_track, prior_grid / dx_grid, color="C0", alpha=0.35, label="two-marker prior")
+ax.plot(x_track, gaussian_pdf(x_track, prior_mean, prior_std), color="C3", linewidth=2.8,
+        label=rf"moment-matched $\mathcal{{N}}({prior_mean:.2f}, {prior_std:.3f}^2)$")
+ax.axvline(prior_mean, color="k", linestyle=":", linewidth=1.5)
+ax.annotate(f"mean: P(within 5 cm) ≈ {near_mean:.0e}", (prior_mean, 15),
+            xytext=(prior_mean - 0.01, 15), ha="right", va="center")
+ax.set_xlim(0.0, 0.9)
+ax.set_xlabel("position along the track [m]")
+ax.set_ylabel("density [1/m]")
+ax.legend(loc="upper right")
+fig.tight_layout()
+plt.show()
+```
+
+. . .
+
+Matched moments, peak exactly where the robot is not. Global localization is a
+job for particle filters or Gaussian mixtures.
+
+::: {.notes}
+Total Probability and Marginalization section, with the two-marker prior of the
+grid example. Y labels which marker the robot saw. Within: (0.01^2 + 0.02^2)/2;
+between: 0.15^2; total about 0.0228 m^2, a standard deviation of about 15 cm.
+The same marginalization, applied to a linear-Gaussian model, is just the
+prediction step: read off the lower-right block of the joint.
+:::
+
+## Why Gaussians? The central limit theorem
+
+```{python}
+rng = np.random.default_rng(12)
+fig, axes = plt.subplots(1, 4, figsize=(12, 3.6))
+for ax, n_terms in zip(axes, (1, 2, 4, 12)):
+    sums = rng.uniform(-0.5, 0.5, size=(100_000, n_terms)).sum(axis=1)
+    sigma_sum = np.sqrt(n_terms / 12.0)
+    grid = np.linspace(-4 * sigma_sum, 4 * sigma_sum, 300)
+    ax.hist(sums, bins=60, density=True, color="0.7")
+    ax.plot(grid, gaussian_pdf(grid, 0.0, sigma_sum), color="C3", linewidth=2.5)
+    ax.set_title(f"sum of {n_terms}")
+    ax.set_yticks([])
+    ax.set_xlabel("LSB")
+fig.tight_layout()
+plt.show()
+```
+
+::: {.incremental}
+- A dozen uniform quantization errors already look Gaussian; so do thermal
+  noise, vibration, and angle random walk
+- Nothing about the **tails**: multipath, rain, and wrong data associations make
+  outliers. Gate on Mahalanobis distance.
+:::
+
+::: {.notes}
+Why Gaussians section. Each panel sums quantization errors uniform on plus or
+minus half an LSB, against a Gaussian of the same variance n/12. The theorem
+needs finite variance and roughly independent terms. Heavy tails are why the
+particle filters of Part 4 exist. The less respectable reason for Gaussians is
+closure: when the world is close enough to Gaussian, the math becomes matrix
+algebra.
+:::
+
+## Never gamble against the house
+
+[Why does the house always win?]{.question}
+
+. . .
+
+An odds quote is a probability in disguise. Decimal odds $d$ return $d$ per unit
+staked, stake included, and imply $q = 1/d$.
+
+. . .
+
+Stake 1 at odds $d$ on an outcome with **true** probability $p$:
+
+$$
+\mathbb{E}[W] = p(d - 1) + (1-p)(-1) = pd - 1 = \frac{p}{q} - 1
+$$
+
+. . .
+
+::: {.key}
+You profit in expectation only if $p > q$: the event is genuinely more likely
+than the price says. A fair coin at $d = 2.00$: zero. At $d = 1.95$: minus 2.5
+cents per dollar.
+:::
+
+::: {.notes}
+A Case Study in Probability Theory. The same number comes in three formats:
+fractional n/m implies p = m/(n + m), so 5/1 is 1/6; American +150 implies
+100/250 = 0.4, and -200 implies 200/300 = 0.667. A bet is a discrete random
+variable, so this is the expectation slide again, with money. The navigation
+theme: a better model is an edge, a wrong model is a slow leak.
+:::
+
+## The vig: probabilities that add up past one
+
+:::: {.columns}
+::: {.column width="48%"}
+| Outcome | Decimal | Implied $q$ |
+|---|---:|---:|
+| Team A | 1.91 | 0.5236 |
+| Team B | 1.91 | 0.5236 |
+| **Overround** $\Omega$ | | **1.0471** |
+:::
+::: {.column width="52%"}
+::: {.incremental}
+- Overround: $\Omega = \sum_i 1/d_i$
+- Vig: $v = \Omega - 1 = 4.7\%$
+- If the game is a coin flip, a dollar on **either** team expects
+  $0.5 \times 1.91 - 1 = -4.5$ cents
+:::
+:::
+::::
+
+. . .
+
+A fair coin quoted at 1.90 on both sides, \$100 on each: whichever way it lands,
+the house collects \$100 from the losers, pays \$90 to the winners, and keeps
+\$10.
+
+::: {.notes}
+The bookmaker does not take the other side of your bet; it takes bets on every
+outcome and prices them so the implied probabilities sum to more than one. The
+excess is the vigorish, vig, or juice.
+:::
+
+## The balanced book
+
+:::: {.columns}
+::: {.column width="48%"}
+Action $A$ on side 1, $B$ on side 2. House profit:
+
+$$
+\begin{aligned}
+\Pi_1 &= B - A(d_1 - 1) \\
+\Pi_2 &= A - B(d_2 - 1)
+\end{aligned}
+$$
+
+::: {.fragment}
+Both positive iff $1 - 1/d_2 < A/(A+B) < 1/d_1$, a window that exists exactly
+when $\Omega > 1$
+:::
+
+::: {.fragment}
+Balanced: margin $1 - 1/\Omega = v/(1+v)$, locked in before a ball is kicked
+:::
+:::
+::: {.column width="52%"}
+```{python}
+d_book = 1.91
+f_side = np.linspace(0.38, 0.62, 400)          # fraction of the handle on side 1
+pi_1 = 1.0 - f_side * d_book                   # per dollar of handle, if side 1 wins
+pi_2 = f_side * d_book - (d_book - 1.0)        # if side 2 wins
+fig, ax = plt.subplots(figsize=(5.6, 4.1))
+ax.plot(f_side, 100 * pi_1, color="C0", linewidth=2.8, label="side 1 wins")
+ax.plot(f_side, 100 * pi_2, color="C1", linewidth=2.8, label="side 2 wins")
+lo, hi = 1.0 - 1.0 / d_book, 1.0 / d_book
+ax.axvspan(lo, hi, color="C2", alpha=0.18, label="house wins either way")
+ax.axhline(0.0, color="k", linewidth=0.8)
+ax.plot(0.5, 100 * (1.0 - 0.5 * d_book), "o", color="C3", ms=9, zorder=4)
+ax.annotate(f"balanced: +{100 * (1 - 0.5 * d_book):.1f}¢ per $", (0.5, 100 * (1 - 0.5 * d_book)),
+            xytext=(0.52, 12), arrowprops=dict(arrowstyle="->", color="C3"))
+ax.set_xlabel("fraction of the money on side 1")
+ax.set_ylabel("house profit [¢ per $ bet]")
+ax.set_ylim(-20, 20)
+ax.legend(loc="lower left", fontsize=13)
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+When the action is proportional to each outcome's implied probability (here,
+an even split), the house earns the same whichever side wins. For v = 4.7% the
+margin is about 4.5% per dollar, exactly the bettor's expected loss. Only a
+balanced book is risk-free: a lopsided book is a bet the house is making, which
+is why bookmakers move their lines to attract money to the light side, or lay
+off risk with other books, rather than hope.
+:::
+
+## Roulette: an edge you can compute
+
+A bet on $n$ of $N$ pockets pays $36/n - 1$ to 1, as if the zeros did not exist:
+
+$$
+\mathbb{E}[W] = \frac{n}{N}\left(\frac{36}{n} - 1\right) - \left(1 - \frac{n}{N}\right) = \frac{36}{N} - 1
+$$
+
+:::: {.columns}
+::: {.column width="48%"}
+::: {.fragment}
+$n$ cancels. **The zeros are the whole business model.**
+:::
+
+::: {.fragment}
+By linearity of expectation, no mix of bets and no betting progression changes
+it: expected loss = edge × total wagered.
+:::
+:::
+::: {.column width="52%"}
+::: {.smaller-text}
+```{python}
+#| output: asis
+from fractions import Fraction
+
+
+def roulette_ev(numbers_covered, pockets, payout=None):
+    payout = Fraction(36, numbers_covered) - 1 if payout is None else payout
+    p_win = Fraction(numbers_covered, pockets)
+    return p_win * payout - (1 - p_win)
+
+
+bets = {"Straight up": 1, "Split": 2, "Corner": 4, "Dozen": 12, "Red or black": 18}
+rows = ["| Bet | $n$ | European | American |", "|---|---:|---:|---:|"]
+for name, n in bets.items():
+    rows.append(f"| {name} | {n} | {float(roulette_ev(n, 37)):+.2%} | {float(roulette_ev(n, 38)):+.2%} |")
+rows.append(f"| Top line (US) | 5 | | {float(roulette_ev(5, 38, Fraction(6))):+.2%} |")
+print("\n".join(rows))
+```
+:::
+:::
+::::
+
+::: {.notes}
+Roulette section. European wheel: 37 pockets, one green zero; American: 38, with
+a double zero. Every standard bet loses 1/37 (2.70%) or 2/38 (5.26%) per unit
+staked. The American top line (0, 00, 1, 2, 3) pays 6 to 1 instead of 6.2 to 1,
+so it is worse still: -3/38. The chapter checks red with a million simulated
+spins.
+:::
+
+## Drift versus diffusion
+
+```{python}
+#| include: false
+n_spins = 10_000
+rng = np.random.default_rng(36)
+winnings = np.cumsum(np.where(rng.random((20, n_spins)) < 18 / 37, 1.0, -1.0), axis=1)
+spin_index = np.arange(1, n_spins + 1)
+edge = 1 / 37
+sigma_bet = np.sqrt(1 - edge**2)                 # std of one +/-1 bet
+n_star = (sigma_bet / edge) ** 2
+
+
+def plot_roulette(show_drift):
+    fig, ax = plt.subplots(figsize=(12, 4.2))
+    ax.plot(spin_index, winnings.T, color="0.6", linewidth=0.8)
+    ax.axhline(0, color="k", linewidth=0.8)
+    if show_drift:
+        ax.plot(spin_index, -edge * spin_index, color="C3", linewidth=2.8,
+                label="expected winnings, $-n/37$")
+        ax.fill_between(spin_index, -edge * spin_index - 2 * sigma_bet * np.sqrt(spin_index),
+                        -edge * spin_index + 2 * sigma_bet * np.sqrt(spin_index),
+                        color="C3", alpha=0.15, label=r"$\pm 2\sigma$ band")
+        ax.axvline(n_star, color="C0", linestyle="--", linewidth=2,
+                   label=rf"$n^* \approx {n_star:.0f}$ spins")
+        ax.legend(loc="lower left")
+    ax.set_xlim(0, n_spins)
+    ax.set_ylim(-560, 260)
+    ax.set_xlabel("spins, one unit on red each")
+    ax.set_ylabel("winnings [units]")
+    fig.tight_layout()
+    plt.show()
+```
+
+::: {.r-stack}
+```{python}
+plot_roulette(False)
+```
+::: {.fragment}
+```{python}
+plot_roulette(True)
+```
+:::
+:::
+
+. . .
+
+Mean $-n/37$, spread about $\sqrt{n}$: equal at
+$n^* = (\sigma/\varepsilon)^2 \approx 1370$ spins, roughly a long weekend at the
+table. After that, the edge owns the outcome.
+
+::: {.notes}
+Gambler's Ruin section, left panel of the book's figure: 20 bettors at a
+European wheel. Ask the room first: who is ahead after the first few hundred
+spins? Plenty of people walk out ahead after an evening and conclude they have a
+system. The noise grows like a square root; the drift grows linearly.
+:::
+
+## Gambler's ruin
+
+```{python}
+#| include: false
+def ruin_probability(p_win, start, target):
+    if np.isclose(p_win, 0.5):
+        return 1.0 - start / target
+    r = (1.0 - p_win) / p_win
+    return 1.0 - (1.0 - r**start) / (1.0 - r**target)
+
+
+def simulate_ruin(p_win, start, target, n_gamblers, rng, chunk=1000):
+    """Fraction of gamblers who go broke before reaching `target` (unit bets)."""
+    bankroll = np.full(n_gamblers, start, dtype=np.int64)
+    active = np.ones(n_gamblers, dtype=bool)
+    ruined = np.zeros(n_gamblers, dtype=bool)
+    while active.any():
+        idx = np.flatnonzero(active)
+        steps = np.where(rng.random((idx.size, chunk)) < p_win, 1, -1)
+        paths = bankroll[idx, None] + np.cumsum(steps, axis=1)
+        hit = (paths <= 0) | (paths >= target)
+        has_hit = hit.any(axis=1)
+        first_hit = hit.argmax(axis=1)
+        final = np.where(has_hit, paths[np.arange(idx.size), first_hit], paths[:, -1])
+        bankroll[idx] = final
+        finished = idx[has_hit]
+        ruined[finished] = final[has_hit] <= 0
+        active[finished] = False
+    return float(ruined.mean())
+
+
+start_units = 20
+games = {"fair coin": 0.5, "European red": 18 / 37, "American red": 18 / 38}
+mc_targets = np.array([25, 30, 40, 50, 60, 80, 100, 150])
+rng = np.random.default_rng(1983)
+ruin_mc = {name: [simulate_ruin(p, start_units, N, 2000, rng) for N in mc_targets]
+           for name, p in games.items()}
+```
+
+:::: {.columns}
+::: {.column width="45%"}
+Start with $k$ units, bet one per spin, stop at $N$ or at zero:
+
+$$
+P(\text{ruin}) = 1 - \frac{1 - (q/p)^k}{1 - (q/p)^N}
+$$
+
+::: {.fragment}
+Try to double 20 units:
+
+```{python}
+#| output: asis
+for name, p in games.items():
+    print(f"- {name}: ruined **{ruin_probability(p, start_units, 2 * start_units):.0%}** of the time")
+```
+:::
+
+::: {.fragment}
+Even a fair game ruins you as $N$ grows.
+:::
+:::
+::: {.column width="55%"}
+```{python}
+target_grid = np.arange(start_units + 1, 151)
+fig, ax = plt.subplots(figsize=(6.0, 4.1))
+for (name, p), color in zip(games.items(), ("C0", "C1", "C3")):
+    ax.plot(target_grid, [ruin_probability(p, start_units, N) for N in target_grid],
+            color=color, linewidth=2.8, label=name)
+    ax.plot(mc_targets, ruin_mc[name], "o", color=color, markersize=7)
+ax.set_xlabel("target bankroll [units], from 20")
+ax.set_ylabel("probability of ruin")
+ax.set_ylim(0, 1.02)
+ax.legend(loc="lower right")
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+Here p and q are the probabilities of winning and losing one spin (18/37 and
+19/37 for European red). Lines are exact; markers are Monte Carlo with 2000
+gamblers per target. The fair-coin formula is 1 - k/N. The solution comes from
+conditioning on the first spin and solving the difference equation. Even a fair
+game ruins you as the target grows, because your bankroll is finite and the
+house's effectively is not; with an edge against you the ruin probability
+approaches one exponentially fast. The edge makes it sooner and surer.
+:::
+
+## Your gyroscope is a roulette wheel
+
+:::: {.columns}
+::: {.column width="48%"}
+::: {.incremental}
+- Rate noise: angle random walk, $N\sqrt{t}$. The diffusion.
+- Uncompensated bias: heading error $bt$. The drift.
+- Equal at $t^* = (N/b)^2$
+- MEMS, $N = 0.3^\circ/\sqrt{\text{h}}$ and $b = 10^\circ/\text{h}$: **3 s**
+:::
+
+::: {.fragment}
+::: {.key}
+A biased model, like a negative edge, does not need to be large. It just needs
+time.
+:::
+:::
+:::
+::: {.column width="52%"}
+```{python}
+t_gyro = np.logspace(-1, 2, 300)                # seconds
+arw, bias = 0.3, 10.0                           # deg/sqrt(h), deg/h
+t_cross = (arw / bias) ** 2 * 3600.0
+fig, ax = plt.subplots(figsize=(5.6, 4.1))
+ax.loglog(t_gyro, arw * np.sqrt(t_gyro / 3600.0), color="0.45", linewidth=2.8,
+          label=r"random walk, $N\sqrt{t}$")
+ax.loglog(t_gyro, bias * t_gyro / 3600.0, color="C3", linewidth=2.8, label="bias, $bt$")
+ax.axvline(t_cross, color="C0", linestyle="--", linewidth=2,
+           label=rf"$t^* \approx {t_cross:.1f}$ s")
+ax.set_xlabel("time since the last heading fix [s]")
+ax.set_ylabel("heading error [deg]")
+ax.legend(loc="lower right")
+fig.tight_layout()
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+End of the Gambler's Ruin section: the same drift-versus-diffusion structure as
+the roulette table, for a MEMS gyroscope integrated for heading. Past a few
+seconds the bias owns the error budget, which is why every inertial filter in
+this book carries the gyro bias as a state (the INS error chapter, Part 6).
+Exercise 6 does this with different numbers.
+:::
+
+## Parimutuel pools: beat the crowd, not the track
+
+All bets go into one pool; the track takes $\tau$ off the top. The crowd's money
+implies $q_i = P_i / P$.
+
+$$
+\mathbb{E}[\text{profit}] = (1 - \tau)\,\frac{p_i}{q_i} - 1
+$$
+
+::: {.incremental}
+- The crowd as a whole loses exactly the take; the track never needs to know who
+  is right
+- You win only where $p_i/q_i > 1/(1-\tau)$: about 1.22 for an 18% take. That
+  money comes from the **other bettors**
+- Bill Benter, Hong Kong racing from the 1980s: his model **fused with** the
+  crowd's odds beat both, by more than the take. That is sensor fusion
+:::
+
+::: {.notes}
+Horse Racing: Parimutuel Pools section. Parimutuel is French for "mutual stake";
+takes are typically 15 to 25 percent. The analysis ignores that a large bet
+moves q_i itself, which caps how far an edge scales (Exercise 5d). Two
+imperfect, partly independent estimators combined with sensible weights beat
+either one, exactly as in the product-of-Gaussians slide. Source: Benter, 1994.
+:::
+
+## The only winning move
+
+::: {.incremental}
+- Normalization never fails: any likelihood gives a posterior that integrates
+  to one
+- The **model** fails: a range sensor that reads 2% long gives a confident,
+  systematically wrong posterior
+- Quoted odds $q_i = 1/d_i$ are a model biased on purpose; taking them at face
+  value is running a biased sensor model
+- No cheating required: $\Omega > 1$, a take $\tau > 0$, or a green pocket
+:::
+
+. . .
+
+::: {.key}
+Know your model's biases, estimate them when you can, and when you cannot, do
+not bet the vehicle on them.
+:::
+
+. . .
+
+"The only winning move is not to play." (*WarGames*, 1983)
+
+::: {.notes}
+The Connection to Bayesian Filtering callout and the chapter's upshot. The
+evidence p(z) is computed from the model itself, so the posterior always
+normalizes. Benter is the exception that proves the rule: he did not beat the
+house, he beat the other bettors with a better model while the track collected
+its take from everyone.
+:::
+
+# Modern Python Refresher {#python}
+
+Habits that make estimation code trustworthy.
+
+[Chapter: Modern Python Refresher](https://jbrodovsky.github.io/advanced_navigation/chapters/01-foundations/modern-python.html)
+
+## Code you can trust
+
+[What separates a filter that works from one that works on your laptop?]{.question}
+
+. . .
+
+::: {.incremental}
+- One reproducible environment
+- Typed, explicit interfaces
+- One shape convention
+- Randomness passed in, never global
+- Tests that pin down the "almost right"
+:::
+
+::: {.notes}
+Chapter opening. "Software is eating the world, but hardware gives it teeth":
+a career in autonomous systems needs real software skills. The Scientific Python
+Library Development Guide and the Scientific Python Lectures are the deeper
+references; for coursework, a pyproject.toml and three directories are enough.
+:::
+
+## One environment, reproducibly
+
+```bash
+# The course repository: build .venv/ from the committed uv.lock
+uv sync
+uv run pytest
+
+# A project of your own
+uv init --lib my_filter        # pyproject.toml and src/my_filter/
+uv add numpy scipy matplotlib  # records the dependencies, pins them in uv.lock
+uv add --dev pytest            # development-only dependency
+```
+
+::: {.incremental}
+- Python 3.11 or newer, and **never** the system Python
+- Commit `uv.lock`: `uv sync` rebuilds the same environment on any machine
+- No activation: `uv run` does it for each command. Fallback: `venv` plus
+  `pip freeze`
+:::
+
+::: {.notes}
+Python Version and Environment section. The course repository is a uv
+workspace; every command in the book and the handouts is written with uv run.
+Data science folks: pixi manages conda-ecosystem packages and uses uv's
+resolver for PyPI.
+:::
+
+## Type hints are checked by tools, not Python
+
+```python
+def add(x: str, y: str) -> str:
+    return x + y  # concatenates two strings
+
+add('abc', '123')  # returns 'abc123'
+add(1, 2)          # still returns 3 at runtime, but a type checker flags this line
+```
+
+. . .
+
+The interpreter records hints and moves on. `mypy` or `pyright` (inside most
+editors) reads them, but only if you run it.
+
+. . .
+
+```python
+@dataclass
+class FilterState:
+    x: np.ndarray  # state estimate, shape (n,)
+    P: np.ndarray  # covariance, shape (n, n)
+    t: float       # time [s]
+```
+
+::: {.notes}
+Type Hints and Dataclasses section. Python promotes 1 + 2.0 to a float, as C++
+does; Rust refuses to mix integer and floating-point types. Exercise 5 runs both
+commands and asks why both outcomes are correct.
+:::
+
+## Broadcasting: silent poison
+
+```{python}
+#| echo: true
+#| output-location: fragment
+z = np.array([1.0, 2.0, 3.0])            # measurement, shape (3,)
+H = np.eye(3)
+x_col = np.array([[0.9], [2.1], [2.8]])  # state stored as a column, shape (3, 1)
+
+y_wrong = z - H @ x_col                  # (3,) - (3, 1) broadcasts to (3, 3)
+print("residual shape:", y_wrong.shape)
+```
+
+. . .
+
+No exception, no warning: a wrong answer that flows into the gain and the
+covariance.
+
+. . .
+
+::: {.key}
+Pick one convention, `(n,)` everywhere, and guard it: `assert y.shape == z.shape`
+costs nothing and saves an afternoon.
+:::
+
+::: {.notes}
+Shape Discipline section. NumPy lines up trailing dimensions and stretches any
+dimension of length 1: wonderful when you mean it.
+:::
+
+## Randomness is an argument
+
+```{python}
+#| echo: true
+#| output-location: fragment
+np.random.seed(595)
+first = np.random.normal(size=3)
+np.random.seed(595)
+_ = np.random.uniform()                 # a library call you did not know draws numbers
+second = np.random.normal(size=3)
+print("legacy, same seed, same result?   ", np.allclose(first, second))
+
+run_a = np.random.default_rng(595).normal(size=3)
+_ = np.random.default_rng(1).uniform()  # draws from another generator do not interfere
+run_b = np.random.default_rng(595).normal(size=3)
+print("Generator, same seed, same result?", np.allclose(run_a, run_b))
+```
+
+. . .
+
+Pass a `np.random.Generator` to whatever needs noise. For Monte Carlo trials,
+independent streams from one seed: `np.random.default_rng(595).spawn(n_trials)`.
+
+::: {.notes}
+Reproducible Randomness section. When a filter misbehaves you want to rerun the
+exact same noise sequence. The legacy interface keeps one hidden global state
+shared by your code and every library you call. NumPy recommends the Generator
+API for all new code, and the book uses it everywhere.
+:::
+
+## Make your work a package
+
+:::: {.columns}
+::: {.column width="45%"}
+```text
+my_filter/
+├── pyproject.toml
+├── uv.lock
+├── src/
+│   └── my_filter/
+│       ├── __init__.py
+│       ├── models.py
+│       └── filters.py
+├── tests/
+│   └── test_filters.py
+└── notebooks/
+```
+:::
+::: {.column width="55%"}
+::: {.incremental}
+- The `src/` level is deliberate: Python can only import the **installed** copy
+- Tests exercise what anyone else would install. A missing file shows up now,
+  not on the grader's machine
+- Notebooks import `from my_filter.filters import predict` instead of
+  collecting copies of it
+- The course starter packages in `projects/` have the same shape
+:::
+:::
+::::
+
+::: {.notes}
+Project Structure for Assignments section. uv init --lib creates this layout.
+:::
+
+## Tests pin down the "almost right"
+
+```{.python code-line-numbers="|3-8|10-11|1-11"}
+@pytest.mark.parametrize(
+    ("angle", "expected"),
+    [
+        (0.0, 0.0),
+        (np.pi + 0.1, -np.pi + 0.1),
+        (-np.pi - 0.1, np.pi - 0.1),
+        (4.0 * np.pi, 0.0),
+    ],
+)
+def test_wrap_angle_maps_into_minus_pi_to_pi(angle: float, expected: float) -> None:
+    assert wrap_angle(angle) == pytest.approx(expected, abs=1e-12)
+```
+
+. . .
+
+Angle wrapping, frame conversions, and covariance updates are easy to get almost
+right. Compare floats with a **tolerance**, never `==`, and run everything with
+`uv run pytest`.
+
+::: {.notes}
+Testing with pytest section. Test files live in tests/, are named test_*.py,
+and use plain assert. Tests that need a dataset you have not downloaded skip
+with a reason instead of failing. The chapter also tests that a covariance
+update stays symmetric.
+:::
+
+## Habits, and the usual mistakes
+
+:::: {.columns}
+::: {.column width="50%"}
+**Plot routinely**
+
+- Truth against estimate
+- Residuals and innovations
+- Estimated uncertainty over time
+
+A readable diagnostic plot often catches a model or tuning problem before any
+deep debugging.
+:::
+::: {.column width="50%"}
+**Avoid**
+
+::: {.incremental}
+- Radians and degrees in one pipeline
+- Silent broadcasting
+- Seeding the global `np.random` state
+- Comparing floats with `==`
+- Hard-coded constants
+- All the logic in notebooks
+:::
+:::
+::::
+
+## Part 2 in one slide
+
+::: {.incremental}
+- **Frames:** $\mathbf{v}^a = \mathbf{C}_b^a\mathbf{v}^b$; name both frames, test
+  with a known vector
+- **Attitude:** quaternions and rotation vectors inside, Euler angles for display,
+  errors as small rotations $\delta\boldsymbol{\theta}$
+- **Linear algebra:** solve, never invert; eigenvectors are the shape of
+  $\mathbf{P}$, Cholesky its square root
+- **Gaussians:** propagation is $\mathbf{A}\boldsymbol{\Sigma}\mathbf{A}^T$, the
+  update is conditioning, and one Gaussian cannot say "here or there"
+- **The house:** a small persistent edge, like a biased model, compounds
+- **Python:** one environment, one shape convention, explicit generators, tests
+  with tolerances
+:::
+
+## Next: Part 3
+
+[Sensing and Perception →](03-sensing.html)
+
+The sensors themselves: what each one measures, in which frame, and how wrong.
+
+::: {.notes}
+Bridge: the gyro's omega_ib^b, the camera's optical frame, and measurement
+models with covariance all build directly on this part.
+:::
