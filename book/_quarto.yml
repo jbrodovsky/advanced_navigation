@@ -9,8 +9,12 @@ project:
 execute:
   freeze: auto
 
-website:
+book:
   title: "Advanced Robot Navigation"
+  subtitle: "A Practical Guide to State Estimation, Simultaneous Localization and Mapping (SLAM), and Inertial Navigation for Roboticists and Autonomous Vehicle Engineers"
+  author: "James Brodovsky"
+  page-footer: "© 2026 James Brodovsky · Text [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) · Code [MIT](https://github.com/jbrodovsky/advanced_navigation/blob/main/LICENSE)"
+  downloads: [pdf]
   description: "Bridging robotics and aerospace navigation"
   site-url: https://jbrodovsky.github.io/advanced_navigation/
   repo-url: https://github.com/jbrodovsky/advanced_navigation
@@ -40,16 +44,6 @@ website:
         menu:
           - href: assignments/m3-ins-gnss.qmd
             text: INS/GNSS Integration
-    right:
-      - icon: github
-        href: https://github.com/jbrodovsky/advanced_navigation
-
-book:
-  title: "Advanced Robot Navigation"
-  subtitle: "A Practical Guide to State Estimation, Simultaneous Localization and Mapping (SLAM), and Inertial Navigation for Roboticists and Autonomous Vehicle Engineers"
-  author: "James Brodovsky"
-  page-footer: "© 2026 James Brodovsky · Text [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) · Code [MIT](https://github.com/jbrodovsky/advanced_navigation/blob/main/LICENSE)"
-  downloads: [pdf]
   chapters:
     - index.qmd
     - part: "Introduction"
