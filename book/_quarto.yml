@@ -134,6 +134,13 @@ format:
         \unimathsetup{mathbf=sym}
         \setmainfont{Latin Modern Roman}[RawFeature={fallback=textfallback}]
         \setmonofont{DejaVu Sans Mono}[Scale=MatchLowercase, RawFeature={fallback=monofallback}]
+        % Long code lines wrap instead of running off the page (pandoc defines
+        % Highlighting without breaklines; cell output uses plain verbatim).
+        % verbatim is redefined at \begin{document} because the tcolorbox that
+        % Quarto loads after this block for callouts resets it.
+        \usepackage{fvextra}
+        \RecustomVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+        \AtBeginDocument{\RecustomVerbatimEnvironment{verbatim}{Verbatim}{breaklines}}
     documentclass: scrreprt
     number-sections: true
     colorlinks: false
