@@ -1,0 +1,2216 @@
+---
+title: "Filtering and State Estimation"
+subtitle: "Part 4 · Advanced Robot Navigation"
+part: 4
+footer: "Advanced Robot Navigation · Filtering and State Estimation"
+book-sources:
+  - book/chapters/03-filtering/filtering.qmd
+  - book/chapters/03-filtering/bayes.qmd
+  - book/chapters/03-filtering/kf.qmd
+  - book/chapters/03-filtering/ekf.qmd
+  - book/chapters/03-filtering/ukf.qmd
+  - book/chapters/03-filtering/information-filter.qmd
+  - book/chapters/03-filtering/pf.qmd
+  - book/assignments/m1-drone-pipeline-c.qmd
+  - book/assignments/m1-drone-pipeline.qmd
+---
+
+## Part 4 at a glance
+
+```{python}
+#| include: false
+import numpy as np
+import matplotlib.pyplot as plt
+
+plt.rcParams.update({
+    "font.size": 13,
+    "axes.grid": True,
+    "grid.alpha": 0.25,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "legend.frameon": False,
+})
+
+
+def gaussian_pdf(x, mean, sigma):
+    return np.exp(-0.5 * ((x - mean) / sigma) ** 2) / (np.sqrt(2.0 * np.pi) * sigma)
+```
+
+:::: {.columns}
+::: {.column width="50%"}
+1. [Filtering and state estimation](#/filtering)
+2. [Bayes filtering](#/bayes)
+3. [The Kalman filter](#/kf)
+4. [The extended Kalman filter](#/ekf)
+:::
+::: {.column width="50%"}
+5. [The unscented Kalman filter](#/ukf)
+6. [The information filter](#/information)
+7. [Particle filters](#/pf)
+8. [Project 1 Part C](#/project1c)
+:::
+::::
+
+::: {.key}
+Every filter in this part does the same three things: **predict** with a motion
+model, **update** with a measurement, and **check** that its assumptions still
+hold.
+:::
+
+::: {.notes}
+Weeks 6 to 9 of the schedule. The notes for this part are long; the slides
+follow the main line of each chapter and leave the derivation details, the
+exercises, and most of the code to the book.
+:::
+
+# Filtering and State Estimation {#filtering}
+
+The whole course in one recursion.
+
+[Chapter: Filtering and State Estimation](https://jbrodovsky.github.io/advanced_navigation/chapters/03-filtering/filtering.html)
+
+## A sequence of educated guesses
+
+[What does a navigation filter actually compute?]{.question}
+
+. . .
+
+$$
+\text{old belief} + \text{motion information} + \text{measurement information}
+\rightarrow \text{new belief}
+$$
+
+. . .
+
+The hard part: how to **represent** the belief, and how much physics we can
+afford to model.
+
+::: {.notes}
+"That sentence is the whole course in miniature." Ask the room what "belief"
+means for a robot before showing the next slide.
+:::
+
+## The belief
+
+The state is a random variable. The filter tracks its distribution:
+
+$$
+\operatorname{bel}(\mathbf{x}_t)
+= p(\mathbf{x}_t \mid \mathbf{z}_{1:t}, \mathbf{u}_{1:t})
+$$
+
+. . .
+
+::: {.incremental}
+- Ground robot: $\mathbf{x}_t = [x_t, \; y_t, \; \theta_t]^T$
+- INS: position, velocity, attitude, IMU biases, clock, calibration, ...
+- Real filters get crowded quickly, so notation and structure matter
+:::
+
+## Predict, then update
+
+```{python}
+#| include: false
+x_grid = np.linspace(-2.0, 10.0, 1000)
+prior_mean, prior_var = 2.0, 0.7**2
+u, var_u = 1.2, 0.85**2
+pred_mean, pred_var = prior_mean + u, prior_var + var_u
+z_meas, var_z = 4.1, 0.55**2
+curves = {
+    "prior belief": gaussian_pdf(x_grid, prior_mean, np.sqrt(prior_var)),
+    "after prediction": gaussian_pdf(x_grid, pred_mean, np.sqrt(pred_var)),
+    "measurement likelihood": gaussian_pdf(x_grid, z_meas, np.sqrt(var_z)),
+}
+post = curves["after prediction"] * curves["measurement likelihood"]
+curves["posterior"] = post / np.trapezoid(post, x_grid)
+
+
+def plot_filter_stage(n_curves):
+    """Draw the first n_curves of the predict/update story on fixed axes."""
+    fig, ax = plt.subplots(figsize=(9, 4))
+    for i, (label, y) in enumerate(curves.items()):
+        if i < n_curves:
+            ax.plot(x_grid, y, label=label, linewidth=2.5 if label == "posterior" else 1.8,
+                    color=f"C{i}")
+    ax.set_xlim(-2, 10)
+    ax.set_ylim(0, 1.0)
+    ax.set_xlabel("state")
+    ax.set_ylabel("probability density")
+    ax.legend(loc="upper right")
+    plt.show()
+```
+
+::: {.r-stack}
+```{python}
+plot_filter_stage(1)
+```
+::: {.fragment}
+```{python}
+plot_filter_stage(2)
+```
+:::
+::: {.fragment}
+```{python}
+plot_filter_stage(3)
+```
+:::
+::: {.fragment}
+```{python}
+plot_filter_stage(4)
+```
+:::
+:::
+
+::: {.notes}
+Click through: prior, then prediction (shifted by the commanded motion and
+broadened by its noise), then the measurement likelihood, then the posterior,
+which sits between them and is narrower than either.
+:::
+
+## Prediction spreads, the update concentrates
+
+**Predict:** push the belief through the motion model
+
+$$
+p(\mathbf{x}_t \mid \mathbf{z}_{1:t-1}, \mathbf{u}_{1:t})
+= \int p(\mathbf{x}_t \mid \mathbf{x}_{t-1}, \mathbf{u}_t)\,
+p(\mathbf{x}_{t-1} \mid \mathbf{z}_{1:t-1}, \mathbf{u}_{1:t-1})\, d\mathbf{x}_{t-1}
+$$
+
+. . .
+
+**Update:** weigh it by the measurement likelihood
+
+$$
+p(\mathbf{x}_t \mid \mathbf{z}_{1:t}, \mathbf{u}_{1:t})
+= \eta\, p(\mathbf{z}_t \mid \mathbf{x}_t)\,
+p(\mathbf{x}_t \mid \mathbf{z}_{1:t-1}, \mathbf{u}_{1:t})
+$$
+
+. . .
+
+::: {.key}
+If a filter's uncertainty only ever shrinks, be suspicious. That is not
+confidence; that is bookkeeping with a blindfold on.
+:::
+
+## Same problem, different representations
+
+::: {.smaller-text}
+| Filter | Belief representation | Strength | Main cost |
+|---|---|---|---|
+| Bayes | Full distribution | Conceptually exact | Explodes with dimension |
+| Kalman | Mean and covariance | Fast, exact if linear Gaussian | Needs linear Gaussian models |
+| EKF | Mean and covariance, linearized | Nonlinear workhorse | Jacobians, linearization error |
+| UKF | Mean and covariance from sigma points | No Jacobians, handles curvature | More model evaluations |
+| Information | Information vector and matrix | Additive fusion, sparsity | Awkward prediction |
+| Histogram | Mass over grid cells | Non-Gaussian beliefs | Grid scales badly |
+| Particle | Weighted samples | Multimodal, nonlinear | Particle count, resampling |
+:::
+
+. . .
+
+This is not a ranking. A well-designed simple Kalman filter beats a particle
+filter tuned by optimism and caffeine.
+
+## Why linear Gaussian models matter
+
+$$
+\mathbf{x} \sim \mathcal{N}(\boldsymbol{\mu}, \mathbf{P}),
+\qquad
+\mathbf{y} = \mathbf{A}\mathbf{x} + \mathbf{b}
+\quad\Longrightarrow\quad
+\mathbf{y} \sim \mathcal{N}\!\left(\mathbf{A}\boldsymbol{\mu} + \mathbf{b},\;
+\mathbf{A}\mathbf{P}\mathbf{A}^T\right)
+$$
+
+. . .
+
+Linear maps keep Gaussians Gaussian, so a mean and a covariance are enough.
+
+. . .
+
+Nonlinear models break this. EKFs and UKFs keep a Gaussian anyway, because the
+engineering trade is worth it.
+
+## Before writing any filter, answer these
+
+::: {.incremental}
+- What is the state, and which **frame** is each quantity in?
+- Which sensors drive **propagation**, which provide **updates**?
+- Which noise is modeled, and what is hiding inside process noise?
+- Is the belief unimodal, or are there several real hypotheses?
+- How will you check **consistency**?
+:::
+
+::: {.notes}
+"The equations are important, but these modeling decisions are where navigation
+systems usually succeed or quietly get weird."
+:::
+
+# Bayes Filtering {#bayes}
+
+The exact answer that every later filter approximates.
+
+[Chapter: Bayes Filtering](https://jbrodovsky.github.io/advanced_navigation/chapters/03-filtering/bayes.html)
+
+## Two beliefs
+
+[Why bother with a filter nobody can run?]{.question}
+
+. . .
+
+$$
+\operatorname{bel}(\mathbf{x}_t) = p(\mathbf{x}_t \mid \mathbf{z}_{1:t}, \mathbf{u}_{1:t})
+\qquad
+\overline{\operatorname{bel}}(\mathbf{x}_t) = p(\mathbf{x}_t \mid \mathbf{z}_{1:t-1}, \mathbf{u}_{1:t})
+$$
+
+. . .
+
+The bar is not decoration: propagated, not yet updated.
+
+. . .
+
+From the Kalman filter on, same objects, different clothes:
+$\overline{\operatorname{bel}} \to (\hat{\mathbf{x}}_{k|k-1}, \mathbf{P}_{k|k-1})$,
+$\operatorname{bel} \to (\hat{\mathbf{x}}_{k|k}, \mathbf{P}_{k|k})$.
+
+## The Markov assumptions
+
+Motion: the current state carries everything needed to predict the next one
+
+$$
+p(\mathbf{x}_t \mid \mathbf{x}_{0:t-1}, \mathbf{z}_{1:t-1}, \mathbf{u}_{1:t})
+= p(\mathbf{x}_t \mid \mathbf{x}_{t-1}, \mathbf{u}_t)
+$$
+
+. . .
+
+Sensing: the measurement depends only on the current state
+
+$$
+p(\mathbf{z}_t \mid \mathbf{x}_{0:t}, \mathbf{z}_{1:t-1}, \mathbf{u}_{1:t})
+= p(\mathbf{z}_t \mid \mathbf{x}_t)
+$$
+
+. . .
+
+::: {.key}
+If the state is chosen well, yesterday's measurements matter only through
+yesterday's belief.
+:::
+
+## When the Markov assumption lies
+
+::: {.incremental}
+- The state omits an IMU bias, a current, a wind term, a clock error
+- Measurement errors are correlated in time: GNSS multipath for minutes, a
+  camera that keeps misdetecting the same feature
+- The filter counts the same error as fresh, independent evidence
+- Result: **overconfidence**
+:::
+
+. . .
+
+Sometimes that is fine. Sometimes it is where the bug lives.
+
+## Predict by marginalizing, update with Bayes
+
+$$
+\overline{\operatorname{bel}}(\mathbf{x}_t)
+= \int p(\mathbf{x}_t \mid \mathbf{x}_{t-1}, \mathbf{u}_t)\,
+\operatorname{bel}(\mathbf{x}_{t-1})\, d\mathbf{x}_{t-1}
+$$
+
+. . .
+
+On a grid the integral is a sum, and the sum is a matrix product:
+$\overline{\operatorname{bel}}(x_t = i) = \sum_j p(x_t = i \mid x_{t-1} = j, u_t)\,\operatorname{bel}(x_{t-1} = j)$
+
+. . .
+
+$$
+\operatorname{bel}(\mathbf{x}_t) = \eta\, p(\mathbf{z}_t \mid \mathbf{x}_t)\,
+\overline{\operatorname{bel}}(\mathbf{x}_t)
+$$
+
+. . .
+
+The likelihood does not invert the sensor. It asks: if the vehicle were here,
+how plausible is what we just measured?
+
+## The whole filter on a grid
+
+```{.python code-line-numbers="|1-5|8-10|13-15|1-15"}
+def normalize_probability(p):
+    total = np.sum(p)
+    if total <= 0.0:
+        raise ValueError("probability vector has non-positive mass")
+    return p / total
+
+
+def predict_bayes(belief, transition):
+    """transition[i, j] = p(x_t = i | x_{t-1} = j)"""
+    return normalize_probability(transition @ belief)
+
+
+def update_bayes(prediction, likelihood):
+    """likelihood[i] = p(z_t | x_t = i)"""
+    return normalize_probability(likelihood * prediction)
+```
+
+. . .
+
+A $1000 \times 1000$ grid of 2D positions is already a million cells. Add
+heading and velocity and the grid is absurd: the curse of dimensionality.
+
+## Global localization in a hallway
+
+```{python}
+#| include: false
+hallway = np.linspace(0.0, 12.0, 1201)           # 1 cm cells
+cell = hallway[1] - hallway[0]
+door_positions = np.array([2.0, 4.0, 8.0, 11.0])
+step, step_sigma = 1.0, 0.15
+
+
+def p_door(x, doors=door_positions, width=0.25, p_detect=0.9, p_false=0.05):
+    bump = np.max(np.exp(-0.5 * ((x[:, None] - doors[None, :]) / width) ** 2), axis=1)
+    return p_false + (p_detect - p_false) * bump
+
+
+def normalize_probability(p):
+    return p / np.sum(p)
+
+
+offsets = hallway[:, None] - (hallway[None, :] + step)
+transition = np.exp(-0.5 * (offsets / step_sigma) ** 2) / (np.sqrt(2 * np.pi) * step_sigma) * cell
+
+rng = np.random.default_rng(7)
+belief = np.full(hallway.size, 1.0 / hallway.size)
+likelihood_door = p_door(hallway)
+x_true, history = 0.0, []
+for t in range(1, 9):
+    x_true += step + step_sigma * rng.standard_normal()
+    saw_door = rng.random() < p_door(np.array([x_true]))[0]
+    belief_bar = normalize_probability(transition @ belief)
+    belief = normalize_probability(belief_bar * (likelihood_door if saw_door else 1.0 - likelihood_door))
+    history.append({"t": t, "x_true": x_true, "door": saw_door,
+                    "belief_bar": belief_bar, "belief": belief})
+y_max = 1.1 * max(max(h["belief"].max(), h["belief_bar"].max()) for h in history) / cell
+
+
+def plot_hallway(i):
+    h = history[i]
+    fig, ax = plt.subplots(figsize=(10, 3.3))
+    for door in door_positions:
+        ax.axvspan(door - 0.25, door + 0.25, color="0.88", zorder=0)
+    ax.plot(hallway, h["belief_bar"] / cell, color="C0", linewidth=1.0, label="predicted")
+    ax.fill_between(hallway, h["belief"] / cell, color="C1", alpha=0.6, label="posterior")
+    ax.plot([h["x_true"]], [0.0], "k^", markersize=11, clip_on=False, label="true position")
+    ax.set_ylim(0.0, y_max)
+    ax.set_yticks([])
+    ax.set_xlabel("position along the hallway [m]  (gray bands are doors)")
+    ax.set_title(f"t = {h['t']}: sensor says {'DOOR' if h['door'] else 'no door'}")
+    ax.legend(loc="upper right")
+    ax.grid(False)
+    plt.show()
+```
+
+::: {.r-stack}
+```{python}
+plot_hallway(0)
+```
+::: {.fragment}
+```{python}
+plot_hallway(1)
+```
+:::
+::: {.fragment}
+```{python}
+plot_hallway(2)
+```
+:::
+::: {.fragment}
+```{python}
+plot_hallway(3)
+```
+:::
+::: {.fragment}
+```{python}
+plot_hallway(4)
+```
+:::
+::: {.fragment}
+```{python}
+plot_hallway(5)
+```
+:::
+::: {.fragment}
+```{python}
+plot_hallway(6)
+```
+:::
+::: {.fragment}
+```{python}
+plot_hallway(7)
+```
+:::
+:::
+
+::: {.notes}
+Uniform prior: "somewhere." Then one hypothesis per door, then one peak.
+Doors at 2, 4, 8, and 11 m; the detector fires with probability 0.9 at a door
+and 0.05 elsewhere. The second "door" leaves the 2-and-4 m pair as the only
+place where a door is followed two meters later by another. A Kalman filter
+started with a broad Gaussian would sit in the middle of the hallway: "a
+correct description of nothing in particular." This run is a lucky one; Exercise
+5 measures how lucky.
+:::
+
+## Why we usually approximate
+
+The full Bayes filter needs the whole state space: a continuous integral, a
+fine grid, or a huge transition table.
+
+. . .
+
+| Approximation | Filter |
+|---|---|
+| Keep a Gaussian's mean and covariance | Kalman filter |
+| ... and linearize the models | EKF |
+| ... and push sigma points through them | UKF |
+| Discretize the state into cells | Histogram filter |
+| Represent the belief by weighted samples | Particle filter |
+
+. . .
+
+Different approximations fail differently. Know which failure mode you are
+buying.
+
+# The Kalman Filter {#kf}
+
+The Bayes filter, made cheap by two assumptions.
+
+[Chapter: The Kalman Filter](https://jbrodovsky.github.io/advanced_navigation/chapters/03-filtering/kf.html)
+
+## The default answer since 1960
+
+[How do I blend a motion model with noisy sensors?]{.question}
+
+. . .
+
+- Kalman, 1960: a recursive solution to linear filtering
+- Schmidt's group at NASA Ames: Apollo midcourse navigation
+- Your phone runs several. So does nearly every aircraft, ship, and spacecraft
+  that knows where it is.
+
+. . .
+
+Assume **linear** models and **Gaussian** noise, and a Gaussian belief stays
+Gaussian forever.
+
+## The linear Gaussian model
+
+$$
+\mathbf{x}_k = \mathbf{F}_k \mathbf{x}_{k-1} + \mathbf{B}_k \mathbf{u}_k + \mathbf{w}_k,
+\qquad \mathbf{w}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{Q}_k)
+$$
+
+$$
+\mathbf{z}_k = \mathbf{H}_k \mathbf{x}_k + \mathbf{v}_k,
+\qquad \mathbf{v}_k \sim \mathcal{N}(\mathbf{0}, \mathbf{R}_k)
+$$
+
+. . .
+
+::: {.incremental}
+- $\mathbf{F}$ propagates the state, $\mathbf{B}$ maps known inputs in
+- $\mathbf{Q}$: process noise and everything the model leaves out
+- $\mathbf{H}$ maps state to measurement, $\mathbf{R}$: measurement noise
+- Noises zero-mean, white, uncorrelated with each other and the initial state.
+  Real hardware will violate every one of those words.
+:::
+
+## Prediction
+
+$$
+\hat{\mathbf{x}}_{k|k-1} = \mathbf{F}_k \hat{\mathbf{x}}_{k-1|k-1} + \mathbf{B}_k \mathbf{u}_k,
+\qquad
+\mathbf{P}_{k|k-1} = \mathbf{F}_k \mathbf{P}_{k-1|k-1} \mathbf{F}_k^T + \mathbf{Q}_k
+$$
+
+. . .
+
+$\mathbf{F}_k \mathbf{P}_{k-1|k-1} \mathbf{F}_k^T$: existing uncertainty is
+transformed by the dynamics. Velocity uncertainty leaks into position.
+
+. . .
+
+$\mathbf{Q}_k$: new uncertainty enters through process noise.
+
+::: {.incremental}
+- Too small: overconfident, rejects valid measurements
+- Too large: wanders, lets measurements dominate
+:::
+
+## The update is Gaussian conditioning {auto-animate=true}
+
+::: {data-id="joint"}
+$$
+\begin{bmatrix} \mathbf{a} \\ \mathbf{b} \end{bmatrix}
+\sim
+\mathcal{N}\!\left(
+\begin{bmatrix} \boldsymbol{\mu}_a \\ \boldsymbol{\mu}_b \end{bmatrix},
+\begin{bmatrix}
+\boldsymbol{\Sigma}_{aa} & \boldsymbol{\Sigma}_{ab} \\
+\boldsymbol{\Sigma}_{ba} & \boldsymbol{\Sigma}_{bb}
+\end{bmatrix}
+\right)
+$$
+:::
+
+Two jointly Gaussian vectors. We observe $\mathbf{b}$. What do we now believe
+about $\mathbf{a}$?
+
+## The update is Gaussian conditioning {auto-animate=true}
+
+::: {data-id="joint"}
+$$
+\begin{bmatrix} \mathbf{a} \\ \mathbf{b} \end{bmatrix}
+\sim
+\mathcal{N}\!\left(
+\begin{bmatrix} \boldsymbol{\mu}_a \\ \boldsymbol{\mu}_b \end{bmatrix},
+\begin{bmatrix}
+\boldsymbol{\Sigma}_{aa} & \boldsymbol{\Sigma}_{ab} \\
+\boldsymbol{\Sigma}_{ba} & \boldsymbol{\Sigma}_{bb}
+\end{bmatrix}
+\right)
+$$
+:::
+
+::: {data-id="conditional"}
+$$
+\mathbf{a} \mid \mathbf{b} \sim
+\mathcal{N}\!\left(
+\boldsymbol{\mu}_a + \boldsymbol{\Sigma}_{ab}\boldsymbol{\Sigma}_{bb}^{-1}(\mathbf{b} - \boldsymbol{\mu}_b),
+\;
+\boldsymbol{\Sigma}_{aa} - \boldsymbol{\Sigma}_{ab}\boldsymbol{\Sigma}_{bb}^{-1}\boldsymbol{\Sigma}_{ba}
+\right)
+$$
+:::
+
+. . .
+
+Proof on an index card: the residual
+$\mathbf{a} - \boldsymbol{\mu}_a - \boldsymbol{\Sigma}_{ab}\boldsymbol{\Sigma}_{bb}^{-1}(\mathbf{b} - \boldsymbol{\mu}_b)$
+is uncorrelated with $\mathbf{b}$, and for jointly Gaussian variables
+uncorrelated means independent.
+
+## Reading off the Kalman filter {auto-animate=true}
+
+::: {data-id="joint"}
+$$
+\begin{bmatrix} \mathbf{x}_k \\ \mathbf{z}_k \end{bmatrix}
+\sim
+\mathcal{N}\!\left(
+\begin{bmatrix} \hat{\mathbf{x}}_{k|k-1} \\ \mathbf{H}_k \hat{\mathbf{x}}_{k|k-1} \end{bmatrix},
+\begin{bmatrix}
+\mathbf{P}_{k|k-1} & \mathbf{P}_{k|k-1}\mathbf{H}_k^T \\
+\mathbf{H}_k\mathbf{P}_{k|k-1} & \mathbf{H}_k\mathbf{P}_{k|k-1}\mathbf{H}_k^T + \mathbf{R}_k
+\end{bmatrix}
+\right)
+$$
+:::
+
+::: {data-id="conditional"}
+$$
+\boldsymbol{\nu}_k = \mathbf{z}_k - \mathbf{H}_k\hat{\mathbf{x}}_{k|k-1},
+\qquad
+\mathbf{S}_k = \mathbf{H}_k\mathbf{P}_{k|k-1}\mathbf{H}_k^T + \mathbf{R}_k,
+\qquad
+\mathbf{K}_k = \mathbf{P}_{k|k-1}\mathbf{H}_k^T\mathbf{S}_k^{-1}
+$$
+:::
+
+. . .
+
+$$
+\hat{\mathbf{x}}_{k|k} = \hat{\mathbf{x}}_{k|k-1} + \mathbf{K}_k\boldsymbol{\nu}_k,
+\qquad
+\mathbf{P}_{k|k} = (\mathbf{I} - \mathbf{K}_k\mathbf{H}_k)\mathbf{P}_{k|k-1}
+$$
+
+. . .
+
+That is the Kalman filter. No calculus of variations, just "condition a
+Gaussian."
+
+## Two consequences worth a pause
+
+::: {.incremental}
+- $\mathbf{P}_{k|k}$ never looks at the measured value $\mathbf{z}_k$. You can
+  run the covariance recursion **before building the vehicle**: covariance
+  analysis.
+- Drop the Gaussian assumption and the same gain is still the best **linear**
+  estimator. Its signature: the error is uncorrelated with every innovation
+  (the orthogonality principle).
+:::
+
+::: {.notes}
+Covariance analysis is how navigation engineers decide whether a sensor suite
+can meet a requirement before anyone buys a sensor.
+:::
+
+## Do not take it on faith
+
+```{python}
+#| echo: true
+#| output-location: fragment
+rng = np.random.default_rng(11)
+x_prior, P_prior, R, z_observed = 10.0, 4.0, 1.0, 12.5
+
+# Sample the joint distribution of (x, z) and keep samples with z near 12.5.
+x = x_prior + np.sqrt(P_prior) * rng.standard_normal(1_000_000)
+z = x + np.sqrt(R) * rng.standard_normal(x.size)
+x_given_z = x[np.abs(z - z_observed) < 0.02]
+
+K = P_prior / (P_prior + R)
+print(f"brute force: mean {x_given_z.mean():.3f}, var {x_given_z.var():.3f}")
+print(f"Kalman:      mean {x_prior + K * (z_observed - x_prior):.3f}, var {(1 - K) * P_prior:.3f}")
+```
+
+## One Kalman filter cycle
+
+::: {.fragment .semi-fade-out fragment-index=1}
+$$
+\begin{aligned}
+\hat{\mathbf{x}}_{k|k-1} &= \mathbf{F}_k \hat{\mathbf{x}}_{k-1|k-1} + \mathbf{B}_k \mathbf{u}_k \\
+\mathbf{P}_{k|k-1} &= \mathbf{F}_k \mathbf{P}_{k-1|k-1} \mathbf{F}_k^T + \mathbf{Q}_k
+\end{aligned}
+$$
+:::
+
+::: {.fragment fragment-index=1}
+$$
+\begin{aligned}
+\boldsymbol{\nu}_k &= \mathbf{z}_k - \mathbf{H}_k \hat{\mathbf{x}}_{k|k-1} \\
+\mathbf{S}_k &= \mathbf{H}_k \mathbf{P}_{k|k-1} \mathbf{H}_k^T + \mathbf{R}_k \\
+\mathbf{K}_k &= \mathbf{P}_{k|k-1} \mathbf{H}_k^T \mathbf{S}_k^{-1} \\
+\hat{\mathbf{x}}_{k|k} &= \hat{\mathbf{x}}_{k|k-1} + \mathbf{K}_k \boldsymbol{\nu}_k \\
+\mathbf{P}_{k|k} &= (\mathbf{I} - \mathbf{K}_k \mathbf{H}_k)\mathbf{P}_{k|k-1}(\mathbf{I} - \mathbf{K}_k \mathbf{H}_k)^T + \mathbf{K}_k \mathbf{R}_k \mathbf{K}_k^T
+\end{aligned}
+$$
+:::
+
+::: {.notes}
+First click dims the prediction and shows the update. The last line is the
+Joseph form, two slides on.
+:::
+
+## In code
+
+```{.python code-line-numbers="|2-3|4|5|6-7|8|1-8"}
+def kf_update(x_pred, P_pred, z, H, R):
+    nu = z - H @ x_pred                        # innovation
+    S = H @ P_pred @ H.T + R                   # innovation covariance
+    K = np.linalg.solve(S, H @ P_pred).T       # gain, without inverting S
+    x_post = x_pred + K @ nu
+    I_KH = np.eye(x_pred.size) - K @ H
+    P_post = I_KH @ P_pred @ I_KH.T + K @ R @ K.T   # Joseph form
+    return x_post, P_post, nu, S
+```
+
+. . .
+
+Two habits from day one: **solve**, never invert; and **return** $\boldsymbol{\nu}$
+and $\mathbf{S}$ so you can test the filter later.
+
+## The Joseph form tells the truth for any gain
+
+$$
+\mathbf{P}_{k|k} =
+(\mathbf{I} - \mathbf{K}\mathbf{H}_k)\mathbf{P}_{k|k-1}(\mathbf{I} - \mathbf{K}\mathbf{H}_k)^T
++ \mathbf{K}\mathbf{R}_k\mathbf{K}^T
+$$
+
+. . .
+
+::: {.incremental}
+- The short form $(\mathbf{I}-\mathbf{K}\mathbf{H})\mathbf{P}$ is only right for
+  the exactly optimal gain
+- Real gains are suboptimal: deweighted, gated, steady-state, reduced-order, or
+  linearized (every EKF)
+- The short form subtracts; subtraction is how covariances grow negative
+  eigenvalues after a few hours of flight
+- Still not enough? Square-root and UD filters
+:::
+
+## Kalman gain intuition
+
+:::: {.columns}
+::: {.column width="38%"}
+Scalar, $H = 1$:
+
+$$
+K = \frac{P_{k|k-1}}{P_{k|k-1} + R}
+$$
+
+::: {.incremental}
+- $R \to 0$: trust the measurement
+- $R \to \infty$: trust the prediction
+- The off-diagonals of $\mathbf{P}\mathbf{H}^T$ let a position fix correct a
+  velocity it never saw
+:::
+:::
+::: {.column width="62%"}
+```{python}
+R_values = np.logspace(-3, 2, 500)
+fig, ax = plt.subplots(figsize=(6.5, 4.0))
+for P_pred in [0.05, 0.2, 1.0, 5.0]:
+    ax.semilogx(R_values, P_pred / (P_pred + R_values), label=fr"$P_{{k|k-1}}={P_pred}$",
+                linewidth=2)
+ax.set_xlabel("measurement variance R")
+ax.set_ylabel("Kalman gain K")
+ax.legend()
+plt.show()
+```
+:::
+::::
+
+## A ship in a dredged channel
+
+```{python}
+#| include: false
+def cv_model(dt, q):
+    F = np.array([[1.0, dt], [0.0, 1.0]])
+    Q = q * np.array([[dt**3 / 3.0, dt**2 / 2.0], [dt**2 / 2.0, dt]])
+    return F, Q
+
+
+def simulate_cv(rng, n_steps, dt, q, sigma_z, x0):
+    F, Q = cv_model(dt, q)
+    L_Q = np.linalg.cholesky(Q)
+    x_true = np.zeros((n_steps + 1, 2))
+    x_true[0] = x0
+    z = np.full((n_steps + 1, 1), np.nan)
+    for k in range(1, n_steps + 1):
+        x_true[k] = F @ x_true[k - 1] + L_Q @ rng.standard_normal(2)
+        z[k, 0] = x_true[k, 0] + sigma_z * rng.standard_normal()
+    return x_true, z
+
+
+def kf_predict(x, P, F, Q):
+    return F @ x, F @ P @ F.T + Q
+
+
+def kf_update(x_pred, P_pred, z, H, R):
+    nu = z - H @ x_pred
+    S = H @ P_pred @ H.T + R
+    K = np.linalg.solve(S, H @ P_pred).T
+    I_KH = np.eye(x_pred.size) - K @ H
+    return x_pred + K @ nu, I_KH @ P_pred @ I_KH.T + K @ R @ K.T, nu, S
+
+
+def run_kf(z, F, Q, H, R, x0_hat, P0):
+    n_steps, n, m = len(z) - 1, x0_hat.size, H.shape[0]
+    out = {"x": np.zeros((n_steps + 1, n)), "P": np.zeros((n_steps + 1, n, n)),
+           "nu": np.zeros((n_steps + 1, m)), "S": np.zeros((n_steps + 1, m, m))}
+    out["x"][0], out["P"][0] = x0_hat, P0
+    for k in range(1, n_steps + 1):
+        x_pred, P_pred = kf_predict(out["x"][k - 1], out["P"][k - 1], F, Q)
+        out["x"][k], out["P"][k], out["nu"][k], out["S"][k] = kf_update(x_pred, P_pred, z[k], H, R)
+    return out
+
+
+dt, q_true, sigma_z, n_steps = 1.0, 0.1, 4.0, 150
+H = np.array([[1.0, 0.0]])
+R = np.array([[sigma_z**2]])
+x0_true = np.array([0.0, 5.0])
+P0 = np.diag([10.0**2, 2.0**2])
+rng = np.random.default_rng(42)
+x_true, z = simulate_cv(rng, n_steps, dt, q_true, sigma_z, x0_true)
+x0_hat = x0_true + np.linalg.cholesky(P0) @ rng.standard_normal(2)
+F, Q = cv_model(dt, q_true)
+kf = run_kf(z, F, Q, H, R, x0_hat, P0)
+err = x_true - kf["x"]
+sigma = np.sqrt(np.stack([kf["P"][:, 0, 0], kf["P"][:, 1, 1]], axis=1))
+t_axis = np.arange(n_steps + 1) * dt
+```
+
+$$
+\mathbf{x} = \begin{bmatrix} s \\ \dot{s} \end{bmatrix},
+\qquad
+\mathbf{F} = \begin{bmatrix} 1 & \Delta t \\ 0 & 1 \end{bmatrix},
+\qquad
+\mathbf{H} = \begin{bmatrix} 1 & 0 \end{bmatrix},
+\qquad
+\mathbf{Q} = q \begin{bmatrix} \Delta t^3/3 & \Delta t^2/2 \\ \Delta t^2/2 & \Delta t \end{bmatrix}
+$$
+
+::: {.incremental}
+- GNSS reports along-track position at 1 Hz with $\sigma = 4$ m
+- Currents, wind, and the helmsman perturb the speed: white-noise acceleration
+- The truth is simulated from the **same** model
+:::
+
+. . .
+
+::: {.key}
+If a filter misbehaves when its model is perfect, the bug is in the code, not the
+physics.
+:::
+
+## Position from GNSS, speed for free
+
+```{python}
+window = t_axis <= 60.0
+fig, axes = plt.subplots(1, 2, figsize=(12, 4.2))
+ax = axes[0]
+ax.plot(t_axis[window], x_true[window, 0], color="k", label="truth")
+ax.plot(t_axis[window], z[window, 0], ".", color="C1", alpha=0.7, label="GNSS fixes")
+ax.plot(t_axis[window], kf["x"][window, 0], color="C0", label="KF estimate")
+ax.set_xlabel("time [s]")
+ax.set_ylabel("along-track position [m]")
+ax.legend()
+ax = axes[1]
+ax.fill_between(t_axis, kf["x"][:, 1] - 3 * sigma[:, 1], kf["x"][:, 1] + 3 * sigma[:, 1],
+                color="C0", alpha=0.2, label=r"estimate $\pm 3\sigma$")
+ax.plot(t_axis, x_true[:, 1], color="k", label="true speed")
+ax.plot(t_axis, kf["x"][:, 1], color="C0", label="KF speed")
+ax.set_ylim(0.0, 10.0)
+ax.set_xlabel("time [s]")
+ax.set_ylabel("speed [m/s]")
+ax.legend(loc="upper right")
+fig.tight_layout()
+plt.show()
+```
+
+```{python}
+#| output: asis
+gnss_rmse = np.sqrt(np.mean((z[1:, 0] - x_true[1:, 0]) ** 2))
+kf_rmse = np.sqrt(np.mean(err[1:, 0] ** 2))
+print(f"Position RMSE: raw GNSS {gnss_rmse:.1f} m, Kalman filter {kf_rmse:.1f} m. "
+      f"Speed RMSE {np.sqrt(np.mean(err[1:, 1] ** 2)):.2f} m/s from a sensor that never measures speed.")
+```
+
+## The plot that matters: errors inside their bounds
+
+```{python}
+fig, axes = plt.subplots(1, 3, figsize=(13, 4.3))
+labels = ["position error [m]", "speed error [m/s]"]
+limits = [15, 4]
+for i, ax in enumerate(axes[:2]):
+    ax.plot(t_axis, err[:, i], color="C0", label="true $-$ estimate")
+    ax.plot(t_axis, 3 * sigma[:, i], "--", color="C3", label=r"$\pm 3\sigma$")
+    ax.plot(t_axis, -3 * sigma[:, i], "--", color="C3")
+    ax.set_ylim(-limits[i], limits[i])
+    ax.set_xlabel("time [s]")
+    ax.set_title(labels[i])
+axes[0].legend(loc="upper right")
+s_nu = np.sqrt(kf["S"][1:, 0, 0])
+ax = axes[2]
+ax.plot(t_axis[1:], kf["nu"][1:, 0], ".", color="C2", label="innovation")
+ax.plot(t_axis[1:], 3 * s_nu, "--", color="C3", label=r"$\pm 3\sqrt{S_k}$")
+ax.plot(t_axis[1:], -3 * s_nu, "--", color="C3")
+ax.set_xlabel("time [s]")
+ax.set_title("innovation [m]")
+ax.legend(loc="upper right")
+fig.tight_layout()
+plt.show()
+```
+
+. . .
+
+The innovations are the one diagnostic you also have on a real vehicle, with no
+truth at all.
+
+::: {.notes}
+The bounds settle within a few dozen steps and would settle to the same values
+for any measurement sequence: the covariance recursion never looks at the data.
+:::
+
+## $\mathbf{Q}$ is the most abused matrix in navigation
+
+[Not "a small diagonal matrix because the code needed one."]{.fragment .semi-fade-out}
+
+. . .
+
+A physical model of everything that pushes the state around:
+
+$$
+\dot{\mathbf{x}} = \mathbf{A}\mathbf{x} + \mathbf{B}\mathbf{u} + \mathbf{G}\mathbf{w},
+\qquad
+\mathbb{E}[\mathbf{w}(t)\mathbf{w}(\tau)^T] = \mathbf{Q}_c\,\delta(t - \tau)
+$$
+
+. . .
+
+$$
+\mathbf{Q}_d = \int_0^{\Delta t} \boldsymbol{\Phi}(\tau)\,\mathbf{G}\mathbf{Q}_c\mathbf{G}^T\,\boldsymbol{\Phi}(\tau)^T\,d\tau,
+\qquad \boldsymbol{\Phi}(\tau) = e^{\mathbf{A}\tau}
+$$
+
+. . .
+
+$\mathbf{Q}_c$ is a **power spectral density** (m²/s³ for an acceleration), the
+same thing a data sheet quotes per $\sqrt{\text{Hz}}$. Hard integral? Van Loan
+computes $\boldsymbol{\Phi}$ and $\mathbf{Q}_d$ from one matrix exponential.
+
+## Two acceleration models, two different $\mathbf{Q}$
+
+:::: {.columns}
+::: {.column width="50%"}
+**Continuous white noise** (CWNA)
+
+$$
+\mathbf{Q}_d = q \begin{bmatrix} \Delta t^3/3 & \Delta t^2/2 \\ \Delta t^2/2 & \Delta t \end{bmatrix}
+$$
+
+- $q$ in m²/s³, full rank
+- Same uncertainty per second at any rate
+- A ship buffeted by a seaway
+:::
+::: {.column width="50%"}
+**Piecewise-constant acceleration**
+
+$$
+\mathbf{Q}_d = \sigma_a^2 \begin{bmatrix} \Delta t^4/4 & \Delta t^3/2 \\ \Delta t^3/2 & \Delta t^2 \end{bmatrix}
+$$
+
+- $\sigma_a^2$ in m²/s⁴, rank one
+- Tied to the step size
+- Commands that change once per control cycle
+:::
+::::
+
+. . .
+
+Neither is "right." Plugging one model's parameter into the other's matrix is
+wrong, by a factor that depends on $\Delta t$.
+
+## Observability: what can the sensors reveal?
+
+$$
+\mathcal{O} = \begin{bmatrix} \mathbf{H} \\ \mathbf{H}\mathbf{F} \\ \vdots \\ \mathbf{H}\mathbf{F}^{n-1} \end{bmatrix},
+\qquad \operatorname{rank}\mathcal{O} = n \iff \text{observable}
+$$
+
+. . .
+
+::: {.incremental}
+- Position fixes on the constant-velocity model: both states observable (speed
+  shows up in how position changes)
+- Speed only, like a Doppler velocity log: position is never observable, no
+  matter how long you wait
+- Real systems are often **weakly** observable; the covariance says how weakly
+- INS/GNSS heading becomes observable only when the vehicle turns or
+  accelerates
+:::
+
+## Consistency: accurate is not the same as honest
+
+::: {.incremental}
+- A filter is **consistent** when $\mathbb{E}[\mathbf{e}_k] = \mathbf{0}$ and
+  $\mathbb{E}[\mathbf{e}_k\mathbf{e}_k^T] = \mathbf{P}_{k|k}$
+- 2 m errors that claim 2 m: healthy
+- 1 m errors that claim 10 cm: a **hazard**. It rejects good measurements,
+  gates out correct associations, and reports integrity it does not have
+:::
+
+## NEES and NIS
+
+With truth (simulation, motion capture, a reference trajectory):
+
+$$
+\epsilon_k = \mathbf{e}_k^T\mathbf{P}_{k|k}^{-1}\mathbf{e}_k \sim \chi^2_n
+$$
+
+. . .
+
+Without truth, on the vehicle, in real time:
+
+$$
+\epsilon_{\nu,k} = \boldsymbol{\nu}_k^T\mathbf{S}_k^{-1}\boldsymbol{\nu}_k \sim \chi^2_m
+$$
+
+. . .
+
+One sample says little; average them. Over $M$ Monte Carlo runs
+$M\bar{\epsilon}_k \sim \chi^2_{Mn}$, giving two-sided 95% bounds
+`chi2.ppf([0.025, 0.975], M * n) / M`.
+
+. . .
+
+Innovations of a good filter are also **white**: lag-$j$ autocorrelation inside
+$\pm 1.96/\sqrt{K}$.
+
+## Reading the diagnostics
+
+| Mistake | Average NIS | Lag-one innovation correlation |
+|---|---|---|
+| $\mathbf{Q}$ too small | above $m$ | positive (filter lags) |
+| $\mathbf{R}$ too small | above $m$ | negative (chases noise) |
+| $\mathbf{Q}$ too large | below $m$ | negative (chases noise) |
+| $\mathbf{R}$ too large | below $m$ | positive (filter lags) |
+
+. . .
+
+**Above** the dimension: errors bigger than the filter believes, **overconfident**.
+**Below**: underconfident, safer but wasteful. Whiteness tells $\mathbf{Q}$ from
+$\mathbf{R}$.
+
+## The experiment: $q$ right, $q/50$, $50q$
+
+```{python}
+#| include: false
+from scipy.stats import chi2
+
+
+def chi2_bounds(dof, n_samples, confidence=0.95):
+    lo, hi = chi2.ppf([(1 - confidence) / 2, (1 + confidence) / 2], dof * n_samples)
+    return lo / n_samples, hi / n_samples
+
+
+def normalized_squares(e, P):
+    return np.einsum("ki,ki->k", e, np.linalg.solve(P, e[..., None])[..., 0])
+
+
+def autocorrelation(x, max_lag):
+    return np.array([np.sum(x[:-j] * x[j:]) / np.sqrt(np.sum(x[:-j]**2) * np.sum(x[j:]**2))
+                     for j in range(1, max_lag + 1)])
+
+
+n_runs, max_lag = 50, 15
+q_cases = {"correct q": q_true, "q / 50": q_true / 50, "50 q": q_true * 50}
+mc = {}
+for label, q_filter in q_cases.items():
+    F_f, Q_f = cv_model(dt, q_filter)
+    rng_mc = np.random.default_rng(7)
+    nees, nis = np.zeros((n_runs, n_steps)), np.zeros((n_runs, n_steps))
+    for i in range(n_runs):
+        x_t, z_i = simulate_cv(rng_mc, n_steps, dt, q_true, sigma_z, x0_true)
+        x0_i = x0_true + np.linalg.cholesky(P0) @ rng_mc.standard_normal(2)
+        run = run_kf(z_i, F_f, Q_f, H, R, x0_i, P0)
+        nees[i] = normalized_squares((x_t - run["x"])[1:], run["P"][1:])
+        nis[i] = normalized_squares(run["nu"][1:], run["S"][1:])
+        if i == 0:
+            rho = autocorrelation(run["nu"][1:, 0], max_lag)
+    mc[label] = {"anees": nees.mean(axis=0), "anis": nis.mean(axis=0), "rho": rho}
+```
+
+```{python}
+k_axis = np.arange(1, n_steps + 1)
+fig, axes = plt.subplots(1, 3, figsize=(13, 4.3))
+colors = ["C0", "C3", "C2"]
+for (label, res), color in zip(mc.items(), colors):
+    axes[0].semilogy(k_axis, res["anees"], color=color, label=label)
+    axes[1].plot(k_axis, res["anis"], color=color, label=label)
+    axes[2].plot(np.arange(1, max_lag + 1), res["rho"], "o-", color=color, label=label)
+for ax, dof, name in [(axes[0], 2, "average NEES (n = 2)"), (axes[1], 1, "average NIS (m = 1)")]:
+    lo, hi = chi2_bounds(dof, n_runs)
+    ax.axhline(lo, color="k", linestyle="--", linewidth=1)
+    ax.axhline(hi, color="k", linestyle="--", linewidth=1)
+    ax.set_xlabel("step")
+    ax.set_title(name)
+bound = 1.96 / np.sqrt(n_steps)
+axes[2].axhline(bound, color="k", linestyle="--", linewidth=1)
+axes[2].axhline(-bound, color="k", linestyle="--", linewidth=1)
+axes[2].set_xlabel("lag")
+axes[2].set_title("innovation autocorrelation (one run)")
+axes[0].legend()
+fig.tight_layout()
+plt.show()
+```
+
+. . .
+
+NEES is far more sensitive than NIS: a filter can pass a casual NIS check with a
+badly wrong $\mathbf{P}$. Whiteness catches $q/50$ from a single run.
+
+## A tuning workflow
+
+::: {.incremental}
+1. Get $\mathbf{R}$ from the sensor: data sheet, then static data
+2. Build $\mathbf{Q}$ from physics: spectral densities, Van Loan
+3. Check ANEES and ANIS in simulation, where the model is perfect
+4. On real data: innovation mean, time-averaged NIS, whiteness
+5. Change one thing at a time; validate on data you did not tune on
+6. No reasonable $\mathbf{Q}$ works? **The model is wrong.** Add the missing
+   bias or scale factor; do not inflate $\mathbf{Q}$ to hide it
+:::
+
+::: {.notes}
+"Tuning is not 'increase random numbers until the plot looks better.'" A nonzero
+innovation mean is a bias or a frame error, not a tuning problem.
+:::
+
+## Smoothing: using the future
+
+A surveyor, a flight-test engineer, an accident investigator can wait. They want
+$p(\mathbf{x}_k \mid \mathbf{z}_{1:N})$, not $p(\mathbf{x}_k \mid \mathbf{z}_{1:k})$.
+
+. . .
+
+Rauch-Tung-Striebel: one backward pass over the stored filter output.
+
+$$
+\begin{aligned}
+\mathbf{J}_k &= \mathbf{P}_{k|k}\mathbf{F}_{k+1}^T\mathbf{P}_{k+1|k}^{-1} \\
+\hat{\mathbf{x}}_{k|N} &= \hat{\mathbf{x}}_{k|k} + \mathbf{J}_k\left(\hat{\mathbf{x}}_{k+1|N} - \hat{\mathbf{x}}_{k+1|k}\right) \\
+\mathbf{P}_{k|N} &= \mathbf{P}_{k|k} + \mathbf{J}_k\left(\mathbf{P}_{k+1|N} - \mathbf{P}_{k+1|k}\right)\mathbf{J}_k^T
+\end{aligned}
+$$
+
+. . .
+
+It is batch least squares over a chain of states. Draw the chain as a graph and
+you have a **factor graph**, the back end of modern SLAM.
+
+# The Extended Kalman Filter {#ekf}
+
+Linearize, and keep the Kalman machinery.
+
+[Chapter: The Extended Kalman Filter](https://jbrodovsky.github.io/advanced_navigation/chapters/03-filtering/ekf.html)
+
+## Navigation is not that polite
+
+[What do we do when the models are not linear?]{.question}
+
+. . .
+
+::: {.incremental}
+- Heading enters position through $\sin$ and $\cos$
+- Ranges are square roots
+- Bearings wrap at $\pm\pi$
+- Attitude lives on a rotation group, not in a vector space
+:::
+
+. . .
+
+The EKF: keep the Gaussian, evaluate the models exactly for the **mean**,
+propagate the **covariance** through first-order Taylor approximations.
+
+## The EKF bargain
+
+$$
+\mathbf{x}_k = f(\mathbf{x}_{k-1}, \mathbf{u}_k) + \mathbf{w}_k,
+\qquad
+\mathbf{z}_k = h(\mathbf{x}_k) + \mathbf{v}_k
+$$
+
+. . .
+
+$$
+\mathbf{F}_k = \left.\frac{\partial f}{\partial \mathbf{x}}\right|_{\hat{\mathbf{x}}_{k-1|k-1}, \mathbf{u}_k},
+\qquad
+\mathbf{H}_k = \left.\frac{\partial h}{\partial \mathbf{x}}\right|_{\hat{\mathbf{x}}_{k|k-1}}
+$$
+
+. . .
+
+$$
+\hat{\mathbf{x}}_{k|k-1} = f(\hat{\mathbf{x}}_{k-1|k-1}, \mathbf{u}_k),
+\qquad
+\mathbf{P}_{k|k-1} = \mathbf{F}_k\mathbf{P}_{k-1|k-1}\mathbf{F}_k^T + \mathbf{L}_k\mathbf{Q}_u\mathbf{L}_k^T + \mathbf{Q}_k
+$$
+
+. . .
+
+::: {.key}
+The nonlinear function moves the mean. The Jacobians move the covariance.
+:::
+
+## Noise belongs on the inputs
+
+:::: {.columns}
+::: {.column width="55%"}
+Unicycle, $\mathbf{x} = [x, y, \theta]^T$, $\mathbf{u} = [v, \omega]^T$:
+
+$$
+\mathbf{F} = \begin{bmatrix}
+1 & 0 & -v\sin\theta\,\Delta t \\
+0 & 1 & v\cos\theta\,\Delta t \\
+0 & 0 & 1
+\end{bmatrix}
+$$
+
+$$
+\mathbf{L} = \frac{\partial f}{\partial \mathbf{u}} = \begin{bmatrix}
+\cos\theta\,\Delta t & 0 \\
+\sin\theta\,\Delta t & 0 \\
+0 & \Delta t
+\end{bmatrix}
+$$
+:::
+::: {.column width="45%"}
+::: {.incremental}
+- Odometry error comes from $v$ and $\omega$, not from thin air in $x$, $y$
+- Speed noise spreads **along** the heading
+- Turn-rate noise becomes **cross-track** error a step later
+- The covariance is long, thin, and rotates with the vehicle. A fixed diagonal
+  $\mathbf{Q}$ cannot do that.
+:::
+:::
+::::
+
+## The EKF update, and the angle trap
+
+$$
+\boldsymbol{\nu}_k = \mathbf{z}_k - h(\hat{\mathbf{x}}_{k|k-1})
+$$
+
+. . .
+
+Then the ordinary Kalman update with $\mathbf{H}_k$ in place of $\mathbf{H}$,
+and the Joseph form: an EKF gain is **never** exactly optimal.
+
+. . .
+
+::: {.key}
+Wrap every angle innovation into $(-\pi, \pi]$. A bearing innovation of
+$359^\circ$ is really $-1^\circ$, and the filter will not figure that out on its
+own.
+:::
+
+## Range to a landmark
+
+:::: {.columns}
+::: {.column width="45%"}
+$$
+h(\mathbf{x}) = r = \sqrt{(m_x - x)^2 + (m_y - y)^2}
+$$
+
+$$
+\mathbf{H} = \begin{bmatrix} \dfrac{x - m_x}{r} & \dfrac{y - m_y}{r} & 0 & 0 \end{bmatrix}
+$$
+
+::: {.incremental}
+- A unit vector along the line of sight
+- Velocity columns are zero, yet velocity still improves through correlations
+  in $\mathbf{P}$
+:::
+:::
+::: {.column width="55%"}
+```{python}
+landmark_y = 2.0
+x_values = np.linspace(0.2, 7.0, 500)
+true_range = np.sqrt(x_values**2 + landmark_y**2)
+x0_lin = 3.0
+r0 = np.sqrt(x0_lin**2 + landmark_y**2)
+linearized = r0 + (x0_lin / r0) * (x_values - x0_lin)
+fig, ax = plt.subplots(figsize=(6, 3.8))
+ax.plot(x_values, true_range, linewidth=2, label="true range")
+ax.plot(x_values, linearized, "--", linewidth=2, label="EKF linearization")
+ax.axvline(x0_lin, color="0.5", linestyle=":", label="linearization point")
+ax.set_xlabel("vehicle x [m]")
+ax.set_ylabel("range [m]")
+ax.legend()
+plt.show()
+```
+:::
+::::
+
+::: {.notes}
+"This figure is the EKF's central bargain." Near the estimate the linearization
+is excellent; far away it is misleading. An EKF that is already wrong can
+confidently walk itself further from the truth.
+:::
+
+## The iterated EKF
+
+The EKF linearizes $h$ once, at the prior mean. A precise measurement and a broad
+prior move the estimate far outside where that linearization was any good.
+
+. . .
+
+Relinearize at the newest estimate and repeat:
+
+$$
+\mathbf{x}^{(i+1)} = \hat{\mathbf{x}}_{k|k-1} + \mathbf{K}^{(i)}\left[\mathbf{z}_k - h(\mathbf{x}^{(i)})
+- \mathbf{H}^{(i)}(\hat{\mathbf{x}}_{k|k-1} - \mathbf{x}^{(i)})\right]
+$$
+
+. . .
+
+Each iteration is a **Gauss-Newton step** on
+
+$$
+J(\mathbf{x}) = \tfrac{1}{2}\lVert\mathbf{x} - \hat{\mathbf{x}}_{k|k-1}\rVert^2_{\mathbf{P}_{k|k-1}^{-1}}
++ \tfrac{1}{2}\lVert\mathbf{z}_k - h(\mathbf{x})\rVert^2_{\mathbf{R}_k^{-1}}
+$$
+
+so the IEKF finds the MAP estimate, and needs step control (line search or
+Levenberg-Marquardt) when it overshoots.
+
+## Why EKFs become overconfident
+
+::: {.incremental}
+- The covariance update assumes the linearized model is exact
+- The Jacobians are evaluated at the **estimate**, not the truth: a wrong filter
+  computes a wrong gain in a direction it cannot detect
+- Net effect: it removes more uncertainty than the measurement justifies
+- Worst with large uncertainty relative to curvature: big initial heading error,
+  nearby landmarks, long gaps between updates
+- EKF-SLAM is the classic victim
+:::
+
+. . .
+
+Test it the same way as the Kalman filter: NEES, NIS, whiteness.
+
+## Error-state filtering: how an INS does it
+
+:::: {.columns}
+::: {.column width="50%"}
+**Nominal state**, at IMU rate:
+
+$\hat{\mathbf{p}}^n, \hat{\mathbf{v}}^n, \hat{\mathbf{q}}_b^n, \hat{\mathbf{b}}_a, \hat{\mathbf{b}}_g$
+
+**Error state**, in the filter:
+
+$\delta\mathbf{x} = [\delta\mathbf{p}, \delta\mathbf{v}, \delta\boldsymbol{\theta}, \delta\mathbf{b}_a, \delta\mathbf{b}_g]^T$
+
+Errors are true minus estimate;
+$\mathbf{q}_b^n \approx \delta\mathbf{q}(\delta\boldsymbol{\theta}) \otimes \hat{\mathbf{q}}_b^n$
+:::
+::: {.column width="50%"}
+::: {.incremental}
+1. Propagate the nominal state with the IMU
+2. Propagate the error covariance
+3. Estimate $\delta\hat{\mathbf{x}}$ from GNSS, vision, ...
+4. Inject it into the nominal state
+5. Reset $\delta\hat{\mathbf{x}} = \mathbf{0}$ and
+   $\mathbf{P} \leftarrow \mathbf{G}\mathbf{P}\mathbf{G}^T$
+:::
+:::
+::::
+
+. . .
+
+Step 5 is easy to get half right. The reset Jacobian is nearly $\mathbf{I}$,
+except after big corrections, which is exactly when you can least afford a
+covariance error.
+
+## When the EKF is a good choice
+
+:::: {.columns}
+::: {.column width="50%"}
+**Good fit**
+
+- Mostly unimodal belief
+- Estimate usually close to the truth
+- Tested Jacobians available
+- Differentiable models
+- Speed and memory matter
+:::
+::: {.column width="50%"}
+**Poor fit**
+
+- Strongly multimodal posterior
+- Initial estimate can be far off
+- Hard discontinuities
+- Ambiguous data association
+- Casual angle and attitude handling
+:::
+::::
+
+. . .
+
+The EKF is popular because it is effective, not because it is forgiving.
+
+# The Unscented Kalman Filter {#ukf}
+
+Approximate the distribution, not the function.
+
+[Chapter: The Unscented Kalman Filter](https://jbrodovsky.github.io/advanced_navigation/chapters/03-filtering/ukf.html)
+
+## Sample before the bend
+
+[Can we skip the Jacobians entirely?]{.question}
+
+. . .
+
+![](../images/unscented_transformation.png){width=70%}
+
+. . .
+
+"It is easier to approximate a probability distribution than an arbitrary
+nonlinear function." (Julier and Uhlmann)
+
+## Sigma points
+
+```{python}
+#| include: false
+def merwe_weights(n, alpha=1.0, beta=2.0, kappa=0.0):
+    spread_sq = alpha**2 * (n + kappa)
+    lam = spread_sq - n
+    wm = np.full(2 * n + 1, 1.0 / (2.0 * spread_sq))
+    wc = wm.copy()
+    wm[0] = lam / spread_sq
+    wc[0] = wm[0] + 1.0 - alpha**2 + beta
+    return wm, wc, np.sqrt(spread_sq)
+
+
+def sigma_points(mean, P, alpha=1.0, beta=2.0, kappa=0.0):
+    n = P.shape[0]
+    wm, wc, spread = merwe_weights(n, alpha, beta, kappa)
+    L = np.linalg.cholesky(P)
+    return mean + spread * np.vstack([np.zeros(n), L.T, -L.T]), wm, wc
+
+
+def unscented_transform(points, wm, wc):
+    mean = wm @ points
+    resid = points - mean
+    return mean, (wc[:, None] * resid).T @ resid
+
+
+def ellipse_points(mean, cov, n_std=2.0, num=200):
+    t = np.linspace(0.0, 2.0 * np.pi, num)
+    return mean[:, None] + n_std * np.linalg.cholesky(cov) @ np.vstack([np.cos(t), np.sin(t)])
+```
+
+:::: {.columns}
+::: {.column width="55%"}
+$2n + 1$ points from $\mathbf{L}\mathbf{L}^T = \mathbf{P}$:
+
+$$
+\mathcal{X}^{(0)} = \boldsymbol{\mu},
+\qquad
+\mathcal{X}^{(i)}, \mathcal{X}^{(i+n)} = \boldsymbol{\mu} \pm s\,\boldsymbol{\ell}_i
+$$
+
+$$
+s = \sqrt{n + \lambda} = \alpha\sqrt{n + \kappa}
+$$
+
+::: {.incremental}
+- Deterministic, not random
+- Each sits $s$ standard deviations from the mean
+- Weights reproduce $\boldsymbol{\mu}$ and $\mathbf{P}$ exactly
+:::
+:::
+::: {.column width="45%"}
+```{python}
+mean = np.array([2.0, 1.0])
+P_demo = np.array([[1.0, 0.55], [0.55, 0.6]])
+points, _, _ = sigma_points(mean, P_demo)
+e = ellipse_points(mean, P_demo, n_std=1.0)
+fig, ax = plt.subplots(figsize=(5, 4.2))
+ax.plot(e[0], e[1], color="0.55", label="1-sigma ellipse")
+ax.scatter(points[:, 0], points[:, 1], s=80, label="sigma points", zorder=3)
+ax.scatter(*mean, s=100, marker="x", color="black", label="mean", zorder=4)
+ax.set_aspect("equal", adjustable="datalim")
+ax.margins(0.12)
+ax.legend(loc="lower right", fontsize=10)
+plt.show()
+```
+:::
+::::
+
+## Weights, and a warning label
+
+$$
+W_0^{(m)} = 1 - \frac{n}{s^2},
+\qquad
+W_0^{(c)} = W_0^{(m)} + 1 - \alpha^2 + \beta,
+\qquad
+W_i^{(m)} = W_i^{(c)} = \frac{1}{2s^2}
+$$
+
+. . .
+
+The widely quoted default $\alpha = 10^{-3}$, with $n = 2$:
+
+::: {.incremental}
+- $s \approx 0.0014$ and $W_0^{(m)} \approx -10^6$
+- The mean is a difference of numbers a million times larger than the answer
+- Rounding error amplified a million-fold; in single precision a UTM coordinate
+  falls apart
+:::
+
+. . .
+
+Keep the spread sensible ($\alpha$ near 1 is a fine start).
+
+## The unscented transform at work
+
+```{python}
+def polar_to_cartesian(x):
+    r, b = x[..., 0], x[..., 1]
+    return np.stack([r * np.sin(b), r * np.cos(b)], axis=-1)
+
+
+mu_polar = np.array([100.0, 0.0])
+P_polar = np.diag([4.0**2, np.deg2rad(20.0) ** 2])
+rng = np.random.default_rng(42)
+samples = rng.multivariate_normal(mu_polar, P_polar, size=20_000)
+Y_mc = polar_to_cartesian(samples)
+J_pol = np.array([[np.sin(0.0), 100.0 * np.cos(0.0)], [np.cos(0.0), -100.0 * np.sin(0.0)]])
+X_sig, wm, wc = sigma_points(mu_polar, P_polar)
+Y_sig = polar_to_cartesian(X_sig)
+cases = [
+    (Y_mc.mean(axis=0), np.cov(Y_mc.T), "black", "-", "Monte Carlo"),
+    (polar_to_cartesian(mu_polar), J_pol @ P_polar @ J_pol.T, "C1", "--", "EKF linearization"),
+    (*unscented_transform(Y_sig, wm, wc), "C0", "-", "unscented transform"),
+]
+fig, ax = plt.subplots(figsize=(12, 4.4))
+ax.scatter(Y_mc[:3000, 0], Y_mc[:3000, 1], s=2, color="0.75", label="Monte Carlo samples")
+for m, c, color, ls, name in cases:
+    e = ellipse_points(m, c)
+    ax.plot(e[0], e[1], color=color, linestyle=ls, linewidth=2.2, label=name)
+    ax.scatter(*m, color=color, marker="x", s=90, zorder=4)
+ax.scatter(Y_sig[:, 0], Y_sig[:, 1], s=60, color="C0", zorder=3, label="sigma points")
+ax.set_xlabel("east [m]")
+ax.set_ylabel("north [m]")
+ax.set_xlim(-115, 115)
+ax.set_ylim(-5, 125)
+ax.legend(loc="lower left", fontsize=11, ncol=2)
+fig.tight_layout()
+plt.show()
+```
+
+Range and bearing (100 m, $\pm 20^\circ$) to Cartesian: the EKF is biased **and**
+overconfident; five sigma points, no derivatives, get both right.
+
+## UKF predict and update
+
+::: {.incremental}
+- **Predict:** sigma points from $(\hat{\mathbf{x}}, \mathbf{P})$, through $f$,
+  reconstruct, add $\mathbf{Q}_k$. No Jacobian.
+- **Update:** [redraw]{.accent} sigma points from
+  $(\hat{\mathbf{x}}_{k|k-1}, \mathbf{P}_{k|k-1})$, through $h$, reconstruct
+  $\hat{\mathbf{z}}$, $\mathbf{S}_k$, and $\mathbf{P}_{xz}$
+- $\mathbf{K}_k = \mathbf{P}_{xz}\mathbf{S}_k^{-1}$,
+  $\;\mathbf{P}_{k|k} = \mathbf{P}_{k|k-1} - \mathbf{K}_k\mathbf{S}_k\mathbf{K}_k^T$
+:::
+
+. . .
+
+::: {.aside-box}
+Why redraw? The propagated points never saw $\mathbf{Q}_k$. Reusing them (as
+filterpy does) forgets the process noise exactly when deciding how much to trust
+the measurement. Redraw, or augment the state with the noise.
+:::
+
+## Angles and attitude
+
+::: {.incremental}
+- Averaging $+179^\circ$ and $-179^\circ$ gives $0^\circ$: due north, when the
+  answer is due south
+- Every **difference** in $\mathbf{S}_k$, $\mathbf{P}_{xz}$, and the innovation
+  has the same problem
+- Quaternions: the average is not unit length, $\mathbf{q}$ and $-\mathbf{q}$
+  cancel, and a $4 \times 4$ covariance of 3 DOF is singular
+- Fix: let sigma points live in the 3D attitude **error**, with
+  $\boxplus$, $\boxminus$, and an iterated mean
+:::
+
+. . .
+
+::: {.key}
+Redraw before the update, keep the spread sensible, and never subtract two angles
+without wrapping the answer.
+:::
+
+## EKF or UKF?
+
+:::: {.columns}
+::: {.column width="50%"}
+**EKF**
+
+- Fewer model evaluations
+- Often faster in high dimensions
+- Jacobians expose observability and coupling
+- Error-state EKF fits INS physics
+:::
+::: {.column width="50%"}
+**UKF**
+
+- No Jacobians to derive or get wrong
+- Better through curved functions
+- Easy to prototype as models change
+- $2n + 1 = 31$ propagations per step for Project 1's 15 states, plus a Cholesky
+  per predict and update
+:::
+::::
+
+. . .
+
+The honest way to decide: run both on the same data and compare accuracy,
+consistency, and runtime. That is Project 1 Part C.
+
+# The Information Filter {#information}
+
+Same Gaussian, different coordinates.
+
+[Chapter: The Information Filter](https://jbrodovsky.github.io/advanced_navigation/chapters/03-filtering/information-filter.html)
+
+## Information form
+
+[What if we stored the inverse covariance instead?]{.question}
+
+. . .
+
+$$
+\boldsymbol{\Omega} = \mathbf{P}^{-1},
+\qquad
+\boldsymbol{\xi} = \boldsymbol{\Omega}\hat{\mathbf{x}}
+$$
+
+. . .
+
+They are the coefficients of the negative log-density:
+
+$$
+-\log p(\mathbf{x}) = \tfrac{1}{2}\mathbf{x}^T\boldsymbol{\Omega}\mathbf{x} - \boldsymbol{\xi}^T\mathbf{x} + \text{const}
+$$
+
+. . .
+
+Scalar intuition: information is inverse variance. Reading the mean back means
+**solving** $\boldsymbol{\Omega}\hat{\mathbf{x}} = \boldsymbol{\xi}$.
+
+## Updates add
+
+$$
+\boldsymbol{\Omega}_{k|k} = \boldsymbol{\Omega}_{k|k-1} + \mathbf{H}^T\mathbf{R}^{-1}\mathbf{H},
+\qquad
+\boldsymbol{\xi}_{k|k} = \boldsymbol{\xi}_{k|k-1} + \mathbf{H}^T\mathbf{R}^{-1}\mathbf{z}_k
+$$
+
+. . .
+
+::: {.incremental}
+- No gain, no innovation covariance, no state-sized inverse
+- Each independent measurement adds one term, in any order
+- Precise sensors add a lot; noisy ones still add a little
+- Complete ignorance is easy: $\boldsymbol{\Omega} = \mathbf{0}$. A Kalman filter
+  would need $\mathbf{P} = \infty$
+:::
+
+::: {.notes}
+Lines of position: a navigator's compass bearing to a lighthouse is one rank-one
+information term. One LOP fixes the cross-line position only; two crossing LOPs
+give a fix; three give the cocked hat. The chapter has the code.
+:::
+
+## Prediction is where information leaks away
+
+$$
+\boldsymbol{\Omega}_{k|k-1} = \left(\mathbf{F}\boldsymbol{\Omega}_{k-1|k-1}^{-1}\mathbf{F}^T + \mathbf{Q}\right)^{-1}
+$$
+
+. . .
+
+With $\mathbf{M} = \mathbf{F}^{-T}\boldsymbol{\Omega}_{k-1|k-1}\mathbf{F}^{-1}$:
+
+$$
+\boldsymbol{\Omega}_{k|k-1} = \mathbf{M} - \mathbf{M}\left(\mathbf{M} + \mathbf{Q}^{-1}\right)^{-1}\mathbf{M}
+$$
+
+. . .
+
+::: {.incremental}
+- No process noise: information is just transported, $\boldsymbol{\Omega}_{k|k-1} = \mathbf{M}$
+- Huge process noise: all of it is lost
+- Either way, a state-sized solve. Updates are elegant; prediction sighs and
+  reaches for matrix identities.
+:::
+
+## The duality
+
+| | Covariance form (KF) | Information form (IF) |
+|---|---|---|
+| Prediction | products only | state-sized solves |
+| Update | $m \times m$ solve with $\mathbf{S}_k$ | add $\mathbf{H}^T\mathbf{R}^{-1}\mathbf{H}$ |
+| Read the mean | stored | solve $\boldsymbol{\Omega}\hat{\mathbf{x}} = \boldsymbol{\xi}$ |
+| No prior | impossible | $\boldsymbol{\Omega} = \mathbf{0}$ |
+| Marginalize a variable | keep the block | Schur complement |
+| Condition on a variable | Schur complement | keep the block |
+
+. . .
+
+KF wins with frequent predictions and sparse measurements (400 Hz IMU, 1 Hz
+GNSS). IF wins with many measurements per step, batches, and sensor networks.
+
+## Why information form runs SLAM
+
+::: {.incremental}
+- A measurement between a pose and a landmark touches only their block of
+  $\boldsymbol{\Omega}$: the matrix stays **sparse**
+- Filtering marginalizes out past poses, and the Schur complement links every
+  landmark to every other: **fill-in**
+- Keep the past poses (smoothing) and the matrix stays sparse
+- That is the step from the EIF to factor graphs and modern SLAM back ends
+:::
+
+. . .
+
+The **extended** information filter linearizes where the EKF does, so it must
+recover the mean first, which is exactly what information form does not store.
+
+# Particle Filters {#pf}
+
+When one Gaussian is worse than useless.
+
+[Chapter: Nonparametric Filters and Particle Filters](https://jbrodovsky.github.io/advanced_navigation/chapters/03-filtering/pf.html)
+
+## Beliefs that are not Gaussian-shaped
+
+[Where should the mean go when the robot could be in two places?]{.question}
+
+. . .
+
+::: {.incremental}
+- A robot in a symmetric hallway
+- A kidnapped robot with no useful prior
+- An aircraft over ridge after similar ridge: one altimeter reading fits dozens
+  of places on the map
+:::
+
+. . .
+
+"Nonparametric" does not mean no parameters. It means no fixed family. More
+cells or particles, more flexibility, more cost. There is no free lunch, only a
+better invoice.
+
+## Histogram filters
+
+The Bayes filter again, with grid cells instead of exact states:
+
+$$
+\overline{\operatorname{bel}}(c_i) = \sum_j p(c_i \mid c_j, \mathbf{u})\,\operatorname{bel}(c_j),
+\qquad
+\operatorname{bel}(c_i) = \eta\, p(\mathbf{z} \mid c_i)\,\overline{\operatorname{bel}}(c_i)
+$$
+
+. . .
+
+::: {.incremental}
+- Any shape of belief, including several peaks
+- Resolution is a design choice: too coarse hides structure, too fine explodes
+  the transition matrix
+- Cost grows exponentially with dimension
+:::
+
+## Particles: weighted hypotheses
+
+$$
+\operatorname{bel}(\mathbf{x}_k) \approx \left\{(\mathbf{x}_k^{[i]}, w_k^{[i]})\right\}_{i=1}^N,
+\qquad \sum_i w_k^{[i]} = 1
+$$
+
+. . .
+
+::: {.incremental}
+1. **Predict:** sample each particle through the motion model, with its own
+   noise draw
+2. **Weight:** multiply by the measurement likelihood
+3. **Resample:** now and then, clone the heavy particles and drop the light ones
+:::
+
+. . .
+
+Also called sequential Monte Carlo.
+
+## Where the weights come from
+
+Importance sampling: sample from a proposal $q$, correct with $p/q$.
+
+$$
+w_k^{[i]} \propto w_{k-1}^{[i]}\,
+\frac{p(\mathbf{z}_k \mid \mathbf{x}_k^{[i]})\, p(\mathbf{x}_k^{[i]} \mid \mathbf{x}_{k-1}^{[i]}, \mathbf{u}_k)}
+     {q(\mathbf{x}_k^{[i]} \mid \mathbf{x}_{k-1}^{[i]}, \mathbf{z}_k, \mathbf{u}_k)}
+$$
+
+. . .
+
+Propose with the motion model and the transition densities cancel:
+
+$$
+w_k^{[i]} \propto w_{k-1}^{[i]}\, p(\mathbf{z}_k \mid \mathbf{x}_k^{[i]})
+$$
+
+. . .
+
+The **bootstrap filter**: easy, but blind to the measurement. When the sensor is
+much sharper than the motion model, most particles land where the likelihood is
+negligible. (FastSLAM 2.0 fixes this with a better proposal.)
+
+## Effective particles and resampling
+
+$$
+N_\text{eff} = \frac{1}{\sum_i \left(w^{[i]}\right)^2}
+\qquad \text{resample when } N_\text{eff} < N/2
+$$
+
+```{.python code-line-numbers="|3|4-5|6-7|1-7"}
+def low_variance_resample(particles, weights, rng):
+    n = len(weights)
+    positions = (rng.random() + np.arange(n)) / n   # one offset, n even steps
+    cumulative = np.cumsum(weights)
+    cumulative[-1] = 1.0                           # the one-line fix
+    indexes = np.searchsorted(cumulative, positions)
+    return particles[indexes].copy(), np.full(n, 1.0 / n)
+```
+
+. . .
+
+Without line 5, `cumsum` can end at `0.9999999999999999`, `searchsorted` returns
+index $N$, and the filter dies with an `IndexError` hours into a run.
+
+## Weighting and resampling in 1D
+
+```{python}
+#| include: false
+def cumulative_weights(weights):
+    cumulative = np.cumsum(weights)
+    cumulative[-1] = 1.0
+    return cumulative
+
+
+def low_variance_resample(particles, weights, rng):
+    n = len(weights)
+    positions = (rng.random() + np.arange(n)) / n
+    indexes = np.searchsorted(cumulative_weights(weights), positions)
+    return particles[indexes].copy(), np.full(n, 1.0 / n)
+```
+
+```{python}
+rng = np.random.default_rng(7)
+n = 600
+particles = np.concatenate([rng.normal(2.0, 0.45, n // 2), rng.normal(7.2, 0.65, n // 2)])
+measurement, sigma_meas = 6.8, 0.55
+weights = np.exp(-0.5 * ((measurement - particles) / sigma_meas) ** 2)
+weights = weights / weights.sum()
+resampled, _ = low_variance_resample(particles, weights, rng)
+fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharex=True)
+axes[0].scatter(particles, weights, s=12, alpha=0.65)
+axes[0].axvline(measurement, color="black", linestyle=":", label="measurement")
+axes[0].set_ylabel("particle weight")
+axes[0].set_title("after weighting")
+axes[0].legend()
+axes[1].hist(resampled, bins=45, density=True, alpha=0.75)
+axes[1].axvline(measurement, color="black", linestyle=":")
+axes[1].set_ylabel("particle density")
+axes[1].set_title("after low-variance resampling")
+for ax in axes:
+    ax.set_xlabel("state")
+fig.tight_layout()
+plt.show()
+```
+
+## Sample impoverishment
+
+Resample too often and the filter holds many copies of a few particles. If the
+truth moves away, it may never recover.
+
+. . .
+
+::: {.incremental}
+- Resample only when $N_\text{eff}$ is low
+- Roughen: small noise after resampling
+- Inject random particles to recover from a kidnapping
+- Use a better proposal
+- Better models waste fewer particles
+:::
+
+. . .
+
+Particle filters are not "turn off math and add samples."
+
+## Terrain-aided navigation
+
+```{python}
+#| include: false
+rng_map = np.random.default_rng(2)
+grid = np.arange(0.0, 30_000.0 + 30.0, 30.0)
+wavelengths = np.geomspace(150.0, 6000.0, 40)
+phases = rng_map.uniform(0.0, 2.0 * np.pi, wavelengths.size)
+roughness = (0.002 * wavelengths[:, None]
+             * np.sin(2.0 * np.pi * grid / wavelengths[:, None] + phases[:, None])).sum(axis=0)
+terrain = 400.0 + 60.0 * np.sin(2.0 * np.pi * grid / 1500.0) + roughness
+lake_start, lake_end = 11_000.0, 17_000.0
+lake = np.clip(np.minimum(grid - lake_start, lake_end - grid) / 300.0, 0.0, 1.0)
+terrain = (1.0 - lake) * terrain + lake * 320.0
+
+
+def terrain_height(x):
+    return np.interp(x, grid, terrain)
+
+
+rng = np.random.default_rng(33)
+dt_tan, n_tan, n_particles = 1.0, 180, 2000
+sigma_v, sigma_terrain = 3.0, 12.0
+t_tan = dt_tan * np.arange(n_tan)
+v_true = 110.0 + 5.0 * np.sin(0.05 * t_tan)
+x_flight = 2_000.0 + np.concatenate([[0.0], np.cumsum(v_true[1:] * dt_tan)])
+v_dr = v_true + rng.normal(0.0, sigma_v, n_tan)
+z_terrain = terrain_height(x_flight) + rng.normal(0.0, sigma_terrain, n_tan)
+
+particles = rng.uniform(0.0, 10_000.0, n_particles)
+log_w = np.full(n_particles, -np.log(n_particles))
+plot_positions = (0.5 + np.arange(150)) / 150
+cloud, n_eff_hist, est_mean, est_std = [], [], [], []
+for k in range(n_tan):
+    if k > 0:
+        particles = particles + (v_dr[k] + rng.normal(0.0, sigma_v, n_particles)) * dt_tan
+    log_w = log_w - 0.5 * ((z_terrain[k] - terrain_height(particles)) / sigma_terrain) ** 2
+    log_w = log_w - log_w.max()
+    weights = np.exp(log_w)
+    weights = weights / weights.sum()
+    log_w = np.log(weights)
+    mean_k = weights @ particles
+    est_mean.append(mean_k)
+    est_std.append(np.sqrt(weights @ (particles - mean_k) ** 2))
+    n_eff = 1.0 / np.sum(weights**2)
+    n_eff_hist.append(n_eff)
+    cloud.append(particles[np.searchsorted(cumulative_weights(weights), plot_positions)])
+    if n_eff < 0.5 * n_particles:
+        particles, weights = low_variance_resample(particles, weights, rng)
+        log_w = np.log(weights)
+est_mean, est_std = np.array(est_mean), np.array(est_std)
+over_lake = (x_flight > lake_start) & (x_flight < lake_end)
+```
+
+```{python}
+fig, axes = plt.subplots(1, 3, figsize=(14, 4.2), gridspec_kw={"width_ratios": [1, 1.2, 1]})
+ax = axes[0]
+ax.plot(grid / 1000, terrain, color="C2", linewidth=1.0)
+ax.axvspan(x_flight[0] / 1000, x_flight[-1] / 1000, color="C0", alpha=0.12, label="route flown")
+ax.axvspan(0, 10, facecolor="none", edgecolor="0.4", hatch="//", linewidth=0.8, label="prior")
+ax.set_xlabel("along-track distance [km]")
+ax.set_ylabel("elevation [m]")
+ax.set_title("terrain map")
+ax.legend(loc="upper right", fontsize=10)
+ax = axes[1]
+for k in range(n_tan):
+    ax.scatter(np.full(len(cloud[k]), t_tan[k]), cloud[k] / 1000, s=1, color="C0", alpha=0.25,
+               linewidths=0)
+ax.plot(t_tan, x_flight / 1000, color="black", linewidth=1.2, label="truth")
+ax.set_xlabel("time [s]")
+ax.set_ylabel("position [km]")
+ax.set_title("particle cloud")
+ax.legend(loc="upper left", fontsize=10)
+ax = axes[2]
+lake_t = t_tan[over_lake]
+ax.axvspan(lake_t[0], lake_t[-1], color="0.85", label="over the lake")
+ax.fill_between(t_tan, -2 * est_std, 2 * est_std, color="C0", alpha=0.2, label="filter 2-sigma")
+ax.plot(t_tan, est_mean - x_flight, color="C0", linewidth=1.2, label="error")
+ax.set_ylim(-150, 150)
+ax.set_xlabel("time [s]")
+ax.set_ylabel("error [m]")
+ax.set_title("error and uncertainty")
+ax.legend(loc="lower right", fontsize=10)
+fig.tight_layout()
+plt.show()
+```
+
+::: {.incremental}
+- Prior: "somewhere in the first 10 km." Early on, one cluster per matching ridge
+- Over the flat lake every particle explains the reading equally well: the
+  uncertainty grows like dead reckoning until the far shore
+:::
+
+::: {.notes}
+TERCOM has guided cruise missiles since the 1970s; bathymetric navigation does
+the same for underwater vehicles. A Kalman filter would have put its mean between
+the clusters, on a ridge nobody believed in. The book's version also shows the
+N_eff history, which goes flat over the lake.
+:::
+
+## Rao-Blackwellization
+
+Sample only the nonlinear part of the state; carry an exact Kalman filter for the
+rest inside each particle.
+
+. . .
+
+::: {.incremental}
+- Doing part of the integral analytically can only reduce variance (the
+  Rao-Blackwell theorem): far fewer particles
+- Terrain navigation: position through the map, velocity errors and biases in a
+  small Kalman filter per particle
+- **FastSLAM**: particles sample the robot's path; given the path, landmarks are
+  independent, so each particle carries a small EKF per landmark. That is
+  Project 2.
+:::
+
+## When particle filters fit
+
+:::: {.columns}
+::: {.column width="50%"}
+**Useful when**
+
+- The belief can be multimodal
+- Likelihoods come from a map
+- The nonlinear core is small
+- The motion model can be sampled
+- Data association is ambiguous
+:::
+::: {.column width="50%"}
+**Struggle when**
+
+- The state dimension is high
+- Sharp measurement, poor proposal
+- Too few particles
+- Resampling kills diversity
+- Runtime is tight
+:::
+::::
+
+. . .
+
+Watch the summary: if half the particles are in one hallway and half in another,
+the mean is a confidently bad answer.
+
+# Project 1 Part C {#project1c}
+
+Three filters, one pipeline.
+
+[Handout: Project 1 Part C](https://jbrodovsky.github.io/advanced_navigation/assignments/m1-drone-pipeline-c.html)
+· [Project 1 overview](https://jbrodovsky.github.io/advanced_navigation/assignments/m1-drone-pipeline.html)
+
+## The job
+
+```text
+IMU (50 Hz) --> mechanization (Part A) --+
+                                         +--> navigation filter (Part C) --> x_hat, P at IMU rate
+camera --> PnP pose + R (Part B) --------+
+```
+
+. . .
+
+::: {.incremental}
+- Fuse Part A's propagation and Part B's PnP poses three ways: **EKF**, **UKF**,
+  **particle filter**
+- Same 15-state vector, same `propagate_state`, same PnP measurements, same loop
+- Output: a state and covariance at every IMU sample, **including** when the
+  camera sees nothing
+:::
+
+. . .
+
+If one filter gets different semantics, the comparison turns into a
+bookkeeping accident.
+
+## The processing loop
+
+::: {.incremental}
+1. **Initialize from PnP alone**: the first pose seen by at least two tags. No
+   Vicon. Some flights start already moving; choose $\mathbf{P}_0$ accordingly.
+2. **Predict** every packet with the actual $dt_k$; split intervals longer than
+   about 0.05 s into sub-steps
+3. **Update** when the packet has a PnP pose: gate it, fuse it once. No pose?
+   The prediction is the answer.
+:::
+
+```python
+nav.predict(acc, omg, dt)      # one IMU interval
+accepted = nav.update(z)       # one PnP pose; False if the gate rejected it
+nav.state, nav.covariance, nav.history
+```
+
+## Test the claim
+
+A filter that reports a small covariance is making a claim.
+
+. . .
+
+| Statistic | Distribution | 95% of samples in |
+|---|---|---|
+| NIS, $\boldsymbol{\nu}^T\mathbf{S}^{-1}\boldsymbol{\nu}$ | $\chi^2_6$ | $[1.24, 14.45]$ |
+| NEES on position, attitude, velocity | $\chi^2_9$ | $[2.70, 19.02]$ |
+
+. . .
+
+**Gate** at $\chi^2_6(0.999) = 22.46$, and count the rejections.
+
+. . .
+
+::: {.key}
+Long runs of rejections are a **lockout**, not outlier rejection. Fix the model;
+do not loosen the gate until the symptom disappears.
+:::
+
+## Filter by filter
+
+:::: {.columns}
+::: {.column width="33%"}
+**EKF**
+
+- $\mathbf{F}$, analytic or finite difference
+- $h(\mathbf{x}) = \mathbf{x}_{0:6}$
+- Angle-aware innovations
+- Joseph form
+:::
+::: {.column width="33%"}
+**UKF**
+
+- Scaled sigma points
+- **Redraw** before the update
+- Angle-aware means and residuals
+- Study at least three $\alpha$
+- Did it earn its keep?
+:::
+::: {.column width="33%"}
+**Particle filter**
+
+- Vectorized: one call on an $(N, 15)$ array
+- Log weights, wrapped residuals
+- $N_\text{eff}$ and systematic resampling
+- 250 to 5000 particles
+:::
+::::
+
+. . .
+
+Expect **weight collapse**: PnP is accurate to a centimeter and half a degree.
+Whatever you do about it (more process noise, more particles, roughening,
+inflated $\mathbf{R}$), report it.
+
+## What to compare
+
+::: {.incremental}
+- Dead reckoning, raw PnP, EKF, UKF, PF
+- Accuracy during coverage **and** during dropouts
+- Consistency: NIS, NEES, gated measurements
+- Implementation and tuning difficulty, runtime, failure modes
+:::
+
+. . .
+
+Be honest: with several tags in view PnP is already accurate. The filters earn
+their keep with velocity, an IMU-rate state, a covariance, and continuity
+through dropouts.
+
+::: {.notes}
+Recommended pace: Part C by week 8, the complete project by week 9; everything
+is due by the end of week 16. Point students at run_all and the evaluation
+helpers.
+:::
+
+## Part 4 in one slide
+
+::: {.incremental}
+- **Bayes filter:** the exact recursion; everything else approximates it
+- **Kalman filter:** exact for linear Gaussian models; Gaussian conditioning
+- **EKF:** linearize, then distrust your covariance a little
+- **UKF:** sample before the bend; redraw, wrap, keep the spread sensible
+- **Information filter:** updates add; the road to sparse SLAM
+- **Particle filter:** any belief shape, paid for in particles
+- **Always:** check NEES, NIS, and whiteness before believing the output
+:::
+
+## Next: Part 5
+
+[Simultaneous Localization and Mapping →](05-slam.html)
+
+When the map is unknown, it joins the state.
+
+::: {.notes}
+Bridge: the information filter's sparsity and FastSLAM's Rao-Blackwellization
+both pay off in the next part.
+:::

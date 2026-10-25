@@ -1,0 +1,13 @@
+# Lecture slides: one reveal.js deck per book part, written separately from the
+# book (see README.md). scripts/build_slides.sh renders them and prints PDFs.
+project:
+  type: default
+  output-dir: output
+  render:
+    - index.qmd
+    - decks/*.qmd
+
+# As in the book, code cells run on the instructor's machine (with the datasets
+# present) and their output is stored in _freeze/, which is committed.
+execute:
+  freeze: auto

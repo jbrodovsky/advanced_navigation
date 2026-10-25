@@ -1,0 +1,194 @@
+/*-- scss:defaults --*/
+
+// Shared look for every deck. Each deck's colour comes from its book part
+// (front matter `part: N`, applied by part.lua as <html data-part="N">).
+
+$body-color: #1f2937;
+$presentation-heading-color: #111827;
+$presentation-heading-font-weight: 600;
+$presentation-heading-text-transform: none;
+$presentation-font-size-root: 34px;
+$presentation-h1-font-size: 2.2em;
+$presentation-h2-font-size: 1.45em;
+$presentation-h3-font-size: 1.1em;
+$code-block-font-size: 0.6em;
+$code-block-border-color: #e2e8f0;
+$code-block-bg: #f8fafc;
+
+/*-- scss:rules --*/
+
+// One accent per part (each passes WCAG AA against white, both as text on
+// white and as a background under white text) and a light tint to match.
+$parts: (
+  1: (#3730a3, #eef2ff),  // Introduction: indigo
+  2: (#1d4ed8, #eff6ff),  // Foundations: blue
+  3: (#0e7490, #ecfeff),  // Sensing and Perception: cyan
+  4: (#047857, #ecfdf5),  // Filtering and State Estimation: emerald
+  5: (#b45309, #fffbeb),  // SLAM: amber
+  6: (#b91c1c, #fef2f2),  // Global Scale Navigation: red
+  7: (#be185d, #fdf2f8),  // Practical Implementation Guide: pink
+  8: (#7e22ce, #faf5ff),  // Advanced Topics: purple
+);
+
+:root {
+  --part-accent: #334155;
+  --part-tint: #f1f5f9;
+  --part-number: "";
+}
+
+@each $n, $colors in $parts {
+  :root[data-part="#{$n}"] {
+    --part-accent: #{nth($colors, 1)};
+    --part-tint: #{nth($colors, 2)};
+    --part-number: "Part #{$n}";
+  }
+}
+
+// Figures from code cells: reveal.js caps an image's width at 95% but Quarto
+// also writes a fixed height, which would stretch a wide figure vertically.
+// Keep the aspect ratio, and centre figures narrower than the slide. (Markdown
+// images keep any {height=...} their author gave them.)
+.reveal .cell-output-display img {
+  height: auto;
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+// Headings, links, and reveal.js chrome in the part colour.
+.reveal h2,
+.reveal h3 {
+  color: var(--part-accent);
+}
+
+.reveal .slides section.slide > h2 {
+  border-bottom: 3px solid var(--part-accent);
+  padding-bottom: 0.15em;
+  margin-bottom: 0.6em;
+}
+
+.reveal a,
+.reveal a:visited {
+  color: var(--part-accent);
+}
+
+.reveal .progress span {
+  background: var(--part-accent);
+}
+
+.reveal .slide-number,
+.reveal .slide-number a {
+  color: var(--part-accent);
+  background: transparent;
+}
+
+// Footer: a "Part N" badge, so the colour is never the only cue.
+.reveal .footer {
+  color: #64748b;
+}
+
+.reveal .footer p::before {
+  content: var(--part-number);
+  background: var(--part-accent);
+  color: #fff;
+  border-radius: 0.3em;
+  padding: 0.05em 0.45em;
+  margin-right: 0.6em;
+  font-weight: 600;
+}
+
+// On the part-coloured section slides, invert the footer and slide number.
+.reveal.has-dark-background .footer,
+.reveal.has-dark-background .slide-number,
+.reveal.has-dark-background .slide-number a {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.reveal.has-dark-background .footer p::before {
+  background: #fff;
+  color: var(--part-accent);
+}
+
+// Title slide: part tint band behind the title.
+#title-slide {
+  border-left: 0.45em solid var(--part-accent);
+  padding-left: 1em;
+  text-align: left;
+}
+
+#title-slide .title {
+  color: var(--part-accent);
+}
+
+#title-slide .subtitle {
+  color: #475569;
+}
+
+// Chapter section slides (level-1 headings) sit on the part colour.
+.reveal .slides section.part-section h1 {
+  color: #fff;
+}
+
+.reveal .slides section.part-section,
+.reveal .slides section.part-section p,
+.reveal .slides section.part-section a {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.reveal .slides section.part-section a {
+  text-decoration: underline;
+}
+
+// Boxes: `::: {.key}` for the one thing to remember, `::: {.aside-box}` for a
+// side remark.
+.reveal .key,
+.reveal .aside-box {
+  border-left: 0.3em solid var(--part-accent);
+  background: var(--part-tint);
+  padding: 0.4em 0.8em;
+  margin: 0.5em 0;
+  border-radius: 0 0.3em 0.3em 0;
+}
+
+.reveal .aside-box {
+  border-left-color: #94a3b8;
+  background: #f8fafc;
+  font-size: 0.8em;
+}
+
+// Smaller text and muted text helpers.
+.reveal .smaller-text {
+  font-size: 0.75em;
+}
+
+.reveal .muted {
+  color: #64748b;
+}
+
+// A fragment style that colours text in the part accent:
+// [word]{.fragment .highlight-accent}
+.reveal .slides section .fragment.highlight-accent {
+  opacity: 1;
+  visibility: inherit;
+}
+
+.reveal .slides section .fragment.highlight-accent.visible {
+  color: var(--part-accent);
+  font-weight: 600;
+}
+
+// Inline emphasis in the part colour: [word]{.accent}
+.reveal .accent {
+  color: var(--part-accent);
+  font-weight: 600;
+}
+
+// A big question to open each chapter: [Why?]{.question}
+.reveal .question {
+  display: block;
+  font-size: 1.5em;
+  font-weight: 600;
+  color: var(--part-accent);
+  margin-top: 0.6em;
+  margin-bottom: 0.4em;
+}

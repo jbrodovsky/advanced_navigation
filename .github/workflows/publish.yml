@@ -1,7 +1,9 @@
-# Test the code, render the book (PDF + website), and deploy it to GitHub Pages.
+# Test the code, render the book (PDF + website) and the lecture slides (reveal.js
+# + PDF), and deploy them to GitHub Pages.
 #
 # The datasets are never available here: every code cell's output comes from
-# book/_freeze/, which the instructor commits after rendering with the data.
+# book/_freeze/ and slides/_freeze/, which the instructor commits after
+# rendering with the data.
 #
 # Each job only runs in the course repository. If you created your own copy
 # from the template and want CI too, delete the `if: github.repository == ...`
@@ -78,6 +80,24 @@ jobs:
       - name: Check that the PDF is in the site
         run: ls -l book/output/*.pdf
 
+      # Lecture slides: reveal.js decks, printed to PDF with decktape (Node)
+      # and merged with pdfunite. They join the site under slides/, so this
+      # has to come after the book render, which empties book/output.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install slide PDF dependencies
+        run: sudo apt-get install -y poppler-utils
+
+      - name: Render slides and print PDFs
+        run: scripts/build_slides.sh
+
+      - name: Add the slides to the site
+        run: |
+          cp -r slides/output book/output/slides
+          ls -l book/output/slides/*.pdf book/output/slides/decks/*.pdf
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: book/output
@@ -88,6 +108,13 @@ jobs:
         with:
           name: book-pdf
           path: book/output/*.pdf
+
+      - name: Upload the slides for review
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: slides
+          path: slides/output
 
   deploy:
     if: github.repository == 'jbrodovsky/advanced_navigation' && github.event_name == 'push' && github.ref == 'refs/heads/main'
