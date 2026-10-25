@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use these course notes or code, please cite them as below."
+type: software
+title: "Advanced Robot Navigation"
+abstract: >-
+  Course notes, lecture slides, and Python starter code for an advanced
+  graduate course on autonomous navigation, bridging maritime and aerospace
+  inertial navigation with modern robotics. The text and figures are licensed
+  CC BY-NC-SA 4.0; the code is licensed MIT.
+version: 0.1.0
+authors:
+  - family-names: Brodovsky
+    given-names: James
+    orcid: "https://orcid.org/0000-0002-1371-9044"
+    email: james.brodovsky@gmail.com
+keywords:
+  - navigation
+  - state estimation
+  - Kalman filter
+  - SLAM
+  - inertial navigation
+  - INS/GNSS
+  - robotics
+  - course notes
+license: CC-BY-NC-SA-4.0
+repository-code: "https://github.com/jbrodovsky/advanced_navigation"
+url: "https://jbrodovsky.github.io/advanced_navigation/"
