@@ -1,14 +1,14 @@
 # Introduction to Advanced Navigation {#sec-intro}
 
-These course notes and this project are inspired by Roger Labbe's [Kalman Filtering and Bayesian Filters in Python](https://github.com/rlabbe/Kalman-and-Bayesian-Filters-in-Python/) in both content and structure. There are many great textbooks and resources on the theory of autonomous navigation, but there are fewer resources that pair the theory directly to practical implementations in an accessible programming language in such a way that Roger pairs Kalman filters with Python. This course and these notes are intended to fill that gap by providing a comprehensive introduction to advanced robot navigation techniques, including Kalman filters, particle filters, and other state estimation methods, and pairing this directly to practical implementations in Python.
+These course notes and this project are inspired by Roger Labbe's [*Kalman Filtering and Bayesian Filters in Python*](https://github.com/rlabbe/Kalman-and-Bayesian-Filters-in-Python/) in both content and structure. There are many great textbooks and resources on the theory of autonomous navigation, but there are fewer resources that pair the theory directly to practical implementations in an accessible programming language in such a way that Roger pairs Kalman filters with Python. This course and these notes are intended to fill that gap by providing a comprehensive introduction to advanced robot navigation techniques, including Kalman filters, particle filters, and other state estimation methods, and pairing this directly to practical implementations in Python.
 
-This course was developed as part of the curriculum for Worcester Polytechnic Institute's Robotics Engineering program. The primary audience is current (and former!) students in that program. That said, like Mr. Labbe's contribution, these notes are written for anyone interested in learning or teaching advanced robot navigation. I too have stood on the shoulders of those who contributed to the navigation literature before me, and this is my rung in the ladder. 
+This course was developed as part of the curriculum for Worcester Polytechnic Institute's Robotics Engineering program. The primary audience is current (and former!) students in that program. That said, like Mr. Labbe's contribution, these notes are written for anyone interested in learning or teaching advanced robot navigation. I too have stood on the shoulders of those who contributed to the navigation literature before me, and this is my rung in the ladder.
 
 Previously this course was structured and integrated directly through Canvas, a learning management system used by many universities. However, I have since restructured the course materials to be hosted on GitHub for a variety of reasons. First and foremost is the simple availability of the materials and the ability for students to easily access and refer back to these materials as needed. Second, in April and May of 2026 there was a notable and widespread cyber attack on Canvas that rendered the platform inaccessible for several days...right at the end of the Spring semester grading period. As a simple reliability precaution, having the materials available from multiple sources is a simple way to ensure that students can always access the materials. Additionally, hosting the materials on GitHub allows for easier version control and collaboration rather than the significantly manual process of managing course materials on Canvas. Finally, there is a substantial amount of code associated with the course projects, and hosting it on GitHub makes that code easier to manage and lets every student start from the same starter packages in their own public repository. That encourages good software development practices and builds a code-based portfolio that students can show to potential employers.
 
 ## Why Write This Course? {#sec-intro-why-write-this}
 
-The motivation for writing this course was a product of circumstance. After finishing up my Master's degree, I was looking for a job which lead me to an position with Penn State's Applied Research Laboratory and their Navigation Research and Development Division. I knew I liked working with autonomous mobile robots, but hadn't really settle on a specific topic. Throughout the interview process and the first couple of months on the job, I eventually settled in with navigation systems department. I found that, while I was working on the big navigation systems of submarines, to my surprise, it was all the same math! 
+The motivation for writing this course was a product of circumstance. After finishing up my Master's degree, I was looking for a job which lead me to an position with Penn State's Applied Research Laboratory and their Navigation Research and Development Division. I knew I liked working with autonomous mobile robots, but hadn't really settle on a specific topic. Throughout the interview process and the first couple of months on the job, I eventually settled in with navigation systems department. I found that, while I was working on the big navigation systems of submarines, to my surprise, it was all the same math!
 
 To a certain extent, this prompts a discussion of what is a machine versus a robot, and an autonomous vehicle... but that's best left for a lecture on philosophy. Suffice it to say, the modern roboticists writing the algorithms that we use borrowed heavily from the aerospace and maritime navigation communities, and the applications are nearly identical. The only real difference is the scale of the problem and the curvature of the Earth. This is reason enough to teach these things from a unified perspective, but the job I got when subsequently wrapping up my PhD was with an tech company making autonomous flying vehicles. What would have been traditionally termed unmanned aerial vehicles (UAVs) or drones were being made increasingly autonomous and therefore robotic. As such, this isn't so much a course on "robot navigation" as it is a course on how we get a computer system to understand where it is in the world through means of perceiving its environment (as opposed to through telecommunication and IP addressing). That computer system might inform a human pilot or navigator or it might serve to inform the autonomous control systems and decision making of a robot. Either way, the underlying mathematical techniques are the same.
 
@@ -16,14 +16,7 @@ This course delves into the sophisticated techniques and algorithms used by auto
 
 ## How to Use the Foundations {#sec-intro-how-use-foundations}
 
-The foundations part is a compact reference, not a second undergraduate degree in
-mathematics. It establishes the shared language used by the rest of the book:
-coordinate frames and attitude conventions, linear algebra, probability, and
-reliable scientific Python. Read it before the first project if any of those
-topics feel rusty, then return to the relevant chapter when an implementation
-needs it. The examples use Python because it makes numerical ideas easy to test
-and visualize; the conventions and algorithms carry directly to C++, Rust, and
-other production languages.
+The foundations part is a compact reference, not a second undergraduate degree in mathematics. It establishes the shared language used by the rest of the book: coordinate frames and attitude conventions, linear algebra, probability, and reliable scientific Python. Read it before the first project if any of those topics feel rusty, then return to the relevant chapter when an implementation needs it. The examples use Python because it makes numerical ideas easy to test and visualize; the conventions and algorithms carry directly to C++, Rust, and other production languages.
 
 ## Recommended Prerequisites {#sec-intro-recommended-prerequisites}
 
@@ -67,7 +60,7 @@ Again, these are merely suggestions. In general, it is a good practice to not ne
 ## Module Roadmaps {#sec-intro-module-roadmaps}
 
 | Part | Role in the course | Assessment status |
-|---|---|---|
+|------------------------|------------------------|------------------------|
 | Foundations | Shared conventions, numerical tools, and Python habits | Required background and reference |
 | Sensing through Filtering | Module 1: construct and evaluate a visual-inertial estimator | Assessed |
 | SLAM | Module 2: FastSLAM and data association | Assessed |
@@ -76,13 +69,7 @@ Again, these are merely suggestions. In general, it is a good practice to not ne
 
 ## Code Conventions {#sec-intro-code-conventions}
 
-Python blocks that execute during book rendering are **runnable examples** and
-use deterministic inputs whenever they include randomness. Blocks marked
-`eval: false` are **interface sketches**: they show the intended shape without
-claiming a complete implementation. Blocks labelled as text or pseudocode specify
-control flow and ownership, not executable code. This distinction is deliberate;
-a concise model contract is often more useful than a deceptively incomplete
-"complete system" listing.
+Python blocks that execute during book rendering are **runnable examples** and use deterministic inputs whenever they include randomness. Blocks marked `eval: false` are **interface sketches**: they show the intended shape without claiming a complete implementation. Blocks labelled as text or pseudocode specify control flow and ownership, not executable code. This distinction is deliberate; a concise model contract is often more useful than a deceptively incomplete "complete system" listing.
 
 ## Course Philosophy {#sec-intro-course-philosophy}
 
@@ -97,8 +84,11 @@ This also rings true to graduate engineering education as well. While there are 
 The [course repository](https://github.com/jbrodovsky/advanced_navigation) is a GitHub *template*. Rather than forking it, create your own copy:
 
 1.  On the course repository page, click **Use this template → Create a new repository**, choose your own account, and make the repository **public**. You get a clean copy with no commit history of mine attached, so the history that shows up on your profile is yours.
+
 2.  Clone it, run `uv sync` from the repository root, and download the datasets with `uv run python scripts/fetch_data.py all`. The datasets are never committed; `.gitignore` already keeps them out.
+
 3.  Work in the starter packages under `projects/`, commit early and often, and put your reports, figures, and a short write-up of each project in the repository alongside the code.
+
 4.  When the course materials are updated, pull the changes into your copy. The first time, add the course repository as a second remote and merge with `--allow-unrelated-histories`; after that, a plain merge works:
 
     ``` bash
@@ -199,6 +189,6 @@ To that end, the use of AI in this course is not banned, and in fact I encourage
 
 ### About Me {#sec-intro-about-me}
 
-At the time of this writing, I am currently a PhD candidate in mechanical engineering at Temple University where my research involves autonomous and robotic navigation systems, particularly in GPS-denied scenarios particularly on low size weight and power systems using microelectromechanical systems grade sensors. Previously, I worked in industrial research at Penn State’s Applied Research Laboratory doing similar work for the US Navy's Office of Naval Research and the submarine fleet. I currently live in and am administering the course from Philadelphia, PA which is in the US Eastern time zone (UTC -4/-5; the same as Worcester, MA). 
+At the time of this writing, I am currently a PhD candidate in mechanical engineering at Temple University where my research involves autonomous and robotic navigation systems, particularly in GPS-denied scenarios particularly on low size weight and power systems using microelectromechanical systems grade sensors. Previously, I worked in industrial research at Penn State’s Applied Research Laboratory doing similar work for the US Navy's Office of Naval Research and the submarine fleet. I currently live in and am administering the course from Philadelphia, PA which is in the US Eastern time zone (UTC -4/-5; the same as Worcester, MA).
 
 Given the online nature of this course and program, we sometimes have students that are in vastly different time zones. I will do my best to be responsive to students in a timely manner, but please be aware that I may not always be able to respond immediately due to time zone differences and other commitments. I will do my best to respond within 24 hours during the week and within 48 hours on weekends. If you have an urgent question or concern, please feel free to reach out to me via email or through the appropriate discussion boards on Canvas.
