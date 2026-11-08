@@ -1,4 +1,4 @@
-# Visual-Inertial Navigation Part A: IMU Dead Reckoning {#sec-project1a}
+# Project 1 Part A: IMU Dead Reckoning {#sec-project1a}
 
 ![The drone body frame: $z$ up, gyro rates and specific force resolved on body axes.](../images/imu.png){#fig-project1a-imu width=60%}
 
@@ -162,6 +162,47 @@ Part A is the first of three checkpoints that end up in one cohesive report. For
 - a dead-reckoning trajectory for each dataset you report on, with the covariance envelope;
 - position and attitude comparison plots against Vicon truth and position RMSE over time;
 - a short technical discussion of the dominant error sources.
+
+## Grading Rubric {#sec-project1a-grading-rubric}
+
+Part A is rated by rows 2 to 4 of the Project 1 contract rubric (@sec-project1-grading-rubric), repeated here so you can check this part against them. Each row is worth 20 points, and the ratings mean what they mean in the full rubric (@sec-intro-grading). Row 1 (dataset handling, conventions, and truth usage) and rows 13 to 16 (cross-method evaluation, code quality, reproducibility, and the report) cover the whole project, so they appear only in the full rubric. All Project 1 rows are rated on your Project 1 submission, and any of them can be revised until the end of week 16; handing this part in early gets you feedback on these rows while there is still time to use it.
+
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| Category               | Unacceptable (0)     | Marginal (15)                | Acceptable (17)                                | Excellent (20)                       |
++========================+======================+==============================+================================================+======================================+
+| **2. Part A:           | Missing, does not    | Runs and passes some tests,  | - passes the Part A tests                      | Everything in Acceptable, plus:      |
+| mechanization**        | run, or skips or     | but a frame, gravity, bias,  | - biases subtracted, Z-X-Y Euler-rate inverse  |                                      |
+|                        | fails its provided   | Euler-rate, or wrapping      |   used, specific force rotated to the world    | - the integrator choice justified,   |
+|                        | tests.               | error shows up in the        |   frame and gravity added                      |   or a better integrator with its    |
+|                        |                      | trajectory.                  | - integrates over the actual `dt` with the IMU |   trade-off quantified               |
+|                        |                      |                              |   sample of packet k-1 held constant, biases   | - long gaps and the Euler-angle      |
+|                        |                      |                              |   held constant, angles wrapped                |   singularity considered and tested  |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **3. Part A: IMU       | No characterization; | Bias or noise estimated, but | - truth-based gyro and accelerometer           | Everything in Acceptable, plus:      |
+| characterization and   | $\mathbf{Q}$ chosen  | the method is unexplained, a |   residuals, with the smoothing and            |                                      |
+| $\mathbf{Q}$**         | without evidence.    | sensor or axis is missing,   |   differentiation method stated                | - the uncertainty of the estimates,  |
+|                        |                      | or the conversion to         | - a table of per-axis bias and $\sigma$ for    |   or an Allan deviation with an      |
+|                        |                      | $\mathbf{Q}$ is wrong.       |   both sensors and the window used             |   honest note on record length       |
+|                        |                      |                              | - $\sigma$ converted to a spectral density and | - the Part A $\mathbf{Q}$ revisited  |
+|                        |                      |                              |   the diagonal of $\mathbf{Q}$ reported        |   after the Part C consistency       |
+|                        |                      |                              | - quiet-window and aggressive-flight estimates |   tests, closing the loop            |
+|                        |                      |                              |   compared and the difference explained        |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **4. Part A: dead      | No dead-reckoning    | Trajectories shown, but the  | - position and roll, pitch, yaw against Vicon  | Everything in Acceptable, plus:      |
+| reckoning and error    | results, or results  | covariance envelope, the     |   on the development flights and at least one  |                                      |
+| growth**               | that quietly use     | drift rates, or the          |   validation flight, labelled as               | - the drift predicted from the       |
+|                        | truth in the         | error-source discussion is   |   Vicon-initialized                            |   measured bias and noise and        |
+|                        | propagation.         | missing or unsupported.      | - $\mathbf{P}$ propagated with $\mathbf{F}$    |   compared with what happened        |
+|                        |                      |                              |   and $\mathbf{Q}\,dt$; errors plotted inside  | - errors that leave the envelope     |
+|                        |                      |                              |   the $\pm 3\sigma$ envelope                   |   traced to a specific cause         |
+|                        |                      |                              | - drift after 1, 5, and 10 s, and whether its  |   ($\mathbf{Q}$, $\mathbf{P}_0$, or  |
+|                        |                      |                              |   growth is linear or quadratic                |   the bias model)                    |
+|                        |                      |                              | - zero and characterized bias initializations  |                                      |
+|                        |                      |                              |   compared                                     |                                      |
+|                        |                      |                              | - the dominant error sources discussed         |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+
+: Part A rows of the Project 1 contract rubric. All Acceptable earns 85%. {tbl-colwidths="[13,13,18,31,25]"}
 
 ## Notes {#sec-project1a-notes}
 

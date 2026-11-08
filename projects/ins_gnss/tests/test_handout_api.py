@@ -166,7 +166,7 @@ class HandoutApiTests(unittest.TestCase):
         columns = [cell.strip() for cell in header.group(0).strip("|").split("|")]
         self.assertEqual(
             columns,
-            ["Category", "Unacceptable (0)", "Marginal (7.5)", "Acceptable (8.5)", "Excellent (10)"],
+            ["Category", "Unacceptable (0)", "Marginal (15)", "Acceptable (17)", "Excellent (20)"],
         )
 
     def test_reserved_section_ids(self) -> None:

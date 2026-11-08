@@ -1,4 +1,4 @@
-# Visual-Inertial Navigation Part B: AprilTag PnP Observation Model {#sec-project1b}
+# Project 1 Part B: AprilTag PnP Observation Model {#sec-project1b}
 
 ## Overview {#sec-project1b-overview}
 
@@ -136,6 +136,53 @@ For this checkpoint you should have:
 - position and attitude plots of the PnP poses against Vicon truth;
 - a PnP accuracy table (position RMSE, attitude RMSE, bias) for `studentdata1`-`7` (and `studentdata0` if you take on @sec-project1-studentdata0);
 - the distortion check, the single-tag analysis, and the bias and measurement covariance $\mathbf{R}$ you will hand to Part C.
+
+## Grading Rubric {#sec-project1b-grading-rubric}
+
+Part B is rated by rows 5 to 7 of the Project 1 contract rubric (@sec-project1-grading-rubric), repeated here so you can check this part against them. Each row is worth 20 points, and the ratings mean what they mean in the full rubric (@sec-intro-grading). Row 1 (dataset handling, conventions, and truth usage) and rows 13 to 16 (cross-method evaluation, code quality, reproducibility, and the report) cover the whole project, so they appear only in the full rubric. All Project 1 rows are rated on your Project 1 submission, and any of them can be revised until the end of week 16; handing this part in early gets you feedback on these rows while there is still time to use it.
+
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| Category               | Unacceptable (0)     | Marginal (15)                | Acceptable (17)                                | Excellent (20)                       |
++========================+======================+==============================+================================================+======================================+
+| **5. Part B: tag map   | Missing, does not    | Poses come out, but with a   | - passes the Part B tests                      | Everything in Acceptable, plus:      |
+| and pose estimation**  | run, or skips or     | geometry, corner-order,      | - tag map with the correct gaps and corner     |                                      |
+|                        | fails its provided   | transform, or Euler-sequence |   order; all four corners of every visible tag | - failure cases (outliers,           |
+|                        | tests.               | mistake, or reprojection     |   used                                         |   near-degenerate geometry) found,   |
+|                        |                      | errors well above a pixel.   | - zero distortion passed to `solvePnP`; body   |   explained, and handled             |
+|                        |                      |                              |   pose formed through `T_camera_body`          | - tests of the map geometry or       |
+|                        |                      |                              | - `None` for fewer than 4 points or a solver   |   transform chain beyond the         |
+|                        |                      |                              |   failure; RMS reprojection error and          |   provided ones                      |
+|                        |                      |                              |   `num_points` filled in                       |                                      |
+|                        |                      |                              | - PnP position and attitude plotted against    |                                      |
+|                        |                      |                              |   Vicon                                        |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **6. Part B:           | Neither check done.  | One of the two is missing,   | - one development flight run with              | Everything in Acceptable, plus:      |
+| distortion check and   |                      | or the single-tag decision   |   `np.zeros(5)` and with `params.dist_coeffs`; |                                      |
+| single-tag frames**    |                      | is made without numbers.     |   median reprojection error and mean position  | - the planar ambiguity examined      |
+|                        |                      |                              |   residual reported for both                   |   directly (for example the two IPPE |
+|                        |                      |                              | - a paragraph explaining why re-correcting     |   solutions) and tied to the         |
+|                        |                      |                              |   corrected corners gives a confident, biased  |   observed tilt bias                 |
+|                        |                      |                              |   pose                                         |                                      |
+|                        |                      |                              | - single-tag and multi-tag noise and bias      |                                      |
+|                        |                      |                              |   quantified; a treatment (own $\mathbf{R}$,   |                                      |
+|                        |                      |                              |   inflation, or skip) chosen from those        |                                      |
+|                        |                      |                              |   numbers and applied identically in all three |                                      |
+|                        |                      |                              |   filters                                      |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **7. Part B:           | No $\mathbf{R}$, or  | $\mathbf{R}$ estimated, but  | - valid PnP packets per dataset, split into    | Everything in Acceptable, plus:      |
+| measurement bias,      | an $\mathbf{R}$      | bias and covariance are      |   single-tag and multi-tag frames; median and  |                                      |
+| $\mathbf{R}$, and PnP  | without evidence.    | mixed (a raw second moment), |   90th-percentile reprojection error           | - whether the bias is consistent     |
+| accuracy**             |                      | invalid truth is kept, or    | - a PnP accuracy table (position RMSE,         |   across flights tested, and its     |
+|                        |                      | angle residuals are not      |   attitude RMSE, bias) for `studentdata1`-`7`  |   likely physical cause argued       |
+|                        |                      | wrapped.                     | - bias and covariance about the mean per       | - correlations or non-Gaussian       |
+|                        |                      |                              |   development flight and pooled, with residual |   residuals discussed, with their    |
+|                        |                      |                              |   histograms                                   |   consequence for the filters        |
+|                        |                      |                              | - the bias handling (subtract, inflate, or     |                                      |
+|                        |                      |                              |   leave) chosen and justified; any inflation   |                                      |
+|                        |                      |                              |   or clipping reported                         |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+
+: Part B rows of the Project 1 contract rubric. All Acceptable earns 85%. {tbl-colwidths="[13,13,18,31,25]"}
 
 ## Notes {#sec-project1b-notes}
 

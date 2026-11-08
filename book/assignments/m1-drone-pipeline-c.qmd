@@ -1,4 +1,4 @@
-# Visual-Inertial Navigation Part C: EKF, UKF, and Particle Filters {#sec-project1c}
+# Project 1 Part C: EKF, UKF, and Particle Filters {#sec-project1c}
 
 ## Overview {#sec-project1c-overview}
 
@@ -117,6 +117,80 @@ Submit, as part of the final Project 1 report and code:
 - NIS and NEES diagnostics for all three filters, with chi-square bounds and gating counts;
 - the particle-count and runtime study, including the $N_\text{eff}$ history and any inflation used;
 - a technical comparison of the three methods.
+
+## Grading Rubric {#sec-project1c-grading-rubric}
+
+Part C is rated by rows 8 to 12 of the Project 1 contract rubric (@sec-project1-grading-rubric), repeated here so you can check this part against them. Each row is worth 20 points, and the ratings mean what they mean in the full rubric (@sec-intro-grading). Row 1 (dataset handling, conventions, and truth usage) and rows 13 to 16 (cross-method evaluation, code quality, reproducibility, and the report) cover the whole project, so they appear only in the full rubric. All Project 1 rows are rated on your Project 1 submission, and any of them can be revised until the end of week 16; handing this part in early gets you feedback on these rows while there is still time to use it.
+
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| Category               | Unacceptable (0)     | Marginal (15)                | Acceptable (17)                                | Excellent (20)                       |
++========================+======================+==============================+================================================+======================================+
+| **8. Part C:           | Filters initialize   | The loop is mostly right,    | - initialized from the first multi-tag PnP     | Everything in Acceptable, plus:      |
+| processing loop and    | from or update with  | but poses are fused twice,   |   pose; velocity and bias initialization       |                                      |
+| initialization**       | Vicon, or skip the   | `dt` is constant, long       |   stated; $\mathbf{P}_0$ reported and suited   | - the sensitivity to the             |
+|                        | prediction when a    | intervals are not            |   to moving starts                             |   initialization choices (velocity   |
+|                        | measurement is       | sub-stepped, or              | - a prediction for every packet over the       |   fit, bias initialization,          |
+|                        | missing.             | $\mathbf{P}_0$ is not        |   actual `dt`, with intervals longer than      |   $\mathbf{P}_0$) shown              |
+|                        |                      | reported.                    |   about 0.05 s split into sub-steps            |                                      |
+|                        |                      |                              | - each pose gated and fused at most once       |                                      |
+|                        |                      |                              | - the same loop for all three filters          |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **9. Part C: EKF**     | Missing, does not    | Runs, but the Jacobian, the  | - passes the EKF tests                         | Everything in Acceptable, plus:      |
+|                        | run, or skips or     | angle handling, or the       | - nonlinear prediction with `propagate_state`  |                                      |
+|                        | fails its provided   | covariance update is wrong   |   and an analytic or finite-difference         | - the Jacobian verified numerically  |
+|                        | tests.               | or unstable.                 |   $\mathbf{F}$                                 |   and the check reported             |
+|                        |                      |                              | - $\mathbf{H}$ for `h(x) = x[:6]`, wrapped     | - covariance symmetry and positive   |
+|                        |                      |                              |   innovations, Joseph-form update              |   definiteness checked over the      |
+|                        |                      |                              | - NIS logged, a chi-square gate applied,       |   longest gaps                       |
+|                        |                      |                              |   rejections counted                           |                                      |
+|                        |                      |                              | - $\mathbf{Q}$, $\mathbf{R}$, $\mathbf{P}_0$,  |                                      |
+|                        |                      |                              |   and every tuning choice reported with the    |                                      |
+|                        |                      |                              |   evidence behind it                           |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **10. Part C: UKF**    | Missing, does not    | Runs, but reuses the         | - passes the UKF tests                         | Everything in Acceptable, plus:      |
+|                        | run, or skips or     | propagated sigma points in   | - scaled sigma points pushed through           |                                      |
+|                        | fails its provided   | the update, averages angles  |   `propagate_state`, with additive             | - the verdict backed by a            |
+|                        | tests.               | naively, or has no $\alpha$  |   $\mathbf{Q}\,dt$                             |   quantitative EKF-UKF comparison    |
+|                        |                      | study.                       | - sigma points redrawn (or the state           |   that explains the result (a linear |
+|                        |                      |                              |   augmented) before the update                 |   $h$, a nearly linear $f$ over 20   |
+|                        |                      |                              | - angle-aware means and residuals for state    |   ms)                                |
+|                        |                      |                              |   and measurement sigma points                 |                                      |
+|                        |                      |                              | - $\alpha$, $\beta$, $\kappa$ reported, with a |                                      |
+|                        |                      |                              |   sensitivity study over at least three values |                                      |
+|                        |                      |                              |   of $\alpha$                                  |                                      |
+|                        |                      |                              | - a frank verdict on whether the UKF earned    |                                      |
+|                        |                      |                              |   its extra bookkeeping here                   |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **11. Part C: particle | Missing, does not    | Runs, but loops over         | - passes the particle-filter tests; one        | Everything in Acceptable, plus:      |
+| filter**               | run, or skips or     | particles in Python, leaves  |   vectorized `propagate_state` call on the     |                                      |
+|                        | fails its provided   | angles unwrapped, hides      |   `(N, 15)` array                              | - the collapse explained             |
+|                        | tests.               | weight collapse, or has no   | - process noise sampled for every state,       |   quantitatively (predicted spread   |
+|                        |                      | particle-count study.        |   consistent with $\mathbf{Q}$                 |   against $\mathbf{R}$) and the      |
+|                        |                      |                              | - log-weight updates with wrapped residuals;   |   remedy's cost to consistency shown |
+|                        |                      |                              |   $N_\text{eff}$ logged after every            | - the particle-count trends          |
+|                        |                      |                              |   reweighting                                  |   interpreted, not just tabulated    |
+|                        |                      |                              | - systematic resampling below an               |                                      |
+|                        |                      |                              |   $N_\text{eff}$ threshold; `estimate` for all |                                      |
+|                        |                      |                              |   three point estimates                        |                                      |
+|                        |                      |                              | - the weight-collapse remedy stated (every     |                                      |
+|                        |                      |                              |   $\mathbf{R}$ or $\mathbf{Q}$ inflation       |                                      |
+|                        |                      |                              |   factor), with the $N_\text{eff}$ history     |                                      |
+|                        |                      |                              |   before and after                             |                                      |
+|                        |                      |                              | - the study at 250, 1000, 2500, and 5000       |                                      |
+|                        |                      |                              |   particles: RMSE, median $N_\text{eff}$, and  |                                      |
+|                        |                      |                              |   runtime for each estimator                   |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **12. Part C:          | No NIS or NEES.      | NIS and NEES computed but    | - NIS (6 DOF) and NEES (9 DOF) over time with  | Everything in Acceptable, plus:      |
+| consistency and        |                      | without chi-square bounds,   |   their bounds for all three filters, and the  |                                      |
+| gating**               |                      | for only some filters, or    |   fraction inside                              | - any disagreement between NIS and   |
+|                        |                      | without interpretation;      | - gating counts per filter; any run of         |   NEES explained                     |
+|                        |                      | lockouts unnoticed or hidden |   consecutive rejections diagnosed and fixed   | - tuning changes shown, with         |
+|                        |                      | by loosening the gate.       |   in the model                                 |   before-and-after evidence, to      |
+|                        |                      |                              | - a conclusion on whether each filter is       |   improve consistency                |
+|                        |                      |                              |   consistent, overconfident, or underconfident |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+
+: Part C rows of the Project 1 contract rubric. All Acceptable earns 85%. {tbl-colwidths="[13,13,18,31,25]"}
 
 ## Notes {#sec-project1c-notes}
 

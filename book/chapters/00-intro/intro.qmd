@@ -109,16 +109,16 @@ Ultimately, the goal of this course is to learn the material and to be able to a
 
 My philosophy on grading is centered around the Robotics Engineering [PhD Technical qualifier](https://www.wpi.edu/sites/default/files/RBE-PhD-Handbook_.pdf) and a project-based curriculum where an average grade of roughly a B+ (two A’s and one B) is used to demonstrate expertise and pass the qualifier. In practice that means **contract grading**. Each project handout ends in a rubric that works like a contract: every row is a deliverable (a piece of code, an analysis, a section of the report), and every column is a rating (Unacceptable, Marginal, Acceptable, or Excellent) that spells out exactly what the code, the report, and the findings must show to earn it. There is no mystery about what a B requires, because the Acceptable column is a checklist.
 
-Every row is worth the same 10 points, and the ratings are worth a fixed share of them:
+Every row is worth the same 20 points, and each rating is worth a fixed, whole number of them:
 
 | Rating | Points per row | Meaning |
 |---|---:|---|
-| Excellent | 10 (100%) | Everything Acceptable asks for, done with the polish and depth that impresses |
-| Acceptable | 8.5 (85%) | Every requirement in the Acceptable cell is met |
-| Marginal | 7.5 (75%) | The deliverable exists and mostly runs, but requirements are missing or wrong |
+| Excellent | 20 (100%) | Everything Acceptable asks for, done with the polish and depth that impresses |
+| Acceptable | 17 (85%) | Every requirement in the Acceptable cell is met |
+| Marginal | 15 (75%) | The deliverable exists and mostly runs, but requirements are missing or wrong |
 | Unacceptable | 0 | Missing, nonfunctional, or fundamentally incorrect |
 
-So a submission rated Acceptable on every row earns exactly 85%, a solid B. Every row you lift from Acceptable to Excellent adds 1.5 points to that row. The project percentages then combine into the course grade with the weights in @sec-syllabus-grading-policy (50% for Project 1, 25% each for Projects 2 and 3), and the handout's row count does not matter: Project 1 is not graded "out of 50."
+So a submission rated Acceptable on every row earns exactly 85%, a solid B. Every row you lift from Acceptable to Excellent adds 3 points to that row. The project percentages then combine into the course grade with the weights in @sec-syllabus-grading-policy (50% for Project 1, 25% each for Projects 2 and 3), and the handout's row count does not matter: Project 1 is not graded "out of 50."
 
 Excellent is not a reward for doing extra work the handout never asked for. It is a reward for doing the asked-for work *well*: writing that is clear and economical, code that someone else could pick up and extend, tests that go after the edge cases, anomalies chased down to a root cause instead of shrugged at, and numbers that are tied back to the theory that predicts them. In short, a submission that impresses me.
 

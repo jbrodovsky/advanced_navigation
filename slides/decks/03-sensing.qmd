@@ -1187,7 +1187,8 @@ propagation path.
 Deliverables: propagate_state passing the Part A tests, the characterization
 table and Q, a dead-reckoning trajectory with covariance envelope per dataset,
 position and attitude plots against Vicon with RMSE over time, and a short
-discussion of the dominant error sources.
+discussion of the dominant error sources. Graded by rows 2 to 4 of the Project 1
+contract rubric, which the Part A handout repeats.
 :::
 
 # Measurement Models {#measurement}
@@ -2976,6 +2977,11 @@ Z-X-Y with utils.rotation_matrix_to_rpy.
 ::: {.key}
 A sub-pixel reprojection error does not prove the body frame is right. A
 multi-pixel one does prove something is wrong.
+:::
+
+::: {.notes}
+Graded by rows 5 to 7 of the Project 1 contract rubric, which the Part B handout
+repeats.
 :::
 
 ## Part 3 in one slide

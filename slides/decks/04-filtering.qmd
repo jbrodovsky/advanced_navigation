@@ -2189,7 +2189,8 @@ through dropouts.
 ::: {.notes}
 Recommended pace: Part C by week 8, the complete project by week 9; everything
 is due by the end of week 16. Point students at run_all and the evaluation
-helpers.
+helpers. Part C is graded by rows 8 to 12 of the Project 1 contract rubric,
+which the Part C handout repeats.
 :::
 
 ## Part 4 in one slide
