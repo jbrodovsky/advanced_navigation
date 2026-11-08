@@ -239,6 +239,30 @@ works the same way: master's projects and theses, and at the PhD level,
 research. (Intro chapter, "Course Philosophy".)
 :::
 
+## Grading is a contract
+
+::: {.incremental}
+- Every rubric row is a deliverable: code, analysis, or report
+- Every column spells out what it takes: Unacceptable, Marginal, Acceptable, Excellent
+- Rows earn 0, 75, 85, or 100%
+- "Not yet" is not "no": revise and resubmit until week 16
+:::
+
+. . .
+
+::: {.key}
+Acceptable on every row is 85%, a B. Excellent is the same work done
+impressively, not extra work.
+:::
+
+::: {.notes}
+The Acceptable column is a checklist, so nobody has to guess what a B needs.
+Excellent means clear writing, code someone else could extend, tests that go
+after the edge cases, anomalies chased to a root cause. A filtering library
+without a full derivation in the report caps the code row at Marginal. (Intro
+chapter, "Grading and Project Submission".)
+:::
+
 ## Your repository
 
 ::: {.incremental}
@@ -1347,14 +1371,17 @@ a plot that looks good. Kalman-style means EKF, UKF, and error-state filters.
 ```{python}
 fig = plt.figure(figsize=(12, 1.9))
 ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
-segments = [("data", 5, "#a5b4fc"), ("Part A", 10, "#818cf8"), ("Part B", 10, "#6366f1"),
-            ("Part C", 15, "#4f46e5"), ("eval.", 10, ACCENT),
-            ("Project 2 · FastSLAM", 25, "0.55"), ("Project 3 · INS/GNSS", 25, "0.4")]
+# Every rubric row is worth the same, so Project 1's parts weigh in by row count
+# (16 rows in the handout's contract rubric).
+p1_rows = [("data + A", 4, "#818cf8"), ("Part B", 3, "#6366f1"),
+           ("Part C", 5, "#4f46e5"), ("eval. + report", 4, ACCENT)]
+segments = [(f"{label}\n{rows} rows", 50 * rows / 16, color) for label, rows, color in p1_rows]
+segments += [("Project 2 · FastSLAM\n25%", 25, "0.55"), ("Project 3 · INS/GNSS\n25%", 25, "0.4")]
 left = 0.0
 for label, width, color in segments:
     ax.barh(0, width, left=left, color=color, edgecolor="white", lw=2, height=0.8)
-    ax.text(left + width / 2, 0, f"{label}\n{width}%", ha="center", va="center",
-            color="white", fontsize=13 if width < 10 else 16, fontweight="bold")
+    ax.text(left + width / 2, 0, label, ha="center", va="center",
+            color="white", fontsize=12 if width < 20 else 16, fontweight="bold")
     left += width
 ax.annotate("", xy=(0, 0.62), xytext=(50, 0.62),
             arrowprops=dict(arrowstyle="|-|", color=ACCENT, lw=1.6, mutation_scale=6))
@@ -1366,7 +1393,7 @@ ax.axis("off")
 plt.show()
 ```
 
-[Shares of the course grade; the handout weights Project 1's parts 10, 20, 20, 30, 20%.]{.muted .smaller-text}
+[Shares of the course grade. Every rubric row counts the same, so Project 1's parts weigh in by their number of rows.]{.muted .smaller-text}
 
 ::: {.incremental}
 - [Project 1](https://jbrodovsky.github.io/advanced_navigation/assignments/m1-drone-pipeline.html):
@@ -1379,10 +1406,10 @@ plt.show()
 :::
 
 ::: {.notes}
-Project 1's split, as a share of the project: dataset understanding and loading
-10%, Part A (mechanization and dead reckoning) 20%, Part B (PnP observation model
-and covariance) 20%, Part C (EKF, UKF, particle filter) 30%, cross-method
-evaluation and technical communication 20%. The projects build on one another but
+Project 1's contract rubric has 16 equal rows: one for the dataset, three each
+for Parts A and B, five for Part C (loop, EKF, UKF, particle filter,
+consistency), and four for evaluation, code, reproducibility, and the report.
+Project 2 has 13 rows and Project 3 has 14. The projects build on one another but
 are assessed separately. Each submission is code plus a technical report.
 :::
 

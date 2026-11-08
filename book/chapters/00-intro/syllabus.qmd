@@ -64,19 +64,17 @@ deliverables.
 The course follows the standard A--F scale. Projects are weighted:
 
 - Project 1: Visual-Inertial Navigation -- 50%
-  - Dataset understanding and loading -- 10% of the project
-  - Part A: mechanization and dead reckoning -- 20%
-  - Part B: PnP observation model and covariance -- 20%
-  - Part C: EKF, UKF, and particle filter -- 30%
-  - Cross-method evaluation and technical communication -- 20%
 - Project 2: Victoria Park FastSLAM -- 25%
 - Project 3: INS/GNSS Integration -- 25%
 
-Each project's rubric (in its handout) rates components as Excellent,
-Acceptable, Marginal, or Unacceptable; an Acceptable rating corresponds roughly
-to a B. Code that runs is necessary, but it is not by itself evidence that the
-navigation model is correct. Higher ratings require clear justification of
-state, measurement, covariance, and validation choices.
+Projects are contract graded (@sec-intro-grading). Each handout's rubric is a
+matrix whose rows are deliverables and whose columns are the ratings
+Unacceptable, Marginal, Acceptable, and Excellent, worth 0, 75, 85, and 100% of
+the row; a project rated Acceptable on every row earns 85%, a B. Code that runs
+is necessary, but it is not by itself evidence that the navigation model is
+correct. Higher ratings require clear justification of state, measurement,
+covariance, and validation choices. Ratings can be raised by revising and
+resubmitting until the end of week 16.
 
 | Letter grade | Percentage |
 |---|---:|

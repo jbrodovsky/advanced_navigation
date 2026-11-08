@@ -102,6 +102,7 @@ src/ins_gnss/
   evaluation.py   time-aligned errors, reference mask, outages, chi-square bounds (provided)
   strapdown.py    Part A: mechanize, coarse_alignment (yours); free_inertial (provided)
   eskf.py         Part B: F, Q_d, residual, Joseph update, injection, reset (yours);
+                  gnss_velocity_residual (yours, extension);
                   INSGNSSFilter bookkeeping and R from receiver accuracy (provided)
   run_all.py      runs every stage on the recommended trials and writes tables and plots
   cli.py, plotting.py
@@ -174,7 +175,7 @@ gnss_velocity_residual(state, gnss, lever_arm_b, gyro_rps)  # -> (nu, H), only f
 
 Their docstrings are the detailed contract. Keep those signatures stable; add helpers, keyword-only options, and modules freely. `INSGNSSFilter` strings them together: `flt.predict(accel_mps2, gyro_rps, dt_s)` mechanizes the nominal state and propagates `flt.P` with `F_d = I + F dt` and your `Q_d`; `flt.update_gnss_position(gnss, R=None, *, gate=None)` computes your residual, runs your update, injects, resets, and appends an `InnovationRecord` (with the NIS) to `flt.innovations`. It is a plain dataclass, so give it whatever extra attributes you need.
 
-The tests of your deliverables skip with a "not implemented yet" message until you write the corresponding function, then start checking it, so `uv run pytest projects/ins_gnss` is a quick sanity check as you go. They are strict about signs: a perfect IMU at rest at 42° N must stay at rest for a minute, a perfect IMU driving east must hold its velocity (Coriolis and transport rate), `F` must match a finite-difference Jacobian of *your* `mechanize`, `H` with a lever arm must match finite differences of *your* residual, and the reset must match the exact attitude reset. They do not check whether your filter is any good on the real data. `uv run python -m ins_gnss.run_all` runs whatever you have implemented on the recommended trials and reports the rest as not implemented; its `TUNING` block is where your values go.
+The tests of your deliverables skip with a "not implemented yet" message until you write the corresponding function, then start checking it, so `uv run pytest projects/ins_gnss` is a quick sanity check as you go. They are strict about signs: a perfect IMU at rest at 42° N must stay at rest for a minute, a perfect IMU driving east must hold its velocity (Coriolis and transport rate), `F` must match a finite-difference Jacobian of *your* `mechanize`, `H` with a lever arm must match finite differences of *your* residual, and the reset must match the exact attitude reset. They do not check whether your filter is any good on the real data. `uv run python -m ins_gnss.run_all` runs whatever you have implemented on the recommended trials and reports the rest as not implemented; its `TUNING` block is where your values go. Every place where you are expected to write code or choose a value is marked with a `TODO(Project 3, ...)` comment, and every function you have not written yet raises `NotImplementedError`; `grep -rn "TODO(" projects/ins_gnss/src` lists them all.
 
 ## System Model {#sec-project3-system-model}
 
@@ -309,59 +310,130 @@ Keep the report concise and technical. A covariance plot with an honest sentence
 
 ## Grading Rubric {#sec-project3-grading-rubric}
 
-Project 3 is graded out of 100 project points. Most of the weight sits on the filter model and on the evidence that it is right and consistent.
+Project 3 is contract graded (@sec-intro-grading). Each of the 14 rows below is one deliverable, worth 10 points (140 in all). The Acceptable column is the contract: meet every item in it and the row earns 8.5 points, so a project that is Acceptable on every row earns 85%, a B. Excellent is not extra scope; it is the same work done with the polish and depth that impresses. Marginal (7.5) means the deliverable exists but some Acceptable items are missing or wrong, and Unacceptable (0) means it is missing, nonfunctional, or breaks a hard rule. Any row can be revised and resubmitted to raise its rating until the end of week 16. The project counts for 25% of the course grade (@sec-syllabus-grading-policy).
 
-+----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
-| Component                  | Points   | Excellent (100%)                                     | Acceptable (\~85%)                       | Marginal (\~70%)                         | Unacceptable (0%)              |
-+============================+=========:+======================================================+==========================================+==========================================+================================+
-| Data, frames, and          | 10       | Verifies the data conventions on the files (rates,   | Correct data handling, mount rotation,   | Important mistakes or unverified         | Missing, nonfunctional, or     |
-| alignment                  |          | axes, mount rotation, height datum, baseline timing  | and alignment, with only minor gaps in   | assumptions in axes, timing, units, or   | fundamentally incorrect.       |
-|                            |          | and its failures, stale fixes) and says how; levels  | verification or explanation.             | alignment (for example filtering on      |                                |
-|                            |          | and sets heading correctly, with the leveling error  |                                          | phone axes or comparing against the      |                                |
-|                            |          | estimated; keeps the baseline out of the filter.     | ***8 points***                           | unshifted baseline).                     |                                |
-|                            |          |                                                      |                                          |                                          |                                |
-|                            |          | ***10 points***                                      |                                          | ***7 points***                           |                                |
-+----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
-| Part A: mechanization and  | 20       | Curved-Earth mechanization with Earth rate,          | Mechanization works and passes the       | Partially working, or with an error the  | Missing, nonfunctional, or     |
-| its verification           |          | transport rate, Coriolis, and Somigliana gravity in  | tests, with minor weaknesses in the      | tests would catch (a missing rate term,  | fundamentally incorrect.       |
-|                            |          | the right places; passes the provided tests plus a   | extra verification or the drift          | a wrong quaternion order, a rad/m mix);  |                                |
-|                            |          | student-written test that targets a distinct bug;    | analysis.                                | drift analysis weak.                     |                                |
-|                            |          | free-inertial and parked checks explained in terms   |                                          |                                          |                                |
-|                            |          | of bias and noise.                                   | ***16 points***                          | ***14 points***                          |                                |
-|                            |          |                                                      |                                          |                                          |                                |
-|                            |          | ***20 points***                                      |                                          |                                          |                                |
-+----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
-| Part B: ESKF model and     | 25       | F matches the numerical Jacobian and the report      | A working ESKF with correct F, H,        | Important errors in F, Q_d, H, the       | Missing, nonfunctional, or not |
-| update                     |          | shows it; Q_d is traced from a datasheet with every  | update, injection, and reset; minor      | injection or the reset, or noise values  | an error-state filter.         |
-|                            |          | inflation argued; H with the lever arm, Joseph       | weaknesses in the noise justification or | with no justification.                   |                                |
-|                            |          | update, injection, and reset are correct and tested; | the observability discussion.            |                                          |                                |
-|                            |          | R and any gate are justified; sigma and bias plots   |                                          | ***18 points***                          |                                |
-|                            |          | are interpreted with observability arguments.        | ***21 points***                          |                                          |                                |
-|                            |          |                                                      |                                          |                                          |                                |
-|                            |          | ***25 points***                                      |                                          |                                          |                                |
-+----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
-| Part C: evaluation,        | 25       | Follows the evaluation protocol on all five          | The required evaluation is present and   | Shallow, hard to reproduce, missing      | Evaluation missing or          |
-| outages, and consistency   |          | recommended trials; outage errors against withheld   | mostly clear; the consistency diagnosis  | trials or outage lengths, or consistency | unsupported by meaningful      |
-|                            |          | fixes with 3-sigma envelopes and the constant-       | or the interpretation is limited.        | claimed without evidence.                | outputs.                       |
-|                            |          | velocity baseline; NIS against chi-square bounds and |                                          |                                          |                                |
-|                            |          | an outage-sigma check, a diagnosis, and a tuning     | ***21 points***                          | ***18 points***                          |                                |
-|                            |          | change shown to help; the reference's limits         |                                          |                                          |                                |
-|                            |          | explained.                                           |                                          |                                          |                                |
-|                            |          |                                                      |                                          |                                          |                                |
-|                            |          | ***25 points***                                      |                                          |                                          |                                |
-+----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
-| Extension                  | 10       | One or two extensions implemented, tested, and       | An extension that works, with a limited  | A partial extension or one evaluated     | No extension.                  |
-|                            |          | evaluated with the same protocol, with a clear       | evaluation.                              | only anecdotally.                        |                                |
-|                            |          | account of what they buy and cost.                   |                                          |                                          |                                |
-|                            |          |                                                      | ***8 points***                           | ***7 points***                           |                                |
-|                            |          | ***10 points***                                      |                                          |                                          |                                |
-+----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
-| Technical communication    | 10       | A concise report built around evidence; every figure | Generally clear and reproducible, with   | Hard to follow or only partly            | Missing or not reproducible.   |
-| and reproducibility        |          | and table regenerates from the README's commands;    | some gaps.                               | reproducible.                            |                                |
-|                            |          | failure modes discussed honestly.                    |                                          |                                          |                                |
-|                            |          |                                                      | ***8 points***                           | ***7 points***                           |                                |
-|                            |          | ***10 points***                                      |                                          |                                          |                                |
-+----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| Category               | Unacceptable (0)     | Marginal (7.5)               | Acceptable (8.5)                               | Excellent (10)                       |
++========================+======================+==============================+================================================+======================================+
+| **1. Data checks,      | Data misread, or the | Data loads, but with an      | - the data conventions checked on the files    | Everything in Acceptable, plus:      |
+| frames, and mount      | baseline used as a   | unverified or wrong          |   (rates, axes, height datum, baseline timing, |                                      |
+| rotation**             | filter measurement.  | assumption in axes, timing,  |   stale fixes) and how you checked them        | - data quirks (stale fixes, baseline |
+|                        |                      | units, or height datum (for  | - the mount rotation of each trial reported    |   failures, gaps) chased down and    |
+|                        |                      | example filtering on phone   |   and checked                                  |   their effect on the results        |
+|                        |                      | axes or scoring against the  | - the cost of skipping the mount rotation      |   quantified                         |
+|                        |                      | unshifted baseline).         |   shown with numbers                           |                                      |
+|                        |                      |                              | - the baseline used only for evaluation        |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **2. Coarse            | Missing, does not    | Runs, but leveling or        | - `coarse_alignment` passes its tests          | Everything in Acceptable, plus:      |
+| alignment**            | run, or skips or     | heading is wrong, or the     | - an explanation of why heading cannot come    |                                      |
+|                        | fails its provided   | heading source is            |   from the gyros here                          | - the alignment error checked        |
+|                        | tests.               | unexplained.                 | - the tilt error left by leveling estimated    |   against what the filter later      |
+|                        |                      |                              |   ($b_a/g$)                                    |   estimates (tilt, yaw,              |
+|                        |                      |                              |                                                |   accelerometer bias)                |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **3. Mechanization and | Missing, does not    | Runs, but with an error the  | - `mechanize` passes the provided tests: Earth | Everything in Acceptable, plus:      |
+| its verification**     | run, or skips or     | tests would catch (a missing |   rate, transport rate, Coriolis, and          |                                      |
+|                        | fails its provided   | rate term, a wrong           |   Somigliana gravity in the right places       | - additional tests that each target  |
+|                        | tests.               | quaternion order, a rad/m    | - one test of your own that exercises          |   a distinct, plausible bug          |
+|                        |                      | mix-up), or no test of your  |   something the provided ones do not (a        |                                      |
+|                        |                      | own.                         |   north-going drive, a climb, a constant turn) |                                      |
+|                        |                      |                              | - the bug that test would catch explained      |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **4. Free-inertial and | No real-data sanity  | Error growth plotted but not | - the 60 s free-inertial run after departure,  | Everything in Acceptable, plus:      |
+| parked checks**        | checks.              | explained, or explained      |   scored against GNSS                          |                                      |
+|                        |                      | without reference to the     | - the parked check                             | - the observed growth compared with  |
+|                        |                      | bias and noise sizes.        | - the error growth related to bias and noise   |   a quantitative prediction from     |
+|                        |                      |                              |   (@sec-ins-errors-why-bias-dominates): which  |   your noise model                   |
+|                        |                      |                              |   term dominates after 10 s and after 60 s     |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **5. Error-state       | Missing, does not    | Runs, but with errors in     | - `error_state_jacobian` and                   | Everything in Acceptable, plus:      |
+| model: $\mathbf{F}$    | run, or skips or     | $\mathbf{F}$ or              |   `discrete_process_noise` pass their tests    |                                      |
+| and $\mathbf{Q}_d$**   | fails its provided   | $\mathbf{Q}_d$, or noise     | - the numerical check of $\mathbf{F}$ against  | - the neglected terms in the         |
+|                        | tests.               | values with no               |   your mechanization shown, with the largest   |   short-horizon model identified and |
+|                        |                      | justification.               |   discrepancies explained                      |   their size bounded                 |
+|                        |                      |                              | - `IMUNoise` traced from a named datasheet     |                                      |
+|                        |                      |                              |   with the unit conversions shown              |                                      |
+|                        |                      |                              | - every inflation factor argued (1 Hz          |                                      |
+|                        |                      |                              |   sampling, vibration, road grade)             |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **6. Measurement       | Missing, does not    | Runs, but with a sign,       | - `gnss_position_residual` (with the lever     | Everything in Acceptable, plus:      |
+| update, injection, and | run, or skips or     | lever-arm, injection, or     |   arm), `joseph_update`, `inject_error_state`, |                                      |
+| reset**                | fails its provided   | reset mistake, or a          |   and `reset_covariance` pass their tests      | - the reset's effect on the          |
+|                        | tests.               | non-Joseph update.           | - the synthetic-drive consistency test passes  |   covariance shown and explained, or |
+|                        |                      |                              |                                                |   tests of your own on these         |
+|                        |                      |                              |                                                |   functions                          |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **7. Measurement       | No justification for | $\mathbf{R}$ and the gate    | - $\mathbf{R}$ chosen from the receiver        | Everything in Acceptable, plus:      |
+| noise, gating, and     | $\mathbf{R}$.        | set without evidence, or     |   accuracies, with any scale justified by the  |                                      |
+| observability**        |                      | covariance plots shown       |   NIS                                          | - the observability argument tied to |
+|                        |                      | without interpretation.      | - the gating decision stated, and what the     |   specific maneuvers in the trial,   |
+|                        |                      |                              |   gate rejects shown                           |   with evidence                      |
+|                        |                      |                              | - position, velocity, attitude, and bias       |                                      |
+|                        |                      |                              |   standard deviations and estimated biases     |                                      |
+|                        |                      |                              |   plotted for at least one trial               |                                      |
+|                        |                      |                              | - observability discussed: when yaw becomes    |                                      |
+|                        |                      |                              |   observable, and what its sigma does on a     |                                      |
+|                        |                      |                              |   long straight                                |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **8. GNSS-only versus  | No comparison        | Errors reported, but without | - both solutions scored on all five            | Everything in Acceptable, plus:      |
+| loose INS/GNSS**       | against the          | `reference_valid_mask`,      |   recommended trials as the protocol requires  |                                      |
+|                        | reference.           | interpolation, or all five   |   (RMSE, median, 95th percentile, maximum)     | - the reference's own failures       |
+|                        |                      | trials, or the reference     | - why the reference favors GNSS only           |   identified and kept from           |
+|                        |                      | treated as truth.            |   explained, and what the comparison can show  |   distorting the conclusions         |
+|                        |                      |                              |   (smoothness, velocity, attitude, stops)      |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **9. Scheduled         | No outage study.     | Outages run, but some        | - outages of 10, 30, 60, and 120 s scheduled   | Everything in Acceptable, plus:      |
+| outages**              |                      | lengths or trials are        |   as the protocol specifies, scored against    |                                      |
+|                        |                      | missing, or the              |   the withheld fixes                           | - the cases where the INS loses to   |
+|                        |                      | constant-velocity baseline   | - error against time with the $3\sigma$        |   constant velocity explained        |
+|                        |                      | or the envelope is absent.   |   envelope, next to constant-velocity          |                                      |
+|                        |                      |                              |   extrapolation                                |                                      |
+|                        |                      |                              | - median and maximum errors at each length,    |                                      |
+|                        |                      |                              |   and the fraction inside $3\sigma$            |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **10. Consistency and  | No NIS.              | NIS computed but without     | - every NIS against the 95% interval for 3     | Everything in Acceptable, plus:      |
+| tuning**               |                      | bounds or a diagnosis, or    |   DOF, the fraction inside, and the mean NIS   |                                      |
+|                        |                      | consistency claimed without  |   with its averaged bounds                     | - the effect of time-correlated GNSS |
+|                        |                      | evidence.                    | - the fraction of outage errors inside         |   errors on the NIS dissected rather |
+|                        |                      |                              |   $1\sigma$ and $3\sigma$                      |   than asserted                      |
+|                        |                      |                              | - a diagnosis (overconfident, underconfident,  |                                      |
+|                        |                      |                              |   correlated GNSS errors) and a tuning change  |                                      |
+|                        |                      |                              |   shown to help                                |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **11. Heading and      | Neither reported.    | Heading statistics or        | - `heading_error_vs_course` above 8 m/s:       | Everything in Acceptable, plus:      |
+| runtime**              |                      | runtime missing, or reported |   median and median absolute deviation         |                                      |
+|                        |                      | without interpretation.      | - what the heading statistics say about        | - heading outliers traced to their   |
+|                        |                      |                              |   alignment and the mount rotation             |   cause (turns, slow segments, mount |
+|                        |                      |                              | - runtime per trial on stated hardware         |   errors)                            |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **12. Extension**      | No extension.        | A partial extension, or one  | - at least one extension from                  | Everything in Acceptable, plus:      |
+|                        |                      | evaluated only anecdotally.  |   @sec-project3-extensions implemented and     |                                      |
+|                        |                      |                              |   tested                                       | - the extension's failure cases or   |
+|                        |                      |                              | - evaluated with the same protocol as the      |   limits found and explained         |
+|                        |                      |                              |   baseline filter                              |                                      |
+|                        |                      |                              | - what it buys and what it costs stated        |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **13. Code quality,    | Code missing,        | Code runs but is hard to     | - follows the course style guide               | Everything in Acceptable, plus:      |
+| testing, and           | unreadable, not the  | follow, changes the public   |   (@sec-intro-code-style-guide)                |                                      |
+| reproducibility**      | student's own work,  | signatures, or uses a        | - public signatures unchanged; all provided    | - code organized so that someone     |
+|                        | or results that      | filtering library without    |   tests pass                                   |   else could pick it up and extend   |
+|                        | cannot be            | the walk-through the AI      | - filter code written with `numpy`/`scipy`, or |   it                                 |
+|                        | regenerated.         | policy requires; some        |   a library used and every step derived        | - one command regenerates all of the |
+|                        |                      | figures cannot be            |   (@sec-intro-ai-policy-and-dependencies);     |   report's evidence from a fresh     |
+|                        |                      | regenerated.                 |   adapted book code cited                      |   clone plus the downloaded data     |
+|                        |                      |                              | - a `README` with the exact commands that      |                                      |
+|                        |                      |                              |   regenerate every figure and table            |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **14. Report writing   | No report.           | Hard to follow: bullet lists | - a single-column research report structured   | Everything in Acceptable, plus:      |
+| and presentation**     |                      | in place of prose, figures   |   as in @sec-intro-project-guidance, covering  |                                      |
+|                        |                      | without labels or            |   the items the deliverables list              | - clear, economical writing in which |
+|                        |                      | discussion, or claims        | - prose, with every figure and table           |   every figure has a takeaway the    |
+|                        |                      | without evidence.            |   referenced and discussed in the text         |   text uses                          |
+|                        |                      |                              | - axes labelled with units, and legends        | - a submission that, taken as a      |
+|                        |                      |                              | - failure modes discussed honestly             |   whole, impresses                   |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+
+: Project contract rubric. All Acceptable earns 85%. {tbl-colwidths="[13,13,18,31,25]"}
 
 ## Suggested Milestones {#sec-project3-suggested-milestones}
 

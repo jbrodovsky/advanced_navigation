@@ -146,7 +146,7 @@ slam.resample()
 
 Their docstrings are the detailed contract. Keep those signatures stable; add helpers, keyword-only options, and modules freely. Note that `landmark.updated(...)` returns a *new* landmark and leaves the old one alone: after resampling, several particles share the same landmark objects (`particle.copy()` copies the dictionary, not the landmarks), which is what makes resampling cheap (@sec-slam-why-fast). Mutating a shared landmark in place silently edits other particles' maps.
 
-The tests of your deliverables skip with a "not implemented yet" message until you write the corresponding method, then start checking it, so `uv run pytest projects/victoria_park_slam` is a quick sanity check as you go. They check interfaces and simple cases (a synthetic scan with two trunks and a wall, the two gates, a loop through a synthetic forest), not whether your Victoria Park solution is good. `uv run python -m victoria_park_slam.run_all` runs whatever you have implemented on the first 2000 scans and reports the rest as not implemented. Its `TUNING` block is where your values go.
+The tests of your deliverables skip with a "not implemented yet" message until you write the corresponding method, then start checking it, so `uv run pytest projects/victoria_park_slam` is a quick sanity check as you go. They check interfaces and simple cases (a synthetic scan with two trunks and a wall, the two gates, a loop through a synthetic forest), not whether your Victoria Park solution is good. `uv run python -m victoria_park_slam.run_all` runs whatever you have implemented on the first 2000 scans and reports the rest as not implemented. Its `TUNING` block is where your values go. Every place where you are expected to write code or choose a value is marked with a `TODO(Project 2, ...)` comment, and every function you have not written yet raises `NotImplementedError`; `grep -rn "TODO(" projects/victoria_park_slam/src` lists them all.
 
 ## System Model {#sec-project2-system-model}
 
@@ -326,7 +326,7 @@ FastSLAM 2.0 samples each pose from a proposal that already includes the current
 
 Evaluate with the protocol of @sec-project2-evaluation-protocol. On the first 2000 scans (about 430 s and 1.1 km), the following sensitivity studies are **required**: particle count, gate threshold, and $\mathbf{Q}_u$, which `run_all --sweep particles gate q_scale` runs with the values in its `SWEEPS` table (particles `(10, 25, 50, 100)`, gate `(4.61, 5.99, 9.21)`, $\mathbf{Q}_u$ scaled by `(0.25, 1.0, 4.0)`). Report RMSE, runtime per scan, and the final confirmed landmark count for each, and explain the trends. A particle filter is a random algorithm, so a single run proves little; say how many seeds you ran.
 
-The full run (all 7249 scans), sweeps over other parameters ($\mathbf{R}$, $p_0$, the resampling threshold, extractor thresholds), and results over several seeds are what separate Excellent from Acceptable.
+Also report the full run (all 7249 scans). Results over several seeds, with their spread, are what turn a trend into evidence; sweeps over other parameters ($\mathbf{R}$, $p_0$, the resampling threshold, extractor thresholds) are welcome when they help explain your system.
 
 Finally, compare EKF-SLAM, FastSLAM, and GraphSLAM for this dataset (state representation, computational scaling, data association, loop closure, suitability, implementation risk), using your own results where you can. You are not required to implement loop closure or pose-graph optimization, but discuss whether your map shows revisits, duplicate trees, or particle depletion around long loops, and what a graph back end and a loop-closure front end would add (@sec-loop-closure).
 
@@ -355,54 +355,125 @@ Keep the report concise and technical. Show evidence. Do not write a travel essa
 
 ## Grading Rubric {#sec-project2-grading-rubric}
 
-Project 2 is graded out of 100 project points.
+Project 2 is contract graded (@sec-intro-grading). Each of the 13 rows below is one deliverable, worth 10 points (130 in all). The Acceptable column is the contract: meet every item in it and the row earns 8.5 points, so a project that is Acceptable on every row earns 85%, a B. Excellent is not extra scope; it is the same work done with the polish and depth that impresses. Marginal (7.5) means the deliverable exists but some Acceptable items are missing or wrong, and Unacceptable (0) means it is missing, nonfunctional, or breaks a hard rule. Any row can be revised and resubmitted to raise its rating until the end of week 16. The project counts for 25% of the course grade (@sec-syllabus-grading-policy).
 
-+----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
-| Component                  | Points   | Excellent (100%)                                     | Acceptable (\~85%)                       | Marginal (\~70%)                         | Unacceptable (0%)              |
-+============================+=========:+======================================================+==========================================+==========================================+================================+
-| Dataset, vehicle model,    | 20       | Decodes the laser correctly and verifies the         | Correct decoding, vehicle model, and     | Important mistakes or unverified         | Missing, nonfunctional, or     |
-| lever arm, and time        |          | conventions on the data (bearing sign, encoder       | synchronization, with only minor gaps in | assumptions in decoding, frames, lever   | fundamentally incorrect.       |
-| synchronization            |          | correction, lever-arm side, timing); implements the  | verification or explanation.             | arm, encoder correction, or timing (for  |                                |
-|                            |          | laser-centered motion model with the encoder          |                                          | example nearest-sample synchronization   |                                |
-|                            |          | correction and an event-driven synchronization;      | ***16 points***                          | or a mirrored scan).                     |                                |
-|                            |          | quantifies each correction (dead-reckoning           |                                          |                                          |                                |
-|                            |          | comparison plus a turn-sharpness or equivalent       |                                          | ***14 points***                          |                                |
-|                            |          | check); keeps GPS out of the filter.                 |                                          |                                          |                                |
-|                            |          |                                                      |                                          |                                          |                                |
-|                            |          | ***20 points***                                      |                                          |                                          |                                |
-+----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
-| Laser front end            | 15       | Repeatable trunk observations across the whole log;  | Mostly useful detections, with minor     | Fragile or overfit; many false or missed | No usable feature extraction.  |
-|                            |          | every threshold documented and compared with the     | weaknesses in robustness, documentation, | trees, with limited evidence.            |                                |
-|                            |          | original detector; diameter and center-range         | or diagnostics.                          |                                          |                                |
-|                            |          | reasoning; overlays and per-scan statistics; a       |                                          | ***10 points***                          |                                |
-|                            |          | threshold-sensitivity study tied to SLAM behavior.  | ***12 points***                          |                                          |                                |
-|                            |          |                                                      |                                          |                                          |                                |
-|                            |          | ***15 points***                                      |                                          |                                          |                                |
-+----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
-| Data association and       | 20       | Per-particle association with both gates and mutual  | Works in the main cases, with minor      | Partially working; often merges distinct | No meaningful association or   |
-| landmark management        |          | exclusion, consistent p0 weighting, a                | weaknesses in birth, deletion,           | trees, duplicates landmarks, accepts     | landmark management.           |
-|                            |          | tentative/confirmed lifecycle with deletion, and     | weighting, or diagnostics.               | outliers, or weights new landmarks       |                                |
-|                            |          | diagnostics (matched, new, discarded, map growth,    |                                          | inconsistently.                          |                                |
-|                            |          | duplicates) that explain the behavior.              | ***16 points***                          |                                          |                                |
-|                            |          |                                                      |                                          | ***14 points***                          |                                |
-|                            |          | ***20 points***                                      |                                          |                                          |                                |
-+----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
-| FastSLAM backend           | 15       | Complete FastSLAM 1.0: vectorized prediction, copy-  | Fundamentally working, with minor        | Oversimplified, unstable, or missing     | Missing, nonfunctional, or not |
-|                            |          | on-write landmark EKFs, stable log weights, N_eff    | weaknesses in tuning, numerical care,    | important particle, EKF, likelihood, or  | actually FastSLAM.             |
-|                            |          | monitoring, and systematic resampling; passes the    | efficiency, or organization.             | resampling behavior.                    |                                |
-|                            |          | provided tests; reported runtime on the full log.    |                                          |                                          |                                |
-|                            |          |                                                      | ***12 points***                          | ***10 points***                          |                                |
-|                            |          | ***15 points***                                      |                                          |                                          |                                |
-+----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
-| Evaluation, sensitivity    | 30       | Follows the evaluation protocol; the required sweeps | The required evaluation and sweeps are   | Evidence is shallow, hard to reproduce,  | Evaluation or report missing   |
-| studies, and technical     |          | plus the full run, further sweeps, and several       | present and mostly clear; extra studies, | missing required sweeps, or insufficient | or unsupported by meaningful   |
-| communication              |          | seeds; clear figures; an honest dead-reckoning       | seeds, or interpretation are limited.    | to tell whether the system works.        | outputs.                       |
-|                            |          | comparison; failure modes explained with evidence; a |                                          |                                          |                                |
-|                            |          | method comparison grounded in the student's own      | ***24 points***                          | ***21 points***                          |                                |
-|                            |          | results; a concise, reproducible report.             |                                          |                                          |                                |
-|                            |          |                                                      |                                          |                                          |                                |
-|                            |          | ***30 points***                                      |                                          |                                          |                                |
-+----------------------------+----------+------------------------------------------------------+------------------------------------------+------------------------------------------+--------------------------------+
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| Category               | Unacceptable (0)     | Marginal (7.5)               | Acceptable (8.5)                               | Excellent (10)                       |
++========================+======================+==============================+================================================+======================================+
+| **1. Laser decoding    | Scans not decoded,   | Scans decoded, but the bit   | - the 13-bit mask and the no-return threshold  | Everything in Acceptable, plus:      |
+| and conventions**      | or GPS used inside   | mask, the no-return          |   explained, with the fraction of beams that   |                                      |
+|                        | the filter.          | threshold, or the bearing    |   carry no return                              | - every convention checked against   |
+|                        |                      | convention is wrong or       | - several scans plotted in the vehicle frame   |   the data, with the check shown,    |
+|                        |                      | unverified (for example a    | - the bearing sign confirmed with a feature    |   including the undocumented corners |
+|                        |                      | mirrored scan).              |   whose side you can tell                      |   of the log                         |
+|                        |                      |                              | - GPS used only for evaluation                 |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **2. Vehicle model,    | No vehicle model, or | A motion model runs, but the | - the laser-centered motion model with the     | Everything in Acceptable, plus:      |
+| lever arm, and dead    | a model that ignores | encoder correction or the    |   encoder correction and the lever arm         |                                      |
+| reckoning**            | the laser offset.    | lever arm is missing, on the | - the `dead_reckoning_comparison` reproduced   | - each correction's effect predicted |
+|                        |                      | wrong side, or not           |   and the size of each effect explained        |   from the geometry before it is     |
+|                        |                      | quantified.                  | - the lever-arm clustering check: re-observed  |   measured, and the two compared     |
+|                        |                      |                              |   trees projected along dead reckoning in a    |                                      |
+|                        |                      |                              |   turn, with and without it                    |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **3. Time              | Controls and scans   | Nearest-sample               | - an event-driven model that propagates the    | Everything in Acceptable, plus:      |
+| synchronization**      | not synchronized.    | synchronization, or a model  |   controls up to each scan time                |                                      |
+|                        |                      | that smears scans across     | - the model explained                          | - the effect of the synchronization  |
+|                        |                      | controls without comment.    |   (@sec-project2-time-synchronization),        |   choice on the trajectory or map    |
+|                        |                      |                              |   including irregular scan gaps                |   quantified                         |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **4. Tree extractor    | Missing, does not    | Detections on some scans,    | - `extract_tree_landmarks` passes its tests    | Everything in Acceptable, plus:      |
+| and front-end          | run, or produces no  | but fragile or overfit: many |   and runs on the whole log                    |                                      |
+| characterization**     | usable trees.        | false or missed trees,       | - every threshold documented with its reason   | - the extractor's failure cases      |
+|                        |                      | undocumented thresholds, or  |   and compared with the original detector      |   (hedges, clutter, partial trunks)  |
+|                        |                      | little evidence.             | - detections per scan, the diameter histogram, |   found and explained                |
+|                        |                      |                              |   and an overlay of detections on scans        | - the threshold study tied to SLAM   |
+|                        |                      |                              | - the effect of at least two extractor         |   behavior, not just detection       |
+|                        |                      |                              |   thresholds shown                             |   counts                             |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **5. Landmark EKF**    | Missing, does not    | Runs, but with an            | - `LandmarkEKF.initialize`, `innovation`, and  | Everything in Acceptable, plus:      |
+|                        | run, or skips or     | inverse-model, Jacobian, or  |   `updated` pass their tests                   |                                      |
+|                        | fails its provided   | bearing-wrap mistake, or a   | - the inverse observation model and the        | - any Jacobian you derived checked   |
+|                        | tests.               | non-Joseph covariance        |   landmark Jacobian match the handout's        |   with `numerical_jacobian` and the  |
+|                        |                      | update.                      |   observation model, with the lever arm        |   check reported                     |
+|                        |                      |                              | - wrapped bearing residuals, the Joseph-form   |                                      |
+|                        |                      |                              |   update, `np.linalg.solve` instead of         |                                      |
+|                        |                      |                              |   inverses                                     |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **6. Data association  | No association, or   | Partly working: distinct     | - per-particle association with both gates and | Everything in Acceptable, plus:      |
+| and landmark           | one association      | trees merged, landmarks      |   mutual exclusion (`FastSLAM.associate`)      |                                      |
+| management**           | table forced onto    | duplicated, outliers         | - consistent new-landmark weighting ($p_0$)    | - duplicates near revisited areas    |
+|                        | every particle.      | accepted, or new landmarks   | - the tentative-to-confirmed lifecycle with    |   looked for, counted, and explained |
+|                        |                      | weighted inconsistently.     |   deletion                                     |                                      |
+|                        |                      |                              | - matched, new, and discarded observations per |                                      |
+|                        |                      |                              |   scan, confirmed landmarks against distance,  |                                      |
+|                        |                      |                              |   and tentative-landmark deaths reported       |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **7. FastSLAM          | Missing, does not    | Runs, but oversimplified or  | - `predict`, `update`, and `resample` pass     | Everything in Acceptable, plus:      |
+| backend**              | run, or skips or     | unstable: weights outside    |   their tests, including the synthetic loop    |                                      |
+|                        | fails its provided   | log space, no $N_\text{eff}$ | - vectorized prediction with the encoder       | - runtime profiled and the dominant  |
+|                        | tests.               | monitoring, a broken         |   correction and the lever arm                 |   cost identified                    |
+|                        |                      | resampler, or a Python loop  | - log weights normalized with log-sum-exp;     | - particle behavior (cloud spread,   |
+|                        |                      | where the prediction should  |   systematic resampling when $N_\text{eff}$    |   depletion around revisits)         |
+|                        |                      | be vectorized.               |   drops below the threshold                    |   explained with evidence            |
+|                        |                      |                              | - `slam.history` filled with one record per    |                                      |
+|                        |                      |                              |   scan                                         |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **8. Evaluation        | No evaluation        | An evaluation exists, but it | - the protocol of                              | Everything in Acceptable, plus:      |
+| protocol and required  | against GPS.         | departs from the protocol    |   @sec-project2-evaluation-protocol followed,  |                                      |
+| figures**              |                      | (no alignment, interpolation |   stating which estimate is scored             | - every figure carries a takeaway    |
+|                        |                      | across GPS gaps, no          | - RMSE after alignment, maximum error, and     |   the text uses, and anomalies in it |
+|                        |                      | dead-reckoning baseline) or  |   error against time, beside dead reckoning    |   are explained                      |
+|                        |                      | required figures are         | - figures: trajectory and confirmed map over   |                                      |
+|                        |                      | missing.                     |   aligned GPS, $N_\text{eff}$, landmark        |                                      |
+|                        |                      |                              |   counts, runtime per scan, and one plot of    |                                      |
+|                        |                      |                              |   particle behavior                            |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **9. Sensitivity       | No sweeps.           | Some required sweeps         | - the three required sweeps (particles, gate,  | Everything in Acceptable, plus:      |
+| studies and the full   |                      | missing, a single seed with  |   $\mathbf{Q}_u$) on the first 2000 scans:     |                                      |
+| run**                  |                      | no comment, or trends        |   RMSE, runtime per scan, and final confirmed  | - results over several seeds with    |
+|                        |                      | tabulated but not explained. |   landmark count                               |   their spread, so that trends are   |
+|                        |                      |                              | - the number of seeds stated, and the trends   |   distinguishable from luck          |
+|                        |                      |                              |   explained                                    |                                      |
+|                        |                      |                              | - the full 7249-scan run reported              |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **10. Method           | No comparison or     | A generic comparison of      | - EKF-SLAM, FastSLAM, and GraphSLAM compared   | Everything in Acceptable, plus:      |
+| comparison and failure | failure discussion.  | EKF-SLAM, FastSLAM, and      |   for this dataset (representation, scaling,   |                                      |
+| modes**                |                      | GraphSLAM that never uses    |   association, loop closure, risk), using your | - each failure mode traced to its    |
+|                        |                      | the student's own results.   |   own results where possible                   |   cause with evidence from your own  |
+|                        |                      |                              | - revisits, duplicate trees, and particle      |   runs                               |
+|                        |                      |                              |   depletion around long loops discussed, with  |                                      |
+|                        |                      |                              |   what a graph back end and loop closure would |                                      |
+|                        |                      |                              |   add                                          |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **11. Code quality and | Code missing,        | Code runs but is hard to     | - follows the course style guide               | Everything in Acceptable, plus:      |
+| testing**              | unreadable, or not   | follow, changes the public   |   (@sec-intro-code-style-guide)                |                                      |
+|                        | the student's own    | signatures, or uses a SLAM   | - public signatures unchanged; all provided    | - tests that target edge cases       |
+|                        | work.                | library without the          |   tests pass                                   |   (empty scans, no-return beams,     |
+|                        |                      | walk-through the AI policy   | - tests or validation scripts for the parts    |   wrap-around bearings, particles    |
+|                        |                      | requires.                    |   you added (for example the extractor on a    |   with no landmarks)                 |
+|                        |                      |                              |   hand-made scan)                              | - code organized so that someone     |
+|                        |                      |                              | - adapted book code cited in a comment         |   else could pick it up and extend   |
+|                        |                      |                              |   (@sec-intro-ai-policy-and-dependencies)      |   it                                 |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **12. Reproducibility  | Results cannot be    | Some figures or tables       | - a `README` with the exact commands that      | Everything in Acceptable, plus:      |
+| and tuning record**    | regenerated.         | cannot be regenerated, or    |   regenerate every figure and table            |                                      |
+|                        |                      | tuning values are missing.   | - every tuning value reported: $\mathbf{Q}_u$, | - one command regenerates all of the |
+|                        |                      |                              |   $\mathbf{R}$, gates, $p_0$, particle count,  |   report's evidence from a fresh     |
+|                        |                      |                              |   resampling threshold, seeds                  |   clone plus the downloaded data     |
+|                        |                      |                              | - runtime reported on stated hardware          |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+| **13. Report writing   | No report.           | Hard to follow: bullet lists | - a single-column research report structured   | Everything in Acceptable, plus:      |
+| and presentation**     |                      | in place of prose, figures   |   as in @sec-intro-project-guidance, covering  |                                      |
+|                        |                      | without labels or            |   the items the deliverables list              | - clear, economical writing in which |
+|                        |                      | discussion, or claims        | - prose, with every figure and table           |   every figure has a takeaway the    |
+|                        |                      | without evidence.            |   referenced and discussed in the text         |   text uses                          |
+|                        |                      |                              | - axes labelled with units, legends, and       | - a submission that, taken as a      |
+|                        |                      |                              |   readable maps                                |   whole, impresses                   |
+|                        |                      |                              | - limitations discussed honestly               |                                      |
++------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
+
+: Project contract rubric. All Acceptable earns 85%. {tbl-colwidths="[13,13,18,31,25]"}
 
 ## Suggested Milestones {#sec-project2-suggested-milestones}
 
@@ -411,7 +482,7 @@ Project 2 is graded out of 100 project points.
 3.  Implement the landmark EKF and pass its tests; check any Jacobian you add with `numerical_jacobian`.
 4.  Implement prediction, association, update, and resampling; pass the synthetic-loop test.
 5.  Run the first 2000 scans with `run_all`, read the diagnostics, and tune.
-6.  Run the required sweeps, then (for Excellent) the full log and the extra studies.
+6.  Run the required sweeps and the full log, then repeat over several seeds.
 7.  Write the report around the evidence.
 
 ## References {#sec-project2-references}

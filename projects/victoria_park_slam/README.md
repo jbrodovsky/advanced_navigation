@@ -72,6 +72,18 @@ The tests of your deliverables skip with "not implemented yet" until you
 write them. Passing them is necessary, not sufficient: they check interfaces
 and small synthetic cases, not whether your Victoria Park map is good.
 
+## Finding your work
+
+Every place where you are expected to write code or choose a value is marked
+with a `TODO(Project 2, ...)` comment, and every function you have not
+written yet raises `NotImplementedError`. From the repository root:
+
+```bash
+grep -rn "TODO(" projects/victoria_park_slam/src
+```
+
+lists them all (an editor's TODO panel finds the same markers).
+
 ## Suggested order
 
 1. Plot scans in the vehicle frame and run `run_all` to see the dead-reckoning

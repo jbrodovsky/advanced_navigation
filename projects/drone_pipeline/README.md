@@ -31,7 +31,8 @@ src/drone_pipeline/
   observation.py    build_apriltag_corner_map, estimate_pose,
                     estimate_measurement_covariance               <- Part B (yours)
   filters.py        EKFNavigator, UKFNavigator, ParticleFilterNavigator
-                    (constructors/accessors given; predict/update yours) <- Part C
+                    (constructors/accessors given; predict/update, and the PF's
+                    estimate/resample, yours) <- Part C
   run_all.py        runs every implemented stage on a split; writes tables and plots
   plotting.py       small plotting helpers
   cli.py            dataset inspection
@@ -81,6 +82,18 @@ print(len(dataset.packets), dataset.packets[0].omg, valid[0].position)
 
 Start Part A in `mechanization.py`, Part B in `observation.py` (after reading
 `config.py`), and Part C in `filters.py`.
+
+## Finding your work
+
+Every place where you are expected to write code or choose a value is marked
+with a `TODO(Project 1, ...)` comment, and every function you have not
+written yet raises `NotImplementedError`. From the repository root:
+
+```bash
+grep -rn "TODO(" projects/drone_pipeline/src
+```
+
+lists them all (an editor's TODO panel finds the same markers).
 
 ## Tests
 

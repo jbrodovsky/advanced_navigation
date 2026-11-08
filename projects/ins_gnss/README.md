@@ -81,6 +81,18 @@ IMU, a perfect IMU driving east, `F` against your own mechanization, `H` with
 a lever arm, the reset against the exact attitude reset, and a consistency
 check on a synthetic drive). Passing them is necessary, not sufficient.
 
+## Finding your work
+
+Every place where you are expected to write code or choose a value is marked
+with a `TODO(Project 3, ...)` comment, and every function you have not
+written yet raises `NotImplementedError`. From the repository root:
+
+```bash
+grep -rn "TODO(" projects/ins_gnss/src
+```
+
+lists them all (an editor's TODO panel finds the same markers).
+
 ## Suggested order
 
 1. Look at the data: `uv run ins-gnss --trial NAME`, plot GNSS, read the handout's data section.
