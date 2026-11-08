@@ -65,6 +65,7 @@ def mechanize(state: NavState, accel_mps2: np.ndarray, gyro_rps: np.ndarray, dt_
     @sec-ins-gnss-navigation-equations-local. A perfect IMU at rest on the
     Earth must leave the velocity at zero (the tests check this at 42 deg N).
     """
+    # TODO(Project 3, Part A): implement the curved-Earth strapdown mechanization (handout, Part A).
     raise NotImplementedError(
         "Part A: implement mechanize(state, accel_mps2, gyro_rps, dt_s) "
         "(curved-Earth strapdown, @sec-ins-gnss-navigation-equations-local)."
@@ -89,6 +90,7 @@ def coarse_alignment(mean_specific_force_b: np.ndarray, yaw_rad: float) -> np.nd
     (@sec-ins-gnss-alignment). Return the Z-Y-X quaternion of
     ``(roll, pitch, yaw_rad)``.
     """
+    # TODO(Project 3, Part A): implement leveling plus external heading (handout, Part A).
     raise NotImplementedError(
         "Part A: implement coarse_alignment(mean_specific_force_b, yaw_rad) (@sec-ins-gnss-alignment)."
     )

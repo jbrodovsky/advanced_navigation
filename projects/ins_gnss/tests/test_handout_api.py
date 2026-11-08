@@ -103,7 +103,8 @@ class HandoutApiTests(unittest.TestCase):
         names = set(re.findall(r"`(\w+)(?:\(|`)", self.text))
         modules = [importlib.import_module(f"ins_gnss.{name}") for name in MODULES]
         classes = [eskf.INSGNSSFilter, types.GNSSSample, types.MEMSNavTrial, types.NavState]
-        skip = {"README", "run_all", "ins_gnss", "bearing", "input", "baseline", "filterpy", "ADVNAV_DATA_DIR"}
+        skip = {"README", "run_all", "ins_gnss", "bearing", "input", "baseline", "filterpy", "ADVNAV_DATA_DIR",
+                "NotImplementedError", "TODO"}
         for name in sorted(names - skip):
             if not re.fullmatch(r"[a-z]+(_[a-z0-9]+)+|[A-Z][A-Za-z]+|[A-Z][A-Z0-9_]+", name):
                 continue  # single words, file names, and plain prose
@@ -158,10 +159,15 @@ class HandoutApiTests(unittest.TestCase):
         self.assertIn("recommended_trials()[1]", self.text)
         self.assertEqual(recommended[1], "2023-08-09_163741")
 
-    def test_rubric_adds_up_to_100(self) -> None:
+    def test_rubric_is_a_four_level_contract(self) -> None:
         rubric = self.text.split("{#sec-project3-grading-rubric}", 1)[1].split("\n## ", 1)[0]
-        points = [int(match) for match in re.findall(r"^\| [A-Z][^|]*\| (\d+) +\|", rubric, flags=re.MULTILINE)]
-        self.assertEqual(sum(points), 100, points)
+        header = re.search(r"^\| Category .*\|$", rubric, flags=re.MULTILINE)
+        self.assertIsNotNone(header)
+        columns = [cell.strip() for cell in header.group(0).strip("|").split("|")]
+        self.assertEqual(
+            columns,
+            ["Category", "Unacceptable (0)", "Marginal (7.5)", "Acceptable (8.5)", "Excellent (10)"],
+        )
 
     def test_reserved_section_ids(self) -> None:
         for section in ("logistics", "data", "evaluation-protocol", "grading-rubric"):

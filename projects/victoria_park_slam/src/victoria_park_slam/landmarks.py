@@ -70,4 +70,5 @@ def extract_tree_landmarks(
     ``config: TreeExtractorConfig``), but keep this call working unchanged:
     the tests and ``run_all`` call ``extract_tree_landmarks(scan)``.
     """
-    raise NotImplementedError("students should implement tree extraction from laser scans")
+    # TODO(Project 2, Part A): implement tree extraction from laser scans (handout, Part A).
+    raise NotImplementedError("Part A: implement extract_tree_landmarks(scan_ranges_m, *, pose_guess=None).")

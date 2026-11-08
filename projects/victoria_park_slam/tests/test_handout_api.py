@@ -114,7 +114,7 @@ class HandoutApiTests(unittest.TestCase):
         names = set(re.findall(r"`(\w+)(?:\(|`)", self.text))
         modules = [importlib.import_module(f"victoria_park_slam.{name}") for name in
                    ("utils", "evaluation", "timing", "types", "datasets", "fastslam", "landmarks", "run_all")]
-        skip = {"README", "run_all", "victoria_park_slam"}
+        skip = {"README", "run_all", "victoria_park_slam", "NotImplementedError", "TODO"}
         for name in sorted(names - skip):
             if not re.fullmatch(r"[a-z]+(_[a-z0-9]+)+|[A-Z][A-Za-z]+", name):
                 continue  # file names, single words, and plain prose

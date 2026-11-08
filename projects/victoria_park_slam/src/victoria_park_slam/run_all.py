@@ -59,14 +59,17 @@ from .types import MeasurementModelConfig, MotionModelConfig, TreeObservation, V
 # ---------------------------------------------------------------------------
 
 TUNING: dict[str, Any] = {
+    # TODO(Project 2, Part D): justify the particle count and seeds with the sweeps.
     "num_particles": 50,
     "seed": 0,
     # Control noise Q_u, one-sigma per 25 ms prediction step:
     # [encoder speed (m/s), steering (deg)]. Independent at 40 Hz, so think in
     # terms of the spread it produces per second, not per sample.
+    # TODO(Project 2, Part C): tune Q_u and R from your vehicle model and extractor.
     "control_std": [0.5, 3.0],
     "range_std_m": 0.5,
     "bearing_std_deg": 2.0,
+    # TODO(Project 2, Part B): choose the gates, p0, and landmark lifecycle and report them.
     "gate_threshold": 5.99,  # chi2(2 dof, 95%)
     "birth_threshold": 13.82,  # chi2(2 dof, 99.9%)
     "new_landmark_log_likelihood": None,  # log p0; None = FastSLAM.log_p0 default

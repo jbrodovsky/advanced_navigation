@@ -98,10 +98,12 @@ class EKFNavigator:
 
     def predict(self, acc: np.ndarray, omg: np.ndarray, dt: float) -> None:
         """Propagate ``x`` with ``propagate_state`` and ``P`` with the Jacobian ``F``."""
+        # TODO(Project 1, Part C): implement the EKF prediction step (Part C handout, EKF Requirements).
         raise NotImplementedError("Part C: implement the EKF prediction step")
 
     def update(self, z: np.ndarray) -> bool:
         """Fuse one PnP pose ``z`` (6,); return False if the NIS gate rejected it."""
+        # TODO(Project 1, Part C): implement the EKF update step with NIS gating (Part C handout, EKF Requirements).
         raise NotImplementedError("Part C: implement the EKF update step")
 
 
@@ -146,10 +148,12 @@ class UKFNavigator:
 
     def predict(self, acc: np.ndarray, omg: np.ndarray, dt: float) -> None:
         """Push sigma points through ``propagate_state``; recombine with angle-aware means."""
+        # TODO(Project 1, Part C): implement the UKF prediction step (Part C handout, UKF Requirements).
         raise NotImplementedError("Part C: implement the UKF prediction step")
 
     def update(self, z: np.ndarray) -> bool:
         """Redraw sigma points from the prior, then fuse ``z``; False if gated out."""
+        # TODO(Project 1, Part C): implement the UKF update step, redrawing sigma points (Part C handout, UKF Requirements).
         raise NotImplementedError("Part C: implement the UKF update step")
 
 
@@ -238,10 +242,12 @@ class ParticleFilterNavigator:
         angles must be angle-aware (average ``sin`` and ``cos``, then
         ``atan2``), or a yaw cloud straddling +/- pi averages to nonsense.
         """
+        # TODO(Project 1, Part C): implement the three particle-filter point estimates (Part C handout, Particle Filter Requirements).
         raise NotImplementedError("Part C: implement the particle-filter point estimates")
 
     def predict(self, acc: np.ndarray, omg: np.ndarray, dt: float) -> None:
         """Propagate every particle and add sampled process noise (vectorized)."""
+        # TODO(Project 1, Part C): implement vectorized particle propagation (Part C handout, Particle Filter Requirements).
         raise NotImplementedError("Part C: implement the particle-filter prediction step")
 
     def update(self, z: np.ndarray) -> bool:
@@ -256,10 +262,12 @@ class ParticleFilterNavigator:
         point estimates first and then calls :meth:`resample_if_needed`. Log
         ``"nis"``, ``"accepted"`` and ``"n_eff"`` in ``history``.
         """
+        # TODO(Project 1, Part C): implement the log-weight update and N_eff logging (Part C handout, Particle Filter Requirements).
         raise NotImplementedError("Part C: implement the particle-filter update step")
 
     def resample(self) -> None:
         """Low-variance (systematic) resampling; reset weights to 1/N."""
+        # TODO(Project 1, Part C): implement systematic resampling (Part C handout, Particle Filter Requirements).
         raise NotImplementedError("Part C: implement low-variance or systematic resampling")
 
     def resample_if_needed(self) -> bool:

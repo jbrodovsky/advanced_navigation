@@ -83,11 +83,13 @@ TUNING: dict[str, Any] = {
     # IMU noise (continuous-time; see IMUNoise and @sec-ins-errors-from-imu-specs).
     # At 1 Hz these must also absorb what a 1 Hz sample misses (vibration,
     # rate changes within the second), so expect values well above a datasheet's.
+    # TODO(Project 3, Part B): trace these to a datasheet and argue every inflation.
     "accel_vrw_mps_rt_s": 0.1,
     "gyro_arw_deg_rt_s": 0.1,
     "accel_bias_rw_mps2_rt_s": 1.0e-3,
     "gyro_bias_rw_deg_s_rt_s": 1.0e-2,
     # Initial one-sigma uncertainties.
+    # TODO(Project 3, Part B): set these from your alignment and the first fixes.
     "init_position_m": (3.0, 3.0, 5.0),
     "init_velocity_mps": 0.5,
     "init_roll_pitch_deg": 2.0,
@@ -95,6 +97,7 @@ TUNING: dict[str, Any] = {
     "init_accel_bias_mps2": 0.3,
     "init_gyro_bias_deg_s": 0.2,
     # GNSS measurement noise: R from the receiver's accuracy, times this scale.
+    # TODO(Project 3, Part B): choose the R scale, floor, and gate; justify them with the NIS.
     "gnss_r_scale": 1.0,
     "gnss_r_floor_m": 1.0,
     # Innovation gate (None = accept every fix; e.g. 16.27 = chi2(3 dof, 99.9%)).
@@ -103,6 +106,7 @@ TUNING: dict[str, Any] = {
     # the phone here, a few centimeters apart, so zero is the honest value.
     "lever_arm_b_m": (0.0, 0.0, 0.0),
     # Extension: also fuse the horizontal GNSS velocity (speed and course).
+    # TODO(Project 3, Extension): turn on once gnss_velocity_residual works, if you choose it.
     "use_velocity_aiding": False,
     # Alignment: start when the GNSS speed exceeds this for 5 s in a row.
     "departure_speed_mps": 5.0,

@@ -42,6 +42,7 @@ def build_apriltag_corner_map() -> dict[int, np.ndarray]:
     tags are separated by ``config.NORMAL_GAP_M``, except between columns 3-4
     and 6-7 (one-based), where the gap is ``config.WIDE_GAP_M``.
     """
+    # TODO(Project 1, Part B): build the world-frame corner map of the tag mat (Part B handout, AprilTag Map).
     raise NotImplementedError(
         "Part B: implement build_apriltag_corner_map() from config.TAG_IDS, "
         "TAG_SIZE_M, NORMAL_GAP_M and WIDE_GAP_M (see the Part B handout)."
@@ -86,6 +87,7 @@ def estimate_pose(
         correspondences are available (for example, no tag in view) or when
         the solver fails.
     """
+    # TODO(Project 1, Part B): implement PnP pose estimation (Part B handout, Pose Estimation).
     raise NotImplementedError(
         "Part B: implement estimate_pose(...) with build_apriltag_corner_map(), "
         "cv2.solvePnP (zero distortion), and T_camera_body (see the Part B handout)."
@@ -122,6 +124,7 @@ def estimate_measurement_covariance(
         If the two sequences differ in length, contain fewer than two pairs,
         or contain an invalid truth sample.
     """
+    # TODO(Project 1, Part B): estimate R from wrapped PnP residuals (Part B handout, Measurement Bias and Covariance).
     raise NotImplementedError(
         "Part B: implement estimate_measurement_covariance(...) from wrapped "
         "pose residuals against Vicon (see the Part B handout)."

@@ -58,6 +58,7 @@ def error_state_jacobian(state: NavState, specific_force_b: np.ndarray) -> np.nd
     The tests compare it with a numerical Jacobian of your own
     :func:`~ins_gnss.strapdown.mechanize`.
     """
+    # TODO(Project 3, Part B): implement the 15-state error-state Jacobian F (handout, Part B).
     raise NotImplementedError("Part B: implement error_state_jacobian(state, specific_force_b).")
 
 
@@ -70,6 +71,7 @@ def discrete_process_noise(state: NavState, noise: IMUNoise, dt_s: float) -> np.
     the bias random walks). Van Loan's method (@sec-kf-process-noise) is a
     worthwhile refinement. Must be symmetric positive semidefinite.
     """
+    # TODO(Project 3, Part B): implement the discrete process noise Q_d (handout, Part B).
     raise NotImplementedError("Part B: implement discrete_process_noise(state, noise, dt_s).")
 
 
@@ -85,6 +87,7 @@ def gnss_position_residual(
     ``H = [I_3, 0, -[C_hat_b^n l^b]_x, 0, 0]``
     (@sec-ins-gnss-loose-gnss-measurement, @sec-ins-gnss-lever-arm-timing).
     """
+    # TODO(Project 3, Part B): implement the GNSS position residual with the lever arm (handout, Part B).
     raise NotImplementedError("Part B: implement gnss_position_residual(state, gnss, lever_arm_b).")
 
 
@@ -98,6 +101,7 @@ def joseph_update(
     Joseph form ``P_plus = (I - K H) P (I - K H)^T + K R K^T``; and the
     normalized innovation squared ``nis = nu^T S^-1 nu``.
     """
+    # TODO(Project 3, Part B): implement the Joseph-form Kalman update (handout, Part B).
     raise NotImplementedError("Part B: implement joseph_update(P, nu, H, R).")
 
 
@@ -108,6 +112,7 @@ def inject_error_state(state: NavState, delta_x: np.ndarray) -> NavState:
     (:func:`~ins_gnss.earth.ned_to_geodetic_delta`) and add. Velocity and
     biases: add. Attitude: ``q <- dq(dtheta) (x) q``, then normalize.
     """
+    # TODO(Project 3, Part B): implement error-state injection into the nominal state (handout, Part B).
     raise NotImplementedError("Part B: implement inject_error_state(state, delta_x).")
 
 
@@ -118,6 +123,7 @@ def reset_covariance(P: np.ndarray, delta_theta: np.ndarray) -> np.ndarray:
     ``I + [delta_theta / 2]_x`` (navigation-frame error; @eq-ekf-reset-jacobian).
     Return a symmetric matrix.
     """
+    # TODO(Project 3, Part B): implement the covariance reset after injection (handout, Part B).
     raise NotImplementedError("Part B: implement reset_covariance(P, delta_theta).")
 
 
@@ -132,6 +138,7 @@ def gnss_velocity_residual(
     columns (the corrected rate ``omega_ib^b = gyro - b_g`` depends on the bias).
     Only needed for the velocity-aiding extension.
     """
+    # TODO(Project 3, Extension): implement the GNSS velocity residual if you choose velocity aiding (handout, Extensions).
     raise NotImplementedError("Extension: implement gnss_velocity_residual(state, gnss, lever_arm_b, gyro_rps).")
 
 

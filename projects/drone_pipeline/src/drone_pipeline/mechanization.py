@@ -81,6 +81,7 @@ def propagate_state(
         The propagated state with the same shape as ``x``, with roll, pitch
         and yaw wrapped into [-pi, pi). Biases are held constant.
     """
+    # TODO(Project 1, Part A): implement the 15-state strapdown propagation (Part A handout, Requirements).
     raise NotImplementedError(
         "Part A: implement propagate_state(x, acc, omg, dt, params) for the "
         "15-state model in the Part A handout."

@@ -55,18 +55,23 @@ from .types import DroneDataset, DroneParameters, PoseObservation, TruthSample
 TUNING: dict[str, Any] = {
     # Initial covariance diagonal (std devs): position m, attitude rad,
     # velocity m/s, gyro bias rad/s, accel bias m/s^2.
+    # TODO(Project 1, Part C): choose P0 for PnP initialization on a moving start.
     "P0_std": [0.05] * 3 + [0.02] * 3 + [0.5] * 3 + [0.05] * 3 + [0.2] * 3,
     # Process-noise spectral density diagonal (per second), same layout.
-    # TODO(Part A): justify from your IMU characterization.
+    # TODO(Project 1, Part A): justify from your IMU characterization.
     "Q_density": [1e-4] * 3 + [1e-3] * 3 + [1e-2] * 3 + [1e-6] * 3 + [1e-4] * 3,
     # Measurement covariance: None = estimate from the development split with
     # your estimate_measurement_covariance(); or paste a (6, 6) matrix here.
+    # TODO(Project 1, Part B): decide how R handles the PnP bias and single-tag frames.
     "R": None,
     # Multiply R by this before filtering (report it if it is not 1).
     "R_inflation": 1.0,
     # Chi-square gate probability for the Kalman filters (None disables).
+    # TODO(Project 1, Part C): choose the gate and report how many poses it rejects.
     "gate_probability": 0.999,
+    # TODO(Project 1, Part C): tune alpha, beta, kappa and study at least three alphas.
     "ukf": {"alpha": 1e-3, "beta": 2.0, "kappa": 0.0},
+    # TODO(Project 1, Part C): tune the particle filter and report any R or Q inflation.
     "pf": {"num_particles": 1000, "resample_threshold": 0.5, "seed": 0},
     # Longest single prediction step; longer packet gaps are split.
     "max_step_s": 0.05,
@@ -134,6 +139,7 @@ def collect_observations(
 
 def state_from_truth(sample: TruthSample) -> np.ndarray:
     """15-state vector from a Vicon sample, with zero biases (Part A oracle start)."""
+    # TODO(Project 1, Part A): also run with the biases from your IMU characterization.
     x0 = np.zeros(STATE_DIM)
     x0[0:3], x0[3:6], x0[6:9] = sample.position, sample.rpy, sample.velocity
     return x0
@@ -141,6 +147,7 @@ def state_from_truth(sample: TruthSample) -> np.ndarray:
 
 def state_from_pose(pose: PoseObservation) -> np.ndarray:
     """15-state vector from a PnP pose: zero velocity and biases."""
+    # TODO(Project 1, Part C): zero biases is one choice; the Part A estimates are another.
     x0 = np.zeros(STATE_DIM)
     x0[0:6] = pose.z
     return x0
@@ -160,6 +167,7 @@ def initial_state_from_poses(
     already moving). With ``window_s = 0`` it starts at the first usable pose
     with zero velocity. Biases start at zero either way.
     """
+    # TODO(Project 1, Part B): make min_points (the single-tag rule) match your Part B decision.
     indices = [k for k, pose in enumerate(poses) if pose is not None and pose.num_points >= min_points]
     if not indices:
         indices = [k for k, pose in enumerate(poses) if pose is not None]
@@ -178,6 +186,7 @@ def initial_state_from_poses(
 
 def dead_reckon(dataset: DroneDataset, x0: np.ndarray, start: int, max_step_s: float) -> np.ndarray:
     """Propagate ``x0`` from packet ``start`` with ``propagate_state`` only."""
+    # TODO(Project 1, Part A): propagate P alongside x for the +/- 3 sigma envelope.
     packets = dataset.packets
     times = dataset.packet_times
     states = np.empty((len(packets) - start, STATE_DIM))

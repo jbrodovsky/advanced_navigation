@@ -97,7 +97,8 @@ class LandmarkEKF(LandmarkState):
         ``P = G_z R G_z^T``. The new landmark is ``TENTATIVE`` with
         ``observation_count = 1`` and ``first_seen_s = last_seen_s = time_s``.
         """
-        raise NotImplementedError("students should implement landmark initialization")
+        # TODO(Project 2, Part B): implement landmark initialization (handout, FastSLAM Specification).
+        raise NotImplementedError("Part B: implement LandmarkEKF.initialize(pose, measurement, measurement_covariance, *, time_s).")
 
     def innovation(
         self,
@@ -113,7 +114,8 @@ class LandmarkEKF(LandmarkState):
         ``S = H_l P H_l^T + R``. (Same return order as the SLAM chapter's
         ``LandmarkEKF``.)
         """
-        raise NotImplementedError("students should implement the landmark innovation")
+        # TODO(Project 2, Part B): implement the landmark innovation, Jacobian, and S (handout, FastSLAM Specification).
+        raise NotImplementedError("Part B: implement LandmarkEKF.innovation(pose, measurement, measurement_covariance).")
 
     def updated(
         self,
@@ -134,7 +136,8 @@ class LandmarkEKF(LandmarkState):
         ``first_seen_s``. Do **not** modify ``self``
         (``dataclasses.replace`` is handy).
         """
-        raise NotImplementedError("students should implement landmark updates")
+        # TODO(Project 2, Part B): implement the Joseph-form landmark update (handout, FastSLAM Specification).
+        raise NotImplementedError("Part B: implement LandmarkEKF.updated(pose, measurement, measurement_covariance, *, time_s).")
 
 
 @dataclass(slots=True)
@@ -359,7 +362,8 @@ class FastSLAM:
         :func:`~victoria_park_slam.utils.predict_laser_pose`. Vectorize over
         particles: this runs about 8-9 times per scan.
         """
-        raise NotImplementedError("students should implement the FastSLAM prediction step")
+        # TODO(Project 2, Part C): implement the vectorized FastSLAM prediction (handout, Part C).
+        raise NotImplementedError("Part C: implement FastSLAM.predict(speed_mps, steering_rad, dt_s).")
 
     def associate(self, particle: FastSLAMParticle, measurements: np.ndarray) -> list[Association]:
         """Associate ``measurements`` (``(M, 2)`` rows ``[r, beta]``) inside one particle.
@@ -378,7 +382,8 @@ class FastSLAM:
         (pre-filtering by range is a good speed-up). Do not modify the
         particle.
         """
-        raise NotImplementedError("students should implement per-particle data association")
+        # TODO(Project 2, Part B): implement per-particle data association with both gates (handout, Part B).
+        raise NotImplementedError("Part B: implement FastSLAM.associate(particle, measurements).")
 
     def update(self, observations: Sequence[TreeObservation], time_s: float) -> None:
         """Process one scan's observations taken at ``time_s``.
@@ -396,7 +401,8 @@ class FastSLAM:
         ``resample_threshold * N``. An empty observation list still needs the
         bookkeeping (timeouts, trajectory).
         """
-        raise NotImplementedError("students should implement the FastSLAM update step")
+        # TODO(Project 2, Part C): implement weights, landmark updates and bookkeeping, and the resampling decision (handout, Part C).
+        raise NotImplementedError("Part C: implement FastSLAM.update(observations, time_s).")
 
     def resample(self) -> None:
         """Systematic resampling of the particle set.
@@ -406,4 +412,5 @@ class FastSLAM:
         ``self.rng``), replace the particle list with ``particles[i].copy()``
         for each index, and reset every log weight to ``-log(N)``.
         """
-        raise NotImplementedError("students should implement particle resampling")
+        # TODO(Project 2, Part C): implement systematic particle resampling (handout, Part C).
+        raise NotImplementedError("Part C: implement FastSLAM.resample().")
