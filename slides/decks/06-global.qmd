@@ -2616,11 +2616,11 @@ A phone in a car, a fix every second, and a covariance that has to tell the trut
 ## The job
 
 ```text
-phone IMU (1 Hz) --> mount rotation (given) --> mechanization (Part A) --> L, lambda, h, v, q
+phone IMU (10 Hz) --> mount rotation (given) --> mechanization (Part A) --> L, lambda, h, v, q
                                                        |
 GNSS fix (1 Hz) --> residual, lever arm (Part B) --> ESKF: F, Q_d, update, reset (Part B)
                                                        |
-x_hat, P every second --> outages, NIS, errors (Part C) --> map matching, guidance, control
+x_hat, P every 0.1 s --> outages, NIS, errors (Part C) --> map matching, guidance, control
 ```
 
 . . .
@@ -2651,7 +2651,7 @@ engineering problem, different time constants.
 ```{python}
 from ins_gnss.datasets import load_mems_nav_trial, recommended_trials
 
-trial_name = recommended_trials()[1]                 # 2023-08-09_163741, the short one
+trial_name = recommended_trials()[-1]                # 2025-11-09_17-34-01_A, the short one
 trial = load_mems_nav_trial(None, trial_name)
 fixes = trial.gnss_samples
 t_min = np.array([s.time_s for s in fixes]) / 60.0
@@ -2679,34 +2679,37 @@ fig.tight_layout()
 plt.show()
 ```
 
-An Android phone in a car around Philadelphia, the Jersey Shore, and Long Island:
-17 trials, 5 recommended. `uv run python scripts/fetch_data.py mems-nav-dataset`
+A phone in a car, 2023 to 2025: 27 drives, 5 recommended.
+`uv run python scripts/fetch_data.py mems-nav-dataset`
 
 ::: {.notes}
-The instructor's own dataset. Every trial also has a baseline reference solution
-and the phone's barometer, magnetometer, and own orientation in trial.auxiliary.
-recommended_trials() returns the five vetted ones; TRIAL_NOTES explains every
-trial's status, including the three excluded ones.
+The instructor's own dataset, the Project3-data folder of the course data bundle.
+Every trajectory also has a truth/ reference solution and the phone's barometer,
+magnetometer, and own orientation in trial.auxiliary. recommended_trials()
+returns the five vetted ones; TRIAL_NOTES explains every trial's status,
+including the two excluded ones.
 :::
 
 ## Read the data before you trust it
 
 ::: {.incremental}
-- **1 Hz everything, the IMU included.** Whole-second timestamps; each interval
-  is propagated with the average of its two IMU samples
+- **10 Hz IMU, 1 Hz GNSS.** Each row is a 0.1 s bin (the IMU averaged over it);
+  a fix sits on the row of the bin it fell in
 - **Phone axes** ($x$ right, $y$ up the screen, $z$ out of it). Rotate to vehicle
   forward-right-down with `estimate_mount_rotation` first
 - **Height is already ellipsoidal** (shore fixes read $-33$ to $-49$ m). Use it as $h$
-- **The baseline is not truth.** Labelled 1 s early, kilometers off in some gaps,
-  2 to 14 m off in height. Compare horizontally where `reference_valid_mask`
-  holds; never fuse it
+- **The `truth/` reference is not truth.** GNSS-aided, it hugs the fixes and
+  strays up to kilometers in long gaps; its vertical velocity is positive up.
+  Compare horizontally where `reference_valid_mask` holds; never fuse it
 - **The phone's own orientation:** gravity right, heading tens of degrees off.
   Sanity checks only
 :::
 
 ::: {.notes}
-The loader now adds the 1 s baseline offset (BASELINE_TIME_OFFSET_S); with it the
-baseline agrees with GNSS to a median of 0.4 to 0.8 m. The upright phone sits near
+Input and reference share one clock: the reference agrees with the fixes to a
+median of 0.5 to 0.8 m on the recommended trials at zero offset, and a 1 s shift
+puts it about 30 m off at highway speed. The loader flips the vertical velocity
+to NED down. The upright phone sits near
 -90 degrees of Z-Y-X pitch in phone axes, gimbal lock, another reason to work in
 vehicle axes. Compare attitudes with attitude_error, never by subtracting Euler
 angles. The gyro output looks bias-compensated by the phone. repeated_fix_mask
@@ -2749,7 +2752,7 @@ reset_covariance(P, delta_theta)                    # -> P
 ::: {.incremental}
 - $\mathbf{F}$ must match a finite-difference Jacobian of **your** `mechanize`:
   show the check
-- `IMUNoise` from a consumer data sheet, then **argued** inflation for 1 Hz samples
+- `IMUNoise` from a consumer data sheet, then **argued** inflation for a phone in a car
 - $\mathbf{R}$ from the receiver's accuracy (a 68% radius on Android), justified
   by the NIS; an optional gate at 16.27 (99.9%, 3 DOF)
 - Sigma and bias plots read through observability: when does yaw wake up?
@@ -2760,8 +2763,9 @@ INSGNSSFilter strings them together: predict mechanizes and propagates P with
 F_d = I + F dt and your Q_d; update_gnss_position computes your residual, runs
 your update, injects, resets, and logs the NIS. The tests skip until each function
 exists, then check it strictly; they do not check whether your filter is any good
-on real data. The inflation must cover what a once-per-second sample misses:
-vibration, rate changes within the second, road grade.
+on real data. The inflation must cover what a bench datasheet does not: vibration,
+mount flex, temperature, the phone's own bias compensation. Each sample is a
+0.1 s average, which also changes the white-noise terms.
 :::
 
 ## Part C: evaluation
@@ -2796,9 +2800,9 @@ underconfident, or GNSS errors correlated in time, which they are.
 
 ::: {.incremental}
 - Filtering in phone axes, or before checking the mount rotation
-- Scoring against the unshifted baseline, or fusing it
+- Scoring against the unmasked reference, or fusing it
 - Turn-on bias in $\mathbf{Q}$; inflation of anything without an argument
-- One-second steps: first-order $\mathbf{Q}_d$ is several percent optimistic at 1 Hz
+- Propagating $\mathbf{P}$ once a second to save time: first-order $\mathbf{Q}_d$ is then several percent optimistic
 - A gate whose rejections you never looked at
 - Repeated fixes while moving (`repeated_fix_mask`)
 :::

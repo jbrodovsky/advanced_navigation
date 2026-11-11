@@ -16,7 +16,6 @@ Tests that need the real dataset skip until it has been downloaded.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import math
 import os
@@ -31,7 +30,6 @@ from scipy.linalg import expm
 from ins_gnss import eskf, run_all, strapdown
 from ins_gnss.data_paths import DATA_ENV_VAR, DatasetNotFoundError
 from ins_gnss.datasets import (
-    BASELINE_TIME_OFFSET_S,
     TRIAL_NOTES,
     default_mems_root,
     estimate_mount_rotation,
@@ -102,6 +100,7 @@ def _real_mems_root() -> Path | None:
 
 
 REAL_DATA = _real_mems_root()
+SHORT_TRIAL = "2025-11-09_17-34-01_A"  # the short recommended trial
 
 
 def call_or_skip(test: unittest.TestCase, function, *args, **kwargs):
@@ -111,16 +110,6 @@ def call_or_skip(test: unittest.TestCase, function, *args, **kwargs):
     except NotImplementedError as error:
         name = getattr(function, "__qualname__", repr(function))
         test.skipTest(f"{name} is not implemented yet (starter stub): {error}")
-
-
-def _load_fetch_script():
-    script_path = REPO_ROOT / "scripts" / "fetch_ins_gnss_data.py"
-    spec = importlib.util.spec_from_file_location("fetch_ins_gnss_data", script_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"could not import {script_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 # ---------------------------------------------------------------------------
@@ -269,41 +258,30 @@ INPUT_HEADER = (
     "altitude,longitude,latitude,qz,qy,qx,qw,roll,pitch,yaw,acc_z,acc_y,acc_x,"
     "gyro_z,gyro_y,gyro_x,mag_z,mag_y,mag_x,relativeAltitude,pressure,grav_z,grav_y,grav_x\n"
 )
-BASELINE_HEADER = (
-    "timestamp,latitude,longitude,altitude,velocity_north,velocity_east,velocity_down,"
+TRUTH_HEADER = (
+    "timestamp,latitude,longitude,altitude,velocity_north,velocity_east,velocity_vertical,"
     "roll,pitch,yaw,acc_bias_x,acc_bias_y,acc_bias_z,gyro_bias_x,gyro_bias_y,gyro_bias_z,"
     "latitude_cov,longitude_cov,altitude_cov\n"
 )
 
 
 def write_synthetic_trial(root: Path) -> None:
-    """A three-row MEMS trial whose baseline starts one second after the input (as the real files do)."""
+    """A three-row MEMS trial at 10 Hz with a truth row on every input timestamp (as the real files are)."""
     (root / "input").mkdir()
-    (root / "baseline").mkdir()
-    (root / "manifest.json").write_text(
-        json.dumps(
-            {
-                "repo_url": "https://github.com/jbrodovsky/mems-nav-dataset",
-                "ref": "main",
-                "datasets": {
-                    "input": [{"name": "trial-a.csv", "size": 10, "sha": "input-sha"}],
-                    "baseline": [{"name": "trial-a.csv", "size": 20, "sha": "baseline-sha"}],
-                },
-            }
-        )
-    )
+    (root / "truth").mkdir()
     (root / "input" / "trial-a.csv").write_text(
         INPUT_HEADER
-        + "2025-06-14 21:17:02+00:00,1.5,0.2,3.0,4.5,10.0,90.0,58.9,-75.0,40.0,"
+        + "2025-06-14 21:17:02.600000+00:00,1.5,0.2,3.0,4.5,10.0,90.0,58.9,-75.0,40.0,"
         "0,0,0,1,0,0,0,9.8,0.2,0.1,0.03,0.02,0.01,0,0,0,0,1005,9.8,0,0\n"
-        "2025-06-14 21:17:03+00:00,,,,,,,,,,0,0,0,1,0,0,0,9.7,0.3,0.2,0.04,0.03,0.02,0,0,0,0,1005,9.8,0,0\n"
-        "2025-06-14 21:17:04+00:00,0.0,0.1,2.0,3.0,0.0,0.0,59.0,-75.0001,40.0001,"
+        "2025-06-14 21:17:02.700000+00:00,,,,,,,,,,0,0,0,1,0,0,0,9.7,0.3,0.2,0.04,0.03,0.02,0,0,0,0,1005,9.8,0,0\n"
+        "2025-06-14 21:17:02.800000+00:00,0.0,0.1,2.0,3.0,0.0,0.0,59.0,-75.0001,40.0001,"
         "0,0,0,1,0,0,0,,0.3,0.2,0.04,0.03,0.02,0,0,0,0,1005,9.8,0,0\n"
     )
-    (root / "baseline" / "trial-a.csv").write_text(
-        BASELINE_HEADER
-        + "2025-06-14T21:17:03Z,40.0,-75.0,57.0,1.0,2.0,3.0,0.1,0.2,0.3,0.01,0.02,0.03,0.001,0.002,0.003,1e-6,2e-6,3.0\n"
-        "2025-06-14T21:17:04Z,40.0,-75.0,57.0,1.0,2.0,3.0,0.1,0.2,0.3,0.01,0.02,0.03,0.001,0.002,0.003,1e-6,2e-6,3.0\n"
+    (root / "truth" / "trial-a.csv").write_text(
+        TRUTH_HEADER
+        + "2025-06-14T21:17:02.600Z,40.0,-75.0,57.0,1.0,2.0,3.0,0.1,0.2,0.3,0.01,0.02,0.03,0.001,0.002,0.003,1e-6,2e-6,3.0\n"
+        "2025-06-14T21:17:02.700Z,40.0,-75.0,57.0,1.0,2.0,3.0,0.1,0.2,0.3,0.01,0.02,0.03,0.001,0.002,0.003,1e-6,2e-6,3.0\n"
+        "2025-06-14T21:17:02.800Z,40.0,-75.0,57.0,1.0,2.0,-3.0,0.1,0.2,0.3,0.01,0.02,0.03,0.001,0.002,0.003,1e-6,2e-6,3.0\n"
     )
 
 
@@ -312,7 +290,7 @@ class LoaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir) / "mems-nav-dataset"
             (root / "input").mkdir(parents=True)
-            (root / "baseline").mkdir()
+            (root / "truth").mkdir()
             with mock.patch.dict(os.environ, {DATA_ENV_VAR: tmp_dir}):
                 self.assertEqual(default_mems_root(), root)
                 self.assertEqual(list_mems_nav_trials(), [])
@@ -331,26 +309,26 @@ class LoaderTests(unittest.TestCase):
             np.testing.assert_allclose(dataset.gnss_samples[0].velocity_ne_mps(), [1.0, 2.0])
             self.assertEqual(dataset.metadata["source"], "test")
 
-    def test_trial_listing_requires_input_and_baseline(self) -> None:
+    def test_trial_listing_requires_input_and_truth(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             (root / "input").mkdir()
-            (root / "baseline").mkdir()
-            for path in ("input/trial-a.csv", "input/trial-b.csv", "baseline/trial-a.csv"):
+            (root / "truth").mkdir()
+            for path in ("input/trial-a.csv", "input/trial-b.csv", "truth/trial-a.csv"):
                 (root / path).write_text("")
             self.assertEqual(list_mems_nav_trials(root), ["trial-a"])
 
-    def test_mems_loader_uses_one_epoch_and_the_baseline_offset(self) -> None:
+    def test_mems_loader_uses_one_epoch_and_flips_vertical_velocity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             write_synthetic_trial(root)
             trial = load_mems_nav_trial(root, "trial-a")
             # IMU: the third row has a missing accelerometer value and is dropped.
-            self.assertEqual([s.time_s for s in trial.imu_samples], [0.0, 1.0])
+            np.testing.assert_allclose([s.time_s for s in trial.imu_samples], [0.0, 0.1], atol=1e-9)
             np.testing.assert_allclose(trial.imu_samples[0].accel_mps2, [0.1, 0.2, 9.8])
             np.testing.assert_allclose(trial.imu_samples[0].gyro_rps, [0.01, 0.02, 0.03])
             # GNSS: rows 1 and 3; the empty second row is not a fix.
-            self.assertEqual([g.time_s for g in trial.gnss_samples], [0.0, 2.0])
+            np.testing.assert_allclose([g.time_s for g in trial.gnss_samples], [0.0, 0.2], atol=1e-9)
             fix = trial.gnss_samples[0]
             self.assertAlmostEqual(fix.latitude_rad, math.radians(40.0))
             self.assertAlmostEqual(fix.speed_mps, 10.0)
@@ -360,19 +338,22 @@ class LoaderTests(unittest.TestCase):
             self.assertAlmostEqual(fix.bearing_accuracy_rad, math.radians(1.5))
             np.testing.assert_allclose(fix.velocity_ne_mps(), [0.0, 10.0], atol=1e-12)
             self.assertIsNone(fix.velocity_ned_mps)
-            # Baseline: same epoch as the input (first baseline row is 1 s in), plus the 1 s label offset.
-            self.assertEqual(BASELINE_TIME_OFFSET_S, 1.0)
-            self.assertEqual([r.time_s for r in trial.reference_states], [2.0, 3.0])
-            raw = load_mems_nav_trial(root, "trial-a", baseline_time_offset_s=0.0)
-            self.assertEqual([r.time_s for r in raw.reference_states], [1.0, 2.0])
-            reference = trial.reference_states[0]
-            np.testing.assert_allclose(reference.velocity_ned_mps, [1.0, 2.0, 3.0])
-            self.assertEqual(reference.covariance["altitude_cov"], 3.0)
-            self.assertEqual(trial.metadata["ref"], "main")
-            self.assertEqual(trial.metadata["epoch_utc"], "2025-06-14T21:17:02+00:00")
+            # Reference: one row per input row, on the same epoch, no offset by default.
+            np.testing.assert_allclose([r.time_s for r in trial.reference_states], [0.0, 0.1, 0.2], atol=1e-9)
+            shifted = load_mems_nav_trial(root, "trial-a", reference_time_offset_s=0.5)
+            np.testing.assert_allclose([r.time_s for r in shifted.reference_states], [0.5, 0.6, 0.7], atol=1e-9)
+            # The file's vertical velocity is positive up; the loader returns NED down.
+            np.testing.assert_allclose(trial.reference_states[0].velocity_ned_mps, [1.0, 2.0, -3.0])
+            np.testing.assert_allclose(trial.reference_states[2].velocity_ned_mps, [1.0, 2.0, 3.0])
+            self.assertIsNone(trial.reference_states[0].covariance)
+            with_cov = load_mems_nav_trial(root, "trial-a", include_covariance=True)
+            self.assertEqual(with_cov.reference_states[0].covariance["altitude_cov"], 3.0)
+            self.assertEqual(trial.metadata["epoch_utc"], "2025-06-14T21:17:02.600000+00:00")
+            self.assertEqual(trial.truth_path, root / "truth" / "trial-a.csv")
             data = gnss_arrays(trial.gnss_samples)
             self.assertEqual(data["speed_mps"].tolist(), [10.0, 0.0])
-            self.assertEqual(reference_arrays(trial.reference_states)["velocity_ned_mps"].shape, (2, 3))
+            self.assertEqual(reference_arrays(trial.reference_states)["velocity_ned_mps"].shape, (3, 3))
+            self.assertEqual(trial.auxiliary["pressure_hpa"].tolist(), [1005.0] * 3)
 
     def test_repeated_fixes_are_stale_only_when_moving(self) -> None:
         fixes = [
@@ -403,40 +384,12 @@ class LoaderTests(unittest.TestCase):
         self.assertLess(abs(np.mean(accel[:, 2]) + 9.8), 0.05)
 
     def test_trial_notes_cover_the_audit(self) -> None:
-        for name in ("2024-06-20_165550", "2025-06-11_20-34-24", "2025-06-14_21-17-02"):
+        for name in ("2025-06-11_20-34-24_A", "2025-06-14_21-17-02"):
             self.assertEqual(TRIAL_NOTES[name].status, "excluded")
         recommended = [name for name, note in TRIAL_NOTES.items() if note.status == "recommended"]
-        self.assertGreaterEqual(len(recommended), 3)
-
-    def test_fetch_script_builds_urls_manifest_and_skip_plan(self) -> None:
-        fetch_script = _load_fetch_script()
-        self.assertEqual(
-            fetch_script.contents_api_url("baseline", "feature/test"),
-            "https://api.github.com/repos/jbrodovsky/mems-nav-dataset/contents/data/baseline?ref=feature%2Ftest",
-        )
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            target = Path(tmp_dir) / "trial.csv"
-            target.write_text("12345")
-            self.assertEqual(fetch_script.planned_action(target, 5, force=False), "skip")
-            self.assertEqual(fetch_script.planned_action(target, 6, force=False), "download")
-            self.assertEqual(fetch_script.planned_action(target, 5, force=True), "download")
-        manifest = fetch_script.build_manifest(
-            "main",
-            {
-                "input": [
-                    {
-                        "name": "trial.csv",
-                        "path": "data/input/trial.csv",
-                        "size": 5,
-                        "sha": "abc",
-                        "download_url": "https://example.test/input.csv",
-                    }
-                ],
-                "baseline": [],
-            },
-        )
-        self.assertEqual(manifest["repo_url"], "https://github.com/jbrodovsky/mems-nav-dataset")
-        self.assertEqual(manifest["datasets"]["input"][0]["sha"], "abc")
+        self.assertEqual(len(recommended), 5)  # the handout and rubric say "all five"
+        self.assertEqual(len(TRIAL_NOTES), 27)
+        self.assertTrue(all(note.status in {"recommended", "caution", "excluded"} for note in TRIAL_NOTES.values()))
 
 
 # ---------------------------------------------------------------------------
@@ -506,9 +459,10 @@ class EvaluationTests(unittest.TestCase):
             root = Path(tmp_dir)
             write_synthetic_trial(root)
             trial = load_mems_nav_trial(root, "trial-a")
-            # Reference at t = 2 s is at (40, -75); the fix at 2 s is ~14 m away; t = 3 s has no fix.
-            self.assertEqual(reference_valid_mask(trial).tolist(), [False, False])
-            self.assertEqual(reference_valid_mask(trial, max_disagreement_m=20.0).tolist(), [True, False])
+            # Every reference row is at (40, -75). The fix at 0 s agrees; 0.1 s has no fix in
+            # its bin; the fix at 0.2 s is ~14 m away.
+            self.assertEqual(reference_valid_mask(trial).tolist(), [True, False, False])
+            self.assertEqual(reference_valid_mask(trial, max_disagreement_m=20.0).tolist(), [True, False, True])
 
     def test_chi_square_helpers(self) -> None:
         low, high = chi2_interval(3, 0.95)
@@ -553,37 +507,45 @@ class FilterBookkeepingTests(unittest.TestCase):
 class RealDataTests(unittest.TestCase):
     def test_real_dataset_facts(self) -> None:
         trials = list_mems_nav_trials()
-        self.assertGreaterEqual(len(trials), 10)
-        name = "2023-08-09_163741"
+        self.assertGreaterEqual(len(trials), 20)
+        name = SHORT_TRIAL
         if name not in trials:
             self.skipTest(f"{name} not present")
         trial = load_mems_nav_trial(None, name)
         t_imu, accel, _ = imu_arrays(trial.imu_samples)
-        self.assertAlmostEqual(float(np.median(np.diff(t_imu))), 1.0)  # 1 Hz IMU
-        self.assertAlmostEqual(float(np.max(np.diff(t_imu))), 1.0)
+        self.assertAlmostEqual(float(np.median(np.diff(t_imu))), 0.1, places=6)  # 10 Hz IMU
+        self.assertLess(float(np.max(np.diff(t_imu))), 0.11)
+        self.assertEqual(len(trial.reference_states), len(trial.imu_samples))  # one reference row per input row
         self.assertGreater(np.mean(accel[:, 1]), 9.0)  # phone upright: gravity reaction on +y
-        # With one epoch and the 1 s label offset the baseline sits on the GNSS fixes.
         gnss = gnss_arrays(trial.gnss_samples)
-        for offset, low, high in ((BASELINE_TIME_OFFSET_S, 0.0, 1.5), (0.0, 10.0, 1e9)):
-            ref = reference_arrays(load_mems_nav_trial(None, name, baseline_time_offset_s=offset).reference_states)
+        self.assertAlmostEqual(float(np.median(np.diff(gnss["time_s"]))), 1.0, places=1)  # ~1 Hz fixes
+        # The reference sits on the GNSS fixes with no time offset; a 1 s offset puts it
+        # tens of meters away at driving speed.
+        moving = np.nan_to_num(gnss["speed_mps"]) > 5.0
+        for offset, low, high in ((0.0, 0.0, 1.5), (1.0, 10.0, 1e9)):
+            ref = reference_arrays(load_mems_nav_trial(None, name, reference_time_offset_s=offset).reference_states)
             _, error = position_error_ned(
-                gnss["time_s"], gnss["latitude_rad"], gnss["longitude_rad"], gnss["altitude_m"],
+                gnss["time_s"][moving], gnss["latitude_rad"][moving], gnss["longitude_rad"][moving], gnss["altitude_m"][moving],
                 ref["time_s"], ref["latitude_rad"], ref["longitude_rad"], ref["altitude_m"],
             )
             median = float(np.median(np.hypot(error[:, 0], error[:, 1])))
             self.assertTrue(low <= median <= high, f"offset {offset}: median {median:.2f} m")
+        # Vertical velocity is NED down: it tracks minus the reference altitude rate.
+        ref = reference_arrays(trial.reference_states)
+        climb = np.gradient(ref["altitude_m"], ref["time_s"])
+        self.assertGreater(float(np.corrcoef(climb, -ref["velocity_ned_mps"][:, 2])[0, 1]), 0.5)
 
     def test_recommended_trials_are_present_and_upright(self) -> None:
         names = recommended_trials()
-        self.assertIn("2023-08-09_163741", names)
-        trial = load_mems_nav_trial(None, "2023-08-09_163741")
+        self.assertIn(SHORT_TRIAL, names)
+        trial = load_mems_nav_trial(None, SHORT_TRIAL)
         C_pv = estimate_mount_rotation(trial.imu_samples, trial.gnss_samples)
-        self.assertGreater(-C_pv[0, 2], 0.98)  # vehicle forward is the phone's -z
+        self.assertGreater(-C_pv[0, 2], 0.97)  # vehicle forward is the phone's -z (about 8 deg of yaw offset)
         self.assertGreater(-C_pv[2, 1], 0.98)  # vehicle down is the phone's -y
 
     def test_run_all_does_not_crash(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            self.assertEqual(run_all.main(["--trial", "2023-08-09_163741", "--out", tmp_dir]), 0)
+            self.assertEqual(run_all.main(["--trial", SHORT_TRIAL, "--out", tmp_dir]), 0)
             self.assertTrue((Path(tmp_dir) / "summary.md").exists())
 
 

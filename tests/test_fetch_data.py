@@ -147,6 +147,35 @@ class FetchDatasetTests(unittest.TestCase):
         with self.assertRaises(fetch_data.FetchError):
             _quiet(fetch_data.fetch_dataset, source, self.data_dir)
 
+    def test_bundle_subdir_installs_one_folder_and_reuses_download(self) -> None:
+        bundle = _make_zip(
+            self.tmp / "bundle.zip",
+            {
+                "bundle/P1/a.txt": b"one",
+                "bundle/P1/sub/b.txt": b"one-b",
+                "bundle/P2/a.txt": b"two",
+                "bundle/P2/sub/b.txt": b"two-b",
+            },
+        )
+        common = dict(archive="bundle.zip", sha256=_sha256(bundle))
+        first = _source(bundle.as_uri(), name="first", subdir="bundle/P1", **common)
+        second = _source(bundle.as_uri(), name="second", subdir="bundle/P2", **common)
+        _quiet(fetch_data.fetch_dataset, first, self.data_dir, keep_download=True)
+        self.assertTrue((self.data_dir / ".downloads" / "bundle.zip").exists())
+        bundle.unlink()  # a second download would now fail; the kept copy must be reused
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            fetch_data.fetch_dataset(second, self.data_dir)
+        self.assertIn("reusing", output.getvalue())
+        self.assertEqual((self.data_dir / "first" / "a.txt").read_text(), "one")
+        self.assertEqual((self.data_dir / "second" / "sub" / "b.txt").read_text(), "two-b")
+        self.assertFalse((self.data_dir / "first" / "P2").exists())
+        self.assertFalse((self.data_dir / ".downloads" / "bundle.zip").exists())
+
+    def test_missing_subdir_is_an_error(self) -> None:
+        with self.assertRaises(fetch_data.FetchError):
+            fetch_data.safe_extract(self.archive, self.data_dir / "toy", subdir="nope")
+
     def test_unsafe_member_is_rejected(self) -> None:
         evil = _make_zip(self.tmp / "evil.zip", {"../escape.txt": b"x"})
         with self.assertRaises(fetch_data.FetchError):
@@ -160,9 +189,8 @@ class DataSourcesFileTests(unittest.TestCase):
         self.assertEqual(set(sources), {"drone-data", "victoria-park", "mems-nav-dataset"})
         for source in sources.values():
             self.assertTrue(source.expected_files, source.name)
-            if source.provider != "github":
-                self.assertEqual(len(source.sha256), 64, source.name)
-                self.assertIsNotNone(source.issue, source.name)
+            self.assertEqual(len(source.sha256), 64, source.name)
+            self.assertIsNotNone(source.issue, source.name)
 
 
 class PackageDatasetsTests(unittest.TestCase):

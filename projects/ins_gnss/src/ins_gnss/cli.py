@@ -3,7 +3,7 @@
 From the repository root::
 
     uv run ins-gnss                       # every trial with its status (recommended, caution, excluded)
-    uv run ins-gnss --trial 2023-08-09_163741
+    uv run ins-gnss --trial 2025-11-09_17-34-01_A
     uv run ins-gnss --root path/to/conventional/dataset   # an imu.csv / gnss.csv folder
 """
 
@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> None:
     gnss = gnss_arrays(trial.gnss_samples)
     print(f"{trial.name}: {len(trial.imu_samples)} IMU samples, {len(trial.gnss_samples)} GNSS fixes, "
           f"{len(trial.reference_states)} reference states over {t_imu[-1] - t_imu[0]:.0f} s")
-    print(f"  epoch {trial.metadata['epoch_utc']}, baseline time offset {trial.metadata['baseline_time_offset_s']} s")
+    print(f"  epoch {trial.metadata['epoch_utc']}, reference time offset {trial.metadata['reference_time_offset_s']} s")
     print(f"  IMU spacing: median {np.median(np.diff(t_imu)):.2f} s, max {np.max(np.diff(t_imu)):.2f} s")
     print(f"  GNSS gaps over 1.5 s: {int(np.sum(np.diff(gnss['time_s']) > 1.5))}, "
           f"stale fixes: {int(repeated_fix_mask(trial.gnss_samples).sum())}, "

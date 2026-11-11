@@ -80,12 +80,15 @@ class INSGNSSDataset:
 
 @dataclass(slots=True)
 class MEMSReferenceState:
-    """One row of the dataset's baseline solution (a GNSS-aided reference, not truth).
+    """One row of the dataset's ``truth/`` reference (a GNSS-aided solution, not independent truth).
 
-    ``attitude_rpy_rad`` is copied verbatim from the file. It is **not** in
-    the book's convention: read as Z-Y-X angles of ``C_b^n`` with ``b`` the
-    phone axes it puts gravity upside down. Do not use it as attitude truth
-    (see the Project 3 handout, @sec-project3-data).
+    ``velocity_ned_mps`` is NED (the loader flips the file's up-positive
+    vertical velocity). ``attitude_rpy_rad`` is copied verbatim from the file.
+    It is **not** in the book's convention: it describes the phone's axes, and
+    read as Z-Y-X angles of ``C_b^n`` it puts gravity upside down. Do not use
+    it as attitude truth (see the Project 3 handout, @sec-project3-data).
+    ``covariance`` holds the row's ``*_cov`` columns only when the trial was
+    loaded with ``include_covariance=True``.
     """
 
     time_s: float
@@ -110,7 +113,7 @@ class MEMSNavTrial:
     name: str
     root: Path
     input_path: Path
-    baseline_path: Path
+    truth_path: Path
     imu_samples: list[IMUSample]
     gnss_samples: list[GNSSSample]
     reference_states: list[MEMSReferenceState]

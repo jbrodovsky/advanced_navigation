@@ -14,7 +14,7 @@ and update are yours.
 
 ```text
 src/ins_gnss/
-  datasets.py     load_mems_nav_trial (one epoch, baseline offset), recommended_trials,
+  datasets.py     load_mems_nav_trial (one epoch, truth/ reference), recommended_trials,
                   TRIAL_NOTES, estimate_mount_rotation, rotate_imu_samples,
                   repeated_fix_mask, gnss_acceleration_frd, array helpers (provided)
   types.py        IMUSample, GNSSSample (speed, course, accuracies), NavState,
@@ -49,17 +49,18 @@ tests/
 * Hamilton scalar-first `q_b^n`, `C(q_b^n) = C_b^n`; errors are true minus
   estimate; attitude error in the navigation frame,
   `q = dq(dtheta) (x) q_hat`. Error state `[dp (NED m), dv, dtheta, db_a, db_g]`.
-* Every trial is 1 Hz, IMU included. IMU axes are the phone's (Android: x
+* Every row is 0.1 s apart: the IMU is the mean over each 0.1 s bin, and the
+  ~1 Hz GNSS fixes sit on the row of their bin. IMU axes are the phone's (Android: x
   right, y top of screen, z out of screen). `estimate_mount_rotation` finds the
   phone-to-vehicle rotation (down from the mean specific force, forward from
   GNSS acceleration); in the recommended trials vehicle forward is about the
   phone's -z.
-* One time epoch per trial (the first input row). The baseline is labelled
-  1 s early relative to the GNSS fixes; `load_mems_nav_trial` adds
-  `BASELINE_TIME_OFFSET_S = 1.0` (GitHub issue #5 on the dataset).
-* The baseline is a GNSS-aided reference, not truth: compare horizontal
-  position only, where `reference_valid_mask` holds. Its attitude columns
-  are not in the book's convention. Never use it as a measurement.
+* One time epoch per trial (the first input row). The `truth/` reference has
+  one row per input row on the same timestamps and needs no time offset; its
+  vertical velocity is positive up, and the loader flips it to NED down.
+* The reference is a GNSS-aided solution, not independent truth: compare
+  horizontal position only, where `reference_valid_mask` holds. Its attitude
+  columns are not in the book's convention. Never use it as a measurement.
 
 ## Commands
 
@@ -70,9 +71,9 @@ uv sync
 uv run python scripts/fetch_data.py mems-nav-dataset
 uv run pytest projects/ins_gnss                       # support code passes, your stubs skip
 uv run ins-gnss                                       # trials and their status
-uv run ins-gnss --trial 2023-08-09_163741             # one trial: rates, gaps, mount
+uv run ins-gnss --trial 2025-11-09_17-34-01_A         # one trial: rates, gaps, mount
 uv run python -m ins_gnss.run_all                     # all recommended trials -> results/project3/
-uv run python -m ins_gnss.run_all --trial 2023-08-09_163741
+uv run python -m ins_gnss.run_all --trial 2025-11-09_17-34-01_A
 ```
 
 The tests of your deliverables skip with "not implemented yet" until you
@@ -104,7 +105,8 @@ lists them all (an editor's TODO panel finds the same markers).
 ## Data
 
 `uv run python scripts/fetch_data.py mems-nav-dataset` writes
-`data/mems-nav-dataset/{input,baseline}/` and `manifest.json` (about 150 MB,
-17 trials). Set `ADVNAV_DATA_DIR` to the folder containing
-`mems-nav-dataset/` if you keep the data elsewhere. Use `input/` as estimator
-input and `baseline/` only for comparison.
+`data/mems-nav-dataset/{input,truth}/` (27 trajectories, the `Project3-data`
+folder of the course data bundle, a 1.6 GB download shared with Projects 1
+and 2). Set `ADVNAV_DATA_DIR` to the folder containing `mems-nav-dataset/` if
+you keep the data elsewhere. Use `input/` as estimator input and `truth/` only
+for comparison.

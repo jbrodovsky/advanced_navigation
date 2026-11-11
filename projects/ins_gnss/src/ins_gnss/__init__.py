@@ -2,7 +2,6 @@
 
 from .data_paths import DatasetNotFoundError, find_dataset_dir
 from .datasets import (
-    BASELINE_TIME_OFFSET_S,
     TRIAL_NOTES,
     default_mems_root,
     estimate_mount_rotation,
@@ -26,7 +25,6 @@ from .strapdown import coarse_alignment, free_inertial, mechanize
 from .types import GNSSSample, IMUNoise, IMUSample, MEMSNavTrial, MEMSReferenceState, NavState
 
 __all__ = [
-    "BASELINE_TIME_OFFSET_S",
     "DatasetNotFoundError",
     "GNSSSample",
     "IMUNoise",

@@ -3,11 +3,11 @@
 When the Boeing 747 entered service in 1970 it carried three Delco Carousel inertial navigators, each drifting on the order of a nautical mile per hour, and crossing an ocean meant comparing the three with each other and with whatever radio fix the crew could get. Today a receiver the size of a fingernail hands you a fix every second, and the inertial sensor in your pocket drifts about a kilometer per minute. The engineering problem has not changed, only its time constants: an inertial system that is smooth, fast, and wrong in slowly growing ways, a radio position that is noisy, slow, and right on average, and a filter that makes each cover for the other.
 
 ``` text
-phone IMU (1 Hz) --> mount rotation (given) --> mechanization (Part A) --> L, lambda, h, v, q
+phone IMU (10 Hz) --> mount rotation (given) --> mechanization (Part A) --> L, lambda, h, v, q
                                                        |
 GNSS fix (1 Hz) --> residual, lever arm (Part B) --> ESKF: F, Q_d, update, reset (Part B)
                                                        |
-x_hat, P every second --> outages, NIS, errors (Part C) --> map matching, guidance, control
+x_hat, P every 0.1 s --> outages, NIS, errors (Part C) --> map matching, guidance, control
 ```
 
 Project 3 builds that system for a smartphone riding in a car. The consumer at the bottom of the stack (a route-guidance engine snapping you to a lane, a vehicle controller, the perception stack of Project 1 that needs a pose to project its detections) does not want the GNSS fix. It wants a continuous position, velocity, and attitude with a covariance it can believe, including in the tunnel, the parking garage, and the urban canyon where the fix is gone or wrong. Your filter is judged on exactly that: how it behaves when GNSS is withheld, and whether its covariance tells the truth about it.
@@ -34,7 +34,7 @@ You will mechanize a strapdown INS on the curved, rotating Earth from smartphone
 
 ``` bash
 uv sync                                                   # install Python and the packages
-uv run python scripts/fetch_data.py mems-nav-dataset      # download the data (about 150 MB)
+uv run python scripts/fetch_data.py mems-nav-dataset      # download the data (about 1.6 GB bundle)
 uv run pytest projects/ins_gnss                           # starter tests: support code passes, your stubs skip
 uv run ins-gnss                                           # every trial and its status
 uv run python -m ins_gnss.run_all                         # run every stage you have implemented so far
@@ -46,48 +46,50 @@ uv run python -m ins_gnss.run_all                         # run every stage you 
 
 ## Dataset {#sec-project3-data}
 
-The project uses the MEMS navigation dataset [@MemsNavDataset]: an Android phone in a car, logging its IMU and GNSS receiver on drives around Philadelphia, to the New Jersey shore, and to Long Island, plus a `baseline/` reference solution for every trial. It is the instructor's own dataset. Download it once:
+The project uses the MEMS navigation dataset [@MemsNavDataset]: a phone in a car, logging its IMU and GNSS receiver on drives around Philadelphia, to the New Jersey shore, to Long Island, and through New England, plus a `truth/` reference solution for every trajectory. It is the instructor's own dataset. Download it once:
 
 ``` bash
 uv run python scripts/fetch_data.py mems-nav-dataset
 ```
 
-This places 17 trials in `data/mems-nav-dataset/` (`input/`, `baseline/`, `manifest.json`). The starter tools find it automatically; set `ADVNAV_DATA_DIR` to the folder containing `mems-nav-dataset/` if you keep it elsewhere. The facts below were each checked on the files, and several of them are not what you would assume.
+This places 27 trajectories in `data/mems-nav-dataset/` (`input/` and `truth/`, one CSV of each per trajectory, plus a street-map PNG of each route in `input/`). It is the `Project3-data` folder of the course data bundle, so if you already fetched Project 1 or 2 with `all`, it is there. The starter tools find it automatically; set `ADVNAV_DATA_DIR` to the folder containing `mems-nav-dataset/` if you keep it elsewhere. The facts below were each checked on the files, and several of them are not what you would assume.
 
 | Quantity | What the files contain | What to do |
 |---|---|---|
-| Rate | Every row is one second apart, **the IMU included**; timestamps are whole UTC seconds | Propagate each 1 s interval with the average of its two bounding IMU samples (`run_all` does) |
-| IMU axes | The phone's Android sensor axes: $x$ right, $y$ toward the top of the screen, $z$ out of the screen. The accelerometer reads specific force ($+9.8$ m/s$^2$ on the axis pointing up at rest); the gyro output looks bias-compensated by the phone (parked, it averages a few to 60 deg/h per axis, with 0.01-0.09 deg/s of noise per sample) | Rotate to vehicle forward-right-down axes with `estimate_mount_rotation` and `rotate_imu_samples` |
-| Mounting | In the recommended trials the phone stands upright in a mount facing the driver, so vehicle forward $\approx -z$, right $\approx +x$, down $\approx -y$, with yaw offsets up to 17 degrees. In four 2025 trials (June 18, June 27, July 4) the phone lies flat or nearly so | The estimated mount rotation handles each trial; check it with `uv run ins-gnss --trial NAME` |
+| Rate | Every row is **0.1 s** apart. Each IMU row is the mean of the phone's raw samples in that 0.1 s bin. GNSS fixes stay at their native rate, one per second, on the row of the bin they fell in; the other nine rows leave the GNSS columns empty | Propagate each 0.1 s interval with the average of its two bounding IMU samples and fuse a fix when its bin comes up (`run_all` does both) |
+| IMU axes | The phone's Android sensor axes: $x$ right, $y$ toward the top of the screen, $z$ out of the screen. The accelerometer reads specific force ($+9.8$ m/s$^2$ on the axis pointing up at rest); the gyro output looks bias-compensated by the phone (parked and untouched, it averages a few to about 100 deg/h per axis, with 0.03-0.3 deg/s of noise per sample) | Rotate to vehicle forward-right-down axes with `estimate_mount_rotation` and `rotate_imu_samples` |
+| Mounting | In the recommended trials the phone stands upright in a mount facing the driver, so vehicle forward $\approx -z$, right $\approx +x$, down $\approx -y$, with yaw offsets of 8-12 degrees. In seven 2025 trials (June 18 twice, June 27, July 4 and 5, September 26 and 27) the phone lies flat or nearly so | The estimated mount rotation handles each trial; check it with `uv run ins-gnss --trial NAME` |
 | GNSS | One position fix per second (latitude and longitude in degrees, altitude), plus speed, course over ground (`bearing`, clockwise from north), and the receiver's accuracy estimates | `GNSSSample` carries all of them; `gnss_position_covariance` builds a starting $\mathbf{R}$ from the accuracies |
 | Height | Height above the **WGS-84 ellipsoid**: at the shore on the Long Island and Jersey Shore trips the lowest fixes read $-33$ to $-49$ m, where the geoid lies about 33 m below the ellipsoid (@sec-frames-earth-frames) | Use it as $h$ directly |
-| Baseline | A GNSS-aided strapdown solution, **not truth**. Its rows are labelled 1 s early relative to the fixes they follow (GitHub issue #5); it has a start-up transient, it diverges by kilometers in some GNSS gaps, its height sits 2-14 m off the GNSS height, and its attitude columns are not in the book's convention | The loader adds `BASELINE_TIME_OFFSET_S` (1 s); compare horizontal position only, where `reference_valid_mask` says the baseline agrees with GNSS. Never fuse it |
+| Reference (`truth/`) | A GNSS-aided strapdown solution, **not independent truth**, with one row per input row on the same timestamps. On the recommended trials it sits 0.5-0.8 m (median) from the fixes, and its height follows the GNSS height. It strays by hundreds of meters to kilometers in some long GNSS gaps, its vertical velocity is positive **up**, and its attitude columns are not in the book's convention | The loader flips the vertical velocity to NED down. Compare horizontal position only, where `reference_valid_mask` says a fix confirms the reference. Never fuse it |
 | Phone orientation | The phone's own orientation (`qw`...`qz`): gravity is right, heading is not (tens of degrees off, often more) | Sanity checks only, never a measurement; it is in `trial.auxiliary` with the barometer and magnetometer |
 
-Two of these deserve a sentence more. **Time.** The old loader measured the input and the baseline from their own first rows, which are one second apart, and the baseline is labelled a further second early; together that put the "truth" 2 s (about 45 m at highway speed) away from the fixes it was computed from. The loader now uses one epoch, the first input timestamp, and `load_mems_nav_trial(..., baseline_time_offset_s=...)` exposes the correction; with it, the baseline agrees with GNSS to a median of 0.4-0.8 m. **Attitude.** In phone axes the upright phone has a Z-Y-X pitch near $-90°$, gimbal lock, which is one reason to work in vehicle axes. Compare attitudes with `attitude_error` (the rotation vector of $\mathbf{C}_\text{true}\hat{\mathbf{C}}^T$), never by subtracting Euler angles. The one attitude yardstick this dataset offers is the GNSS course: driving straight at speed, the vehicle's yaw should equal it (`heading_error_vs_course`).
+Two of these deserve a sentence more. **Time.** Input and reference share one clock: the loader measures every time from the first input timestamp, and the reference agrees with the fixes best at zero offset. Shift it by a second with `load_mems_nav_trial(..., reference_time_offset_s=...)` and it lands about 30 m from the fixes at highway speed, which is the size of mistake a timing bug makes. **Attitude.** In phone axes the upright phone has a Z-Y-X pitch near $-90°$, gimbal lock, which is one reason to work in vehicle axes. Compare attitudes with `attitude_error` (the rotation vector of $\mathbf{C}_\text{true}\hat{\mathbf{C}}^T$), never by subtracting Euler angles. The one attitude yardstick this dataset offers is the GNSS course: driving straight at speed, the vehicle's yaw should equal it (`heading_error_vs_course`).
 
 Not every trial is usable. `recommended_trials()` returns the five vetted ones, and `TRIAL_NOTES` explains every trial's status:
 
 | Status | Trials | Why |
 |---|---|---|
-| Recommended | `2023-08-06_144805`, `2023-08-09_163741`, `2025-03-01_164639`, `2025-07-31_23-36-03`, `2025-08-03_18-15-59` | 0.7-4.1 h each, at most two GNSS gaps of 7 s or less, the phone stays in its mount while driving, the baseline agrees with GNSS |
-| Caution | the nine others | GNSS gaps after which the baseline jumps up to 6.5 km, a phone moved mid-trial, stale fixes, a flat mount |
-| Excluded | `2024-06-20_165550`, `2025-06-11_20-34-24`, `2025-06-14_21-17-02` | a 145 km baseline jump; 443 IMU samples in 27 minutes; fixes every 5 s with 2 km jumps and a baseline 7 km off |
+| Recommended | `2025-07-31_23-36-03`, `2025-08-03_18-15-59`, `2025-09-27_12-54-35`, `2025-09-28_20-23-16`, `2025-11-09_17-34-01_A` | 1.1-4.1 h each, at most one GNSS gap (6 s or less), the phone upright in its mount, receiver accuracy 1.5-2 m, and the reference within 6 m of 99% of the fixes |
+| Caution | the twenty others | GNSS gaps after which the reference strays up to 1.7 km, a phone moved mid-trial or lying flat, stale fixes, receivers reporting 4-10 m accuracy |
+| Excluded | `2025-06-11_20-34-24_A`, `2025-06-14_21-17-02` | seven minutes at parking-lot speed with the phone in hand; a fix only every 3 s and a reference up to 2.5 km off |
 
-Repeated fixes exist too: most are a parked receiver holding its position, which is fine, but a few dozen in `2025-06-27_11-54-35` repeat while the car moves. `repeated_fix_mask` flags those and `run_all` skips them.
+Some of the caution trials are worth a look once your filter works: `2025-07-11_13-33-16` and `2025-11-16_16-08-14` have natural GNSS outages of 19 s and of 29 and 79 s, and `2025-11-09_17-34-01_C` is a clean sixth trial. Repeated fixes exist too: most are a parked receiver holding its position, which is fine, but 50 in `2025-06-27_11-54-35` and a handful in two September trials repeat while the car moves. `repeated_fix_mask` flags those and `run_all` skips them.
 
 Load a trial with:
 
 ``` python
 from ins_gnss.datasets import estimate_mount_rotation, load_mems_nav_trial, recommended_trials, rotate_imu_samples
 
-name = recommended_trials()[1]                      # 2023-08-09_163741, the short one
+name = recommended_trials()[-1]                     # 2025-11-09_17-34-01_A, the short one
 trial = load_mems_nav_trial(None, name)             # finds data/mems-nav-dataset
 C_pv = estimate_mount_rotation(trial.imu_samples, trial.gnss_samples)
 imu = rotate_imu_samples(trial.imu_samples, C_pv)   # vehicle forward-right-down axes
 fix = trial.gnss_samples[0]
 print(fix.horizontal_accuracy_m, fix.velocity_ne_mps(), trial.reference_states[0].time_s)
 ```
+
+A four-hour trial is about 150 000 rows; loading one takes a few seconds and a few hundred megabytes of memory.
 
 ## Starter Package {#sec-project3-project-architecture}
 
@@ -115,7 +117,6 @@ The public interfaces are:
 
 ``` python
 from ins_gnss.datasets import (
-    BASELINE_TIME_OFFSET_S,
     TRIAL_NOTES,
     estimate_mount_rotation,
     gnss_arrays,
@@ -255,7 +256,7 @@ Expect free-inertial errors to be humbling: up to tens of meters after ten secon
 **Goal.** A loosely coupled ESKF whose every matrix you can defend.
 
 1.  Implement `error_state_jacobian` and `discrete_process_noise`. Show in the report the numerical check of `F` against your mechanization (the test does it; plot or tabulate the largest discrepancies and explain the ones the short-horizon model neglects).
-2.  Build `IMUNoise` from a specification, not from thin air. Start from a consumer MEMS datasheet and the grade table of @sec-ins-errors-imu-grades, convert units as in @sec-ins-errors-from-imu-specs, and then argue how much to inflate it: these samples are 1 Hz, so the process noise must also cover what a once-per-second sample misses (vibration, rate changes within the second, road grade). Inflation is allowed; unexplained inflation is not.
+2.  Build `IMUNoise` from a specification, not from thin air. Start from a consumer MEMS datasheet and the grade table of @sec-ins-errors-imu-grades, convert units as in @sec-ins-errors-from-imu-specs, and then argue how much to inflate it: each sample is a 0.1 s average from a phone in a vibrating car mount, so the process noise must cover what a datasheet measured on a bench does not (vibration, mount flex, temperature, the phone's own bias compensation). Say too what the averaging does to the white-noise terms. Inflation is allowed; unexplained inflation is not.
 3.  Implement `gnss_position_residual`, `joseph_update`, `inject_error_state`, and `reset_covariance`. Choose $\mathbf{R}$: `gnss_position_covariance` starts from the receiver's own accuracy estimates (Android reports a 68% horizontal radius), which you may scale; justify the choice with the NIS.
 4.  Decide whether to gate innovations (`gate=` in `update_gnss_position`; the 99.9% point for 3 degrees of freedom is 16.27) and show what it rejects.
 5.  Plot, for at least one trial, the position, velocity, attitude, and bias standard deviations against time, and the estimated biases. Say which states are observable when, with reference to @sec-ins-errors-observability-loose-ins: when does yaw become observable, and what does the yaw sigma do on a long straight?
@@ -285,7 +286,7 @@ Everyone measures the same way, so results can be compared. `ins_gnss.evaluation
 
 1.  **Trials.** All five of `recommended_trials()`. Others are optional; say which and quote their `TRIAL_NOTES`.
 2.  **Run window.** The filter starts at departure (the first fix after which the speed stays above 5 m/s for 5 s) and stops 30 s after the last fix faster than 5 m/s, as `run_all.prepare_trial` does; justify any change.
-3.  **Errors against the reference.** At the reference timestamps where `reference_valid_mask` holds (a fix within 0.5 s that agrees to 10 m), with the estimate *interpolated* to those times (`position_error_ned`): horizontal RMSE, median, 95th percentile, and maximum (`error_summary`). Do the same for GNSS only (`gnss_only_track`). Vertical errors against the baseline are unreliable; report them with that caveat or not at all.
+3.  **Errors against the reference.** At the reference timestamps where `reference_valid_mask` holds (a fix in the same 0.1 s bin that agrees to 10 m, so about one reference row per second), with the estimate *interpolated* to those times (`position_error_ned`): horizontal RMSE, median, 95th percentile, and maximum (`error_summary`). Do the same for GNSS only (`gnss_only_track`). Vertical errors against the reference only measure agreement with the GNSS height it follows; report them with that caveat or not at all.
 4.  **Outages.** Schedule the outage windows with
 
     ``` python
@@ -316,13 +317,13 @@ Project 3 is contract graded (@sec-intro-grading). Each of the 14 rows below is 
 | Category               | Unacceptable (0)     | Marginal (15)                | Acceptable (17)                                | Excellent (20)                       |
 +========================+======================+==============================+================================================+======================================+
 | **1. Data checks,      | Data misread, or the | Data loads, but with an      | - the data conventions checked on the files    | Everything in Acceptable, plus:      |
-| frames, and mount      | baseline used as a   | unverified or wrong          |   (rates, axes, height datum, baseline timing, |                                      |
-| rotation**             | filter measurement.  | assumption in axes, timing,  |   stale fixes) and how you checked them        | - data quirks (stale fixes, baseline |
-|                        |                      | units, or height datum (for  | - the mount rotation of each trial reported    |   failures, gaps) chased down and    |
-|                        |                      | example filtering on phone   |   and checked                                  |   their effect on the results        |
-|                        |                      | axes or scoring against the  | - the cost of skipping the mount rotation      |   quantified                         |
-|                        |                      | unshifted baseline).         |   shown with numbers                           |                                      |
-|                        |                      |                              | - the baseline used only for evaluation        |                                      |
+| frames, and mount      | reference used as a  | unverified or wrong          |   (rates, axes, height datum, time base,       |                                      |
+| rotation**             | filter measurement.  | assumption in axes, timing,  |   stale fixes) and how you checked them        | - data quirks (stale fixes, the      |
+|                        |                      | units, or height datum (for  | - the mount rotation of each trial reported    |   reference's failures, gaps) chased |
+|                        |                      | example filtering on phone   |   and checked                                  |   down and their effect on the       |
+|                        |                      | axes or scoring against the  | - the cost of skipping the mount rotation      |   results quantified                 |
+|                        |                      | unmasked reference).         |   shown with numbers                           |                                      |
+|                        |                      |                              | - the reference used only for evaluation       |                                      |
 +------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
 | **2. Coarse            | Missing, does not    | Runs, but leveling or        | - `coarse_alignment` passes its tests          | Everything in Acceptable, plus:      |
 | alignment**            | run, or skips or     | heading is wrong, or the     | - an explanation of why heading cannot come    |                                      |
@@ -353,8 +354,8 @@ Project 3 is contract graded (@sec-intro-grading). Each of the 14 rows below is 
 |                        |                      | justification.               |   discrepancies explained                      |   their size bounded                 |
 |                        |                      |                              | - `IMUNoise` traced from a named datasheet     |                                      |
 |                        |                      |                              |   with the unit conversions shown              |                                      |
-|                        |                      |                              | - every inflation factor argued (1 Hz          |                                      |
-|                        |                      |                              |   sampling, vibration, road grade)             |                                      |
+|                        |                      |                              | - every inflation factor argued (0.1 s         |                                      |
+|                        |                      |                              |   averaging, vibration, mount flex)            |                                      |
 +------------------------+----------------------+------------------------------+------------------------------------------------+--------------------------------------+
 | **6. Measurement       | Missing, does not    | Runs, but with a sign,       | - `gnss_position_residual` (with the lever     | Everything in Acceptable, plus:      |
 | update, injection, and | run, or skips or     | lever-arm, injection, or     |   arm), `joseph_update`, `inject_error_state`, |                                      |
