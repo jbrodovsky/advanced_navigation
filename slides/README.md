@@ -106,7 +106,10 @@ the source in words ("Kalman, 1960") and leave the bibliography to the book.
 - **Check the fit.** Nothing may run into the footer. Render and page through
   the deck (or its PDF) before committing.
 - **Speaker notes** (`::: {.notes}`): what to say that is not on the slide, the
-  question to ask the room, and the book section the slide comes from.
+  question to ask the room, and the book section the slide comes from. Write
+  them at the end of the slide; `theme/notes-first.lua` moves them ahead of the
+  first pause so the speaker view shows them when the slide opens, not after the
+  last click.
 - **Tone:** the book's light tone carries over. A joke per chapter is plenty.
 - **Projects:** briefing slides only (goals, interfaces, requirements, pitfalls).
   Never solution code; nothing from `admin/`.
