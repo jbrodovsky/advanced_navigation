@@ -25,6 +25,10 @@ concurrency:
 
 env:
   QUARTO_VERSION: 1.8.27
+  # Headless Chrome that Quarto uses to rasterize Mermaid diagrams for the PDF.
+  # Pinned: Quarto 1.8 cannot install chrome-headless-shell itself, and the
+  # runner's own Chrome hung the render after an update (November 2026).
+  CHROME_HEADLESS_SHELL_VERSION: 156.0.8078.80
 
 jobs:
   test:
@@ -50,6 +54,7 @@ jobs:
   build:
     if: github.repository == 'jbrodovsky/advanced_navigation'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -63,11 +68,19 @@ jobs:
           version: ${{ env.QUARTO_VERSION }}
           tinytex: true
 
-      # Mermaid diagrams are rasterised with a headless browser for the PDF;
-      # DejaVu Sans Mono covers the Unicode in the code listings.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Mermaid diagrams are rasterised with a headless browser for the PDF
+      # (QUARTO_CHROMIUM points Quarto at the pinned one); DejaVu Sans Mono
+      # covers the Unicode in the code listings.
       - name: Install PDF dependencies
         run: |
-          quarto install chrome-headless-shell --no-prompt
+          npx --yes @puppeteer/browsers@2.10.5 install "chrome-headless-shell@${CHROME_HEADLESS_SHELL_VERSION}" --path "${RUNNER_TEMP}/chrome"
+          chrome="$(find "${RUNNER_TEMP}/chrome" -type f -name chrome-headless-shell | head -n 1)"
+          test -x "${chrome}"
+          echo "QUARTO_CHROMIUM=${chrome}" >> "${GITHUB_ENV}"
           sudo apt-get update
           sudo apt-get install -y fonts-dejavu-core
 
@@ -75,6 +88,7 @@ jobs:
       # would let the html render wipe the PDF out of book/output.)
       - name: Render PDF and website
         working-directory: book
+        timeout-minutes: 30
         run: uv run quarto render
 
       - name: Check that the PDF is in the site
@@ -83,10 +97,6 @@ jobs:
       # Lecture slides: reveal.js decks, printed to PDF with decktape (Node)
       # and merged with pdfunite. They join the site under slides/, so this
       # has to come after the book render, which empties book/output.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
       - name: Install slide PDF dependencies
         run: sudo apt-get install -y poppler-utils
 
