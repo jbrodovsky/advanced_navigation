@@ -92,7 +92,7 @@ Course?")
 :::
 
 ::: {.notes}
-A little about me: I work on autonomous navigation systems for aerial vehicles and have a background in mechanical engineering and submarine navigation. I've spent my career hoping back and forth between industry and academia and have my sweet spot in applied research and development. I enjoy translating theoretical concepts into practical implementations that can be tested and deployed in real-world scenarios. I aim to bring that mindset into this course.
+A little about me: I work on autonomous navigation systems for aerial vehicles and have a background in mechanical engineering and submarine navigation. I've spent my career hopping back and forth between industry and academia and have my sweet spot in applied research and development. I enjoy translating theoretical concepts into practical implementations that can be tested and deployed in real-world scenarios. I aim to bring that mindset into this course.
 Online students are spread over many time zones, so be patient with replies.
 Urgent: email or the Canvas discussion boards. Debugging support is in Python
 only, because the starter code is Python. (Intro chapter, "About Me" and
