@@ -37,7 +37,7 @@ You will implement **FastSLAM 1.0** for the Victoria Park dataset: vehicle poses
 
 ``` bash
 uv sync                                                   # install Python and the packages
-uv run python scripts/fetch_data.py victoria-park         # download the data (about 1.5 MB)
+uv run python scripts/fetch_data.py victoria-park         # download the data (about 1.6 GB bundle)
 uv run pytest projects/victoria_park_slam                 # starter tests: support code passes, your stubs skip
 uv run victoria-park-slam summary                         # rates, gaps and data quality at a glance
 uv run python -m victoria_park_slam.run_all               # run every stage you have implemented so far

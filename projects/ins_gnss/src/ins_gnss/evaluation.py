@@ -3,9 +3,9 @@
 * Errors are **true minus estimate**, in NED meters, evaluated at the
   reference (or withheld-fix) timestamps with the estimate *interpolated* to
   them. Never compare samples by index.
-* The dataset's baseline is a GNSS-aided reference solution, not truth: use
-  :func:`reference_valid_mask` to drop the stretches where it disagrees with
-  GNSS (it diverges by up to kilometers in some GNSS gaps).
+* The dataset's ``truth/`` reference is a GNSS-aided solution, not
+  independent truth: use :func:`reference_valid_mask` to keep only the rows
+  where a fix confirms it (it strays by up to kilometers in some GNSS gaps).
 * Outage experiments withhold GNSS fixes from the filter and score the
   estimate against those **withheld fixes** (:func:`schedule_outages`,
   :func:`outage_errors`).
@@ -105,7 +105,7 @@ def error_summary(error_ned: np.ndarray) -> dict[str, float]:
 
 
 # ---------------------------------------------------------------------------
-# The reference and GNSS-only baselines
+# The reference, and the GNSS-only and constant-velocity baselines
 # ---------------------------------------------------------------------------
 
 
@@ -113,15 +113,17 @@ def reference_valid_mask(
     trial: MEMSNavTrial,
     *,
     max_disagreement_m: float = 10.0,
-    max_time_to_fix_s: float = 0.5,
+    max_time_to_fix_s: float = 0.05,
 ) -> np.ndarray:
     """Reference states you can use as a yardstick.
 
-    True where a GNSS fix exists within ``max_time_to_fix_s`` and the
-    reference agrees with it horizontally to ``max_disagreement_m``. This
-    drops the baseline's start-up transient and its divergences in GNSS gaps;
-    it also means the reference is only checked where GNSS is available, so
-    "error versus the reference" says little about the stretches in between.
+    True where a GNSS fix exists within ``max_time_to_fix_s`` (the default
+    keeps the reference rows that share a 0.1 s bin with a fix, about one per
+    second) and the reference agrees with it horizontally to
+    ``max_disagreement_m``. This drops the reference's start-up transient and
+    its excursions in GNSS gaps; it also means the reference is only checked
+    where GNSS is available, so "error versus the reference" says little
+    about the stretches in between.
     """
     ref = reference_arrays(trial.reference_states)
     gnss = gnss_arrays(trial.gnss_samples)
@@ -195,7 +197,7 @@ def heading_error_vs_course(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Course over ground minus estimated vehicle yaw [rad], wrapped, at fixes faster than ``min_speed_mps``.
 
-    The only attitude yardstick this dataset offers (the baseline's attitude
+    The only attitude yardstick this dataset offers (the reference's attitude
     columns are not usable). It assumes body ``x`` is the vehicle's forward
     axis and that the car does not slip sideways, so expect a degree or two of
     scatter in turns even from a perfect filter.

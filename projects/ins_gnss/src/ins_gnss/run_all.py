@@ -3,14 +3,14 @@
 From the repository root::
 
     uv run python -m ins_gnss.run_all                                   # all recommended trials
-    uv run python -m ins_gnss.run_all --trial 2023-08-09_163741         # one trial (repeatable)
+    uv run python -m ins_gnss.run_all --trial 2025-11-09_17-34-01_A     # one trial (repeatable)
     uv run python -m ins_gnss.run_all --help
 
 Stages, per trial:
 
 1. Data (provided): rates, GNSS quality, the phone-to-vehicle mount rotation
    (:func:`~ins_gnss.datasets.estimate_mount_rotation`), and how much of the
-   baseline agrees with GNSS (:func:`~ins_gnss.evaluation.reference_valid_mask`).
+   reference agrees with GNSS (:func:`~ins_gnss.evaluation.reference_valid_mask`).
 2. Part A: coarse alignment at departure (your ``coarse_alignment``), then
    60 s of free-inertial navigation (your ``mechanize``) scored against GNSS.
 3. Part B: the ESKF over the whole trial with every GNSS fix (your ``F``,
@@ -81,8 +81,8 @@ from .types import IMUNoise, IMUSample, MEMSNavTrial, NavState
 
 TUNING: dict[str, Any] = {
     # IMU noise (continuous-time; see IMUNoise and @sec-ins-errors-from-imu-specs).
-    # At 1 Hz these must also absorb what a 1 Hz sample misses (vibration,
-    # rate changes within the second), so expect values well above a datasheet's.
+    # Each 10 Hz sample is the mean of the phone's raw samples over 0.1 s, and the
+    # phone sits in a vibrating car, so expect values above a datasheet's.
     # TODO(Project 3, Part B): trace these to a datasheet and argue every inflation.
     "accel_vrw_mps_rt_s": 0.1,
     "gyro_arw_deg_rt_s": 0.1,
@@ -182,6 +182,23 @@ def _first_line(error: BaseException) -> str:
 # ---------------------------------------------------------------------------
 
 
+def held_fix_speed(t_query: np.ndarray, t_fix: np.ndarray, speed: np.ndarray, max_age_s: float = 1.5) -> np.ndarray:
+    """GNSS speed of the last fix at or before each query time; ``inf`` if that fix is older than ``max_age_s``."""
+    t_query = np.asarray(t_query, dtype=np.float64)
+    out = np.full(t_query.shape, np.inf)
+    if len(t_fix) == 0:
+        return out
+    k = np.searchsorted(t_fix, t_query + 1e-6, side="right") - 1
+    fresh = (k >= 0) & (t_query - t_fix[np.clip(k, 0, None)] <= max_age_s)
+    out[fresh] = np.nan_to_num(speed[k[fresh]], nan=np.inf)
+    return out
+
+
+def fix_bin(time_s: float) -> int:
+    """The 0.1 s bin a time falls in: GNSS fixes and IMU rows share these bins."""
+    return int(round(time_s * 10.0))
+
+
 def prepare_trial(trial: MEMSNavTrial, tuning: dict[str, Any]) -> PreparedTrial:
     """Rotate the IMU to vehicle axes and choose where the run starts and stops.
 
@@ -194,8 +211,7 @@ def prepare_trial(trial: MEMSNavTrial, tuning: dict[str, Any]) -> PreparedTrial:
     forward and rightward acceleration subtracted, which is cruder.
     **Stop.** The run ends 30 s after the last fix faster than
     ``departure_speed_mps``: in some trials the phone is taken out of its
-    mount once the car is parked, and a 1 Hz IMU cannot follow a phone in a
-    hand.
+    mount once the car is parked, and the vehicle-axes model no longer holds.
     """
     mount = estimate_mount_rotation(trial.imu_samples, trial.gnss_samples)
     imu = rotate_imu_samples(trial.imu_samples, mount)
@@ -213,16 +229,19 @@ def prepare_trial(trial: MEMSNavTrial, tuning: dict[str, Any]) -> PreparedTrial:
     t_stop = gnss["time_s"][np.flatnonzero(speed > threshold)[-1]] + 30.0
     stop_imu = int(min(np.searchsorted(t_imu, t_stop, side="right") - 1, len(t_imu) - 1))
 
-    fix_speed = {round(t): s for t, s in zip(gnss["time_s"], speed)}
+    held = held_fix_speed(t_imu, gnss["time_s"], speed)
     window = np.flatnonzero((t_imu < t0) & (t_imu >= t0 - 60.0))
     quiet = [i for i in window if np.linalg.norm(imu[i].gyro_rps) < np.radians(2.0)]
-    leveling = np.array([i for i in quiet if fix_speed.get(round(t_imu[i]), np.inf) < 0.3], dtype=int)
+    leveling = np.array([i for i in quiet if held[i] < 0.3], dtype=int)
     correction = np.zeros((leveling.size, 3))
     if leveling.size < 5:
         t_acc, a_forward, a_right = gnss_acceleration_frd(trial.gnss_samples)
-        by_time = {round(t): (f, r) for t, f, r in zip(t_acc, a_forward, a_right) if np.isfinite(f) and np.isfinite(r)}
-        leveling = np.array([i for i in range(start_imu, len(t_imu)) if t_imu[i] <= t0 + 10.0 and round(t_imu[i]) in by_time], dtype=int)
-        correction = np.array([[*by_time[round(t_imu[i])], 0.0] for i in leveling]).reshape(-1, 3)
+        ok = np.isfinite(a_forward) & np.isfinite(a_right)
+        after = np.flatnonzero((t_imu >= t0) & (t_imu <= t0 + 10.0))
+        leveling = after if np.count_nonzero(ok) >= 2 else np.array([], dtype=int)
+        correction = np.column_stack(
+            [np.interp(t_imu[leveling], t_acc[ok], a_forward[ok]), np.interp(t_imu[leveling], t_acc[ok], a_right[ok]), np.zeros(leveling.size)]
+        ) if leveling.size else np.zeros((0, 3))
     if leveling.size == 0:
         leveling, correction = np.array([start_imu]), np.zeros((1, 3))
     return PreparedTrial(trial, mount, imu, start, start_imu, stop_imu, leveling, correction, repeated_fix_mask(trial.gnss_samples))
@@ -275,13 +294,13 @@ def make_filter(prepared: PreparedTrial, tuning: dict[str, Any]) -> eskf.INSGNSS
 def run_filter(prepared: PreparedTrial, tuning: dict[str, Any], outages: list | None = None) -> FilterRun:
     """Drive the ESKF through the trial; withhold the fixes inside ``outages``.
 
-    Each IMU interval is propagated with the average of its two bounding
-    samples; then the GNSS fix stamped at the new sample time (if any, and not
+    Each 0.1 s IMU interval is propagated with the average of its two bounding
+    samples; then the GNSS fix in the new sample's 0.1 s bin (if any, and not
     stale, and not withheld) is fused.
     """
     flt = make_filter(prepared, tuning)
     gnss = prepared.trial.gnss_samples
-    fix_at = {round(sample.time_s): k for k, sample in enumerate(gnss)}
+    fix_at = {fix_bin(sample.time_s): k for k, sample in enumerate(gnss)}
     gate = tuning.get("gnss_gate")
     outages = outages or []
     r_scale, r_floor = float(tuning["gnss_r_scale"]), float(tuning["gnss_r_floor_m"])
@@ -293,7 +312,7 @@ def run_filter(prepared: PreparedTrial, tuning: dict[str, Any], outages: list | 
         dt = sample.time_s - previous.time_s
         gyro = 0.5 * (previous.gyro_rps + sample.gyro_rps)
         flt.predict(0.5 * (previous.accel_mps2 + sample.accel_mps2), gyro, dt)
-        k = fix_at.get(round(sample.time_s))
+        k = fix_at.get(fix_bin(sample.time_s))
         if k is not None and not prepared.stale_fixes[k] and not any(o.contains(gnss[k].time_s) for o in outages):
             R = eskf.gnss_position_covariance(gnss[k], scale=r_scale, floor_m=r_floor)
             flt.update_gnss_position(gnss[k], R, gate=gate)
@@ -358,8 +377,7 @@ def stationary_check(prepared: PreparedTrial, duration_s: float = 60.0) -> dict[
     """
     t_imu, accel, gyro = imu_arrays(prepared.imu)
     gnss = gnss_arrays(prepared.trial.gnss_samples)
-    fix_speed = {round(t): s for t, s in zip(gnss["time_s"], np.nan_to_num(gnss["speed_mps"], nan=np.inf))}
-    quiet = np.array([fix_speed.get(round(t), np.inf) < 0.3 for t in t_imu]) & (np.linalg.norm(gyro, axis=1) < np.radians(2.0))
+    quiet = (held_fix_speed(t_imu, gnss["time_s"], gnss["speed_mps"]) < 0.3) & (np.linalg.norm(gyro, axis=1) < np.radians(2.0))
     best: tuple[int, int] | None = None
     i = 0
     while i < len(quiet):
@@ -412,7 +430,7 @@ def evaluate_against_reference(trial: MEMSNavTrial, run: FilterRun) -> dict[str,
         "ins_gnss": error_summary(e_ins),
         "gnss_only": error_summary(e_gnss),
         "heading_error_deg": np.degrees(heading),
-        "reference_valid_fraction": float(np.mean(valid)),
+        "reference_valid_fraction": float(np.count_nonzero(valid) / max(len(trial.gnss_samples), 1)),
         "t_ref": t_ref,
         "error_ins": e_ins,
         "error_gnss": e_gnss,
@@ -590,11 +608,11 @@ def process_trial(name: str, out_dir: Path, log: StageLog, tuning: dict[str, Any
     log.add(
         f"[{name}] data",
         "ok",
-        f"{len(trial.imu_samples)} IMU / {len(trial.gnss_samples)} GNSS at 1 Hz, "
+        f"{len(trial.imu_samples)} IMU / {len(trial.gnss_samples)} GNSS, "
         f"{int(prepared.stale_fixes.sum())} stale fixes, median horizontal accuracy "
         f"{np.nanmedian(gnss['horizontal_accuracy_m']):.1f} m, vehicle forward = phone "
         f"[{forward[0]:+.2f}, {forward[1]:+.2f}, {forward[2]:+.2f}], "
-        f"reference valid {100 * np.mean(reference_valid_mask(trial)):.0f}%",
+        f"reference confirmed at {100 * np.count_nonzero(reference_valid_mask(trial)) / max(len(trial.gnss_samples), 1):.0f}% of fixes",
     )
 
     try:

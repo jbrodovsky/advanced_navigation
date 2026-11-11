@@ -1,25 +1,30 @@
 # Download sources for the course datasets, read by scripts/fetch_data.py.
 #
-# Instructor workflow (see README.md, "Instructor tasks"):
-#   1. uv run python scripts/package_datasets.py all
-#   2. Upload each zip from data/_upload/ to the shared course folder on
-#      Google Drive or OneDrive.
-#   3. Share each zip FILE (not the folder) as "anyone with the link can view".
-#   4. Paste that file's share link into `url` below. If you rebuilt the
-#      archive from different data, also update `sha256` and `size_bytes`
-#      from the package_datasets.py output (the builds are deterministic, so
-#      unchanged data reproduces the values already recorded here).
+# All three projects share one public archive, the course data bundle
+# adv_nav_data.zip on Google Drive. Each dataset names the folder inside it to
+# install with `subdir`; `fetch_data.py all` downloads the bundle once.
 #
-# `provider` may be "auto" (detected from the link), "gdrive", "onedrive",
-# "https" (a direct download link), or "github" (the MEMS dataset repository).
+# Instructor workflow when the bundle changes (see README.md, "Instructor tasks"):
+#   1. Upload the new zip to Google Drive, replacing the old file so the link
+#      stays the same, and share the FILE (not a folder) as "anyone with the
+#      link can view".
+#   2. Update `sha256` and `size_bytes` below for every dataset in the bundle
+#      (`sha256sum adv_nav_data.zip`, `stat -c %s adv_nav_data.zip`), and
+#      `subdir` if the folder names changed.
+#
+# `provider` may be "auto" (detected from the link), "gdrive", "onedrive", or
+# "https" (a direct download link). scripts/package_datasets.py still builds
+# single-dataset archives (drone-data.zip, victoria-park.zip) if a dataset ever
+# needs its own link.
 
 [datasets.drone-data]
 description = "Project 1: quadrotor IMU, AprilTag corner detections, camera images and Vicon truth"
 provider = "auto"
-url = "REPLACE_ME"
-sha256 = "2f944a3984b4de97cfba6a1a84c2913fa5a6ff0a3b62d310e2cb1cd571ad02d2"
-size_bytes = 571590643
-archive = "drone-data.zip"
+url = "https://drive.google.com/file/d/1Rx2NxDNcyMqUBWyMIPeASvCeCK0BIW_h/view?usp=drive_link"
+sha256 = "59b51e9ee8e343e238c8bbc89070bdea076f8e9a4ef34c26e0037cd0c5fb0eee"
+size_bytes = 1601013485
+archive = "adv_nav_data.zip"
+subdir = "adv_nav_data/Project1-data"
 expected_files = [
     "parameters.txt",
     "studentdata0.mat",
@@ -37,18 +42,23 @@ credit = "Provenance and redistribution terms to be confirmed (GitHub issue #3).
 [datasets.victoria-park]
 description = "Project 2: Victoria Park laser, odometry and GPS logs"
 provider = "auto"
-url = "REPLACE_ME"
-sha256 = "4346e0cff21b350a08ad912fc55f38d0952fd3b78fd58b685c4fcc2d80e47f80"
-size_bytes = 1494193
-archive = "victoria-park.zip"
+url = "https://drive.google.com/file/d/1Rx2NxDNcyMqUBWyMIPeASvCeCK0BIW_h/view?usp=drive_link"
+sha256 = "59b51e9ee8e343e238c8bbc89070bdea076f8e9a4ef34c26e0037cd0c5fb0eee"
+size_bytes = 1601013485
+archive = "adv_nav_data.zip"
+subdir = "adv_nav_data/Project2-data"
 expected_files = ["aa3_lsr2.mat", "aa3_dr.mat", "aa3_gpsx.mat", "info.txt"]
 issue = 2
 credit = "Victoria Park dataset: J. Guivant and E. Nebot, Australian Centre for Field Robotics, University of Sydney."
 
 [datasets.mems-nav-dataset]
-description = "Project 3: smartphone MEMS IMU and GNSS trials with a reference solution"
-provider = "github"
-url = "https://github.com/jbrodovsky/mems-nav-dataset"
-ref = "main"
-expected_files = ["input", "baseline", "manifest.json"]
-credit = "MEMS navigation dataset: J. Brodovsky (MIT license, see the dataset repository)."
+description = "Project 3: smartphone MEMS IMU and GNSS drives at 10 Hz with a reference (truth) solution"
+provider = "auto"
+url = "https://drive.google.com/file/d/1Rx2NxDNcyMqUBWyMIPeASvCeCK0BIW_h/view?usp=drive_link"
+sha256 = "59b51e9ee8e343e238c8bbc89070bdea076f8e9a4ef34c26e0037cd0c5fb0eee"
+size_bytes = 1601013485
+archive = "adv_nav_data.zip"
+subdir = "adv_nav_data/Project3-data"
+expected_files = ["input", "truth"]
+issue = 1
+credit = "MEMS navigation dataset: J. Brodovsky (https://github.com/jbrodovsky/mems-nav-dataset)."

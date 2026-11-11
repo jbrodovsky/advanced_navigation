@@ -50,7 +50,7 @@ The engineering goals are correctness of the math and implementation, frame and 
 
 ``` bash
 uv sync                                          # install Python and the packages
-uv run python scripts/fetch_data.py drone-data   # download the data (about 570 MB)
+uv run python scripts/fetch_data.py drone-data   # download the data (about 1.6 GB bundle)
 uv run pytest projects/drone_pipeline            # starter tests: support code passes, your stubs skip
 uv run python -m drone_pipeline.cli 1            # quick look at studentdata1
 uv run python -m drone_pipeline.run_all          # run every stage you have implemented so far

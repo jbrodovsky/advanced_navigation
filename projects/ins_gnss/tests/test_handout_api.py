@@ -35,7 +35,7 @@ SIGNATURES = {
     "gnss_velocity_residual(state, gnss, lever_arm_b, gyro_rps)": "ins_gnss.eskf.gnss_velocity_residual",
     "flt.predict(accel_mps2, gyro_rps, dt_s)": "ins_gnss.eskf.INSGNSSFilter.predict",
     "flt.update_gnss_position(gnss, R=None, *, gate=None)": "ins_gnss.eskf.INSGNSSFilter.update_gnss_position",
-    "load_mems_nav_trial(..., baseline_time_offset_s=...)": "ins_gnss.datasets.load_mems_nav_trial",
+    "load_mems_nav_trial(..., reference_time_offset_s=...)": "ins_gnss.datasets.load_mems_nav_trial",
 }
 
 # Objects that the handout refers to through a conventional variable name.
@@ -103,7 +103,7 @@ class HandoutApiTests(unittest.TestCase):
         names = set(re.findall(r"`(\w+)(?:\(|`)", self.text))
         modules = [importlib.import_module(f"ins_gnss.{name}") for name in MODULES]
         classes = [eskf.INSGNSSFilter, types.GNSSSample, types.MEMSNavTrial, types.NavState]
-        skip = {"README", "run_all", "ins_gnss", "bearing", "input", "baseline", "filterpy", "ADVNAV_DATA_DIR",
+        skip = {"README", "run_all", "ins_gnss", "bearing", "input", "truth", "filterpy", "ADVNAV_DATA_DIR",
                 "NotImplementedError", "TODO"}
         for name in sorted(names - skip):
             if not re.fullmatch(r"[a-z]+(_[a-z0-9]+)+|[A-Z][A-Za-z]+|[A-Z][A-Z0-9_]+", name):
@@ -135,8 +135,8 @@ class HandoutApiTests(unittest.TestCase):
                     self.assertEqual(actual[: len(expected)], expected, target)
 
     def test_documented_numbers_match_the_code(self) -> None:
-        self.assertEqual(datasets.BASELINE_TIME_OFFSET_S, 1.0)
-        self.assertIn("`BASELINE_TIME_OFFSET_S` (1 s)", self.text)
+        self.assertEqual(len(datasets.TRIAL_NOTES), 27)
+        self.assertIn("27 trajectories", self.text)
         self.assertEqual(run_all.OUTAGE_DURATIONS_S, (10.0, 30.0, 60.0, 120.0))
         self.assertEqual((run_all.OUTAGE_FIRST_START_S, run_all.OUTAGE_SPACING_S), (300.0, 400.0))
         self.assertIn("first_start_s=start + 300, spacing_s=400", self.text)
@@ -145,7 +145,7 @@ class HandoutApiTests(unittest.TestCase):
         self.assertIn(f"$[{low:.2f}, {high:.2f}]$", self.text)
         self.assertIn(f"{evaluation.chi2_gate(3, 0.999):.2f}", self.text)
         valid = inspect.signature(evaluation.reference_valid_mask).parameters
-        self.assertEqual((valid["max_disagreement_m"].default, valid["max_time_to_fix_s"].default), (10.0, 0.5))
+        self.assertEqual((valid["max_disagreement_m"].default, valid["max_time_to_fix_s"].default), (10.0, 0.05))
         schedule = inspect.signature(evaluation.schedule_outages).parameters
         self.assertEqual((schedule["min_speed_mps"].default, schedule["min_fix_fraction"].default), (5.0, 0.9))
         recommended = [name for name, note in datasets.TRIAL_NOTES.items() if note.status == "recommended"]
@@ -155,9 +155,10 @@ class HandoutApiTests(unittest.TestCase):
             self.assertIn(f"`{name}`", self.text)
         self.assertEqual(len(recommended), 5)
         self.assertIn("all five recommended trials", self.text)
-        self.assertIn(f"the {['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'][len(caution)]} others", self.text)
-        self.assertIn("recommended_trials()[1]", self.text)
-        self.assertEqual(recommended[1], "2023-08-09_163741")
+        words = {20: "twenty"} | dict(enumerate(["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]))
+        self.assertIn(f"the {words[len(caution)]} others", self.text)
+        self.assertIn("recommended_trials()[-1]", self.text)
+        self.assertEqual(recommended[-1], "2025-11-09_17-34-01_A")
 
     def test_rubric_is_a_four_level_contract(self) -> None:
         rubric = self.text.split("{#sec-project3-grading-rubric}", 1)[1].split("\n## ", 1)[0]

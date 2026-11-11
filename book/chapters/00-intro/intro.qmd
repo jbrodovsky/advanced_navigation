@@ -85,7 +85,7 @@ The [course repository](https://github.com/jbrodovsky/advanced_navigation) is a 
 
 1.  On the course repository page, click **Use this template → Create a new repository**, choose your own account, and make the repository **public**. You get a clean copy with no commit history of mine attached, so the history that shows up on your profile is yours.
 
-2.  Clone it, run `uv sync` from the repository root, and download the datasets with `uv run python scripts/fetch_data.py all`. The datasets are never committed; `.gitignore` already keeps them out.
+2.  Clone it, run `uv sync` from the repository root, and download the datasets with `uv run python scripts/fetch_data.py all`. The datasets are never committed; `.gitignore` already keeps them out. All three projects' data come from one archive of about 1.6 GB, the [course data bundle](https://drive.google.com/file/d/1Rx2NxDNcyMqUBWyMIPeASvCeCK0BIW_h/view?usp=drive_link) on Google Drive. If the script cannot reach it, download the zip in a browser and install it with `uv run python scripts/fetch_data.py all --archive ~/Downloads/adv_nav_data.zip`.
 
 3.  Work in the starter packages under `projects/`, commit early and often, and put your reports, figures, and a short write-up of each project in the repository alongside the code.
 

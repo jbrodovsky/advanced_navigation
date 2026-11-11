@@ -67,9 +67,14 @@ uv run python scripts/fetch_data.py all
 ```
 
 Datasets are installed under `data/<name>/`. Set `ADVNAV_DATA_DIR` to keep them
-elsewhere. If a download link is not available yet, the script points to the
-GitHub issue tracking it and explains how to install an archive you received
-another way (`--archive`).
+elsewhere. All three projects' datasets come from one archive of about 1.6 GB, the
+[course data bundle](https://drive.google.com/file/d/1Rx2NxDNcyMqUBWyMIPeASvCeCK0BIW_h/view?usp=drive_link) on Google Drive;
+`all` downloads it once. If the script cannot download it, fetch the zip in a
+browser and install it with:
+
+```bash
+uv run python scripts/fetch_data.py all --archive ~/Downloads/adv_nav_data.zip
+```
 
 ## Running the tests
 
@@ -118,18 +123,15 @@ workflow unless they remove its repository guard.
 
 ## Instructor tasks
 
-**Publishing the datasets.** Build the upload archives from the original data in
-`data/`:
-
-```bash
-uv run python scripts/package_datasets.py all
-```
-
-Upload each zip from `data/_upload/` to the shared course folder on Google
-Drive or OneDrive, share each *file* as "anyone with the link can view", and
-paste its link into `url` in `scripts/data_sources.toml`. The archives are
-built deterministically, so the recorded `sha256` and `size_bytes` stay valid
-unless the data changes; if it does, copy the new values printed by the script.
+**Publishing the datasets.** The public copy of the course data is
+`adv_nav_data.zip` on Google Drive, shared as "anyone with the link can view"
+and recorded in `scripts/data_sources.toml` (each dataset names its folder in
+the bundle with `subdir`). Canvas links to a OneDrive folder, which should hold the same
+data. To change the bundle, upload the new zip over the old Drive file so the
+link stays the same, then update `sha256` and `size_bytes` for all three datasets
+(`sha256sum adv_nav_data.zip`, `stat -c %s adv_nav_data.zip`).
+`scripts/package_datasets.py` still builds single-dataset archives if one ever
+needs its own link.
 
 **Solutions** for projects and exercises live in the private repository
 `jbrodovsky/advanced_navigation-admin`. Clone it into `admin/` in your checkout

@@ -6,9 +6,11 @@ Run from the repository root::
     uv run python scripts/fetch_data.py --list
     uv run python scripts/fetch_data.py all
     uv run python scripts/fetch_data.py drone-data
-    uv run python scripts/fetch_data.py victoria-park --archive ~/Downloads/victoria-park.zip
+    uv run python scripts/fetch_data.py drone-data victoria-park --archive ~/Downloads/adv_nav_data.zip
 
 Download links, checksums and expected files live in ``scripts/data_sources.toml``.
+Several datasets may share one archive (the course bundle); each then names the
+folder inside it to install with ``subdir``, and ``all`` downloads the bundle once.
 Set ``ADVNAV_DATA_DIR`` (or pass ``--data-dir``) to keep the data somewhere other
 than ``data/`` at the repository root.
 
@@ -22,7 +24,6 @@ import base64
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -74,13 +75,13 @@ class DataSource:
     expected_files: tuple[str, ...]
     sha256: str = ""
     size_bytes: int = 0
-    ref: str = "main"
+    subdir: str = ""
     issue: int | None = None
     credit: str = ""
 
     @property
     def is_placeholder(self) -> bool:
-        return self.provider != "github" and (not self.url or PLACEHOLDER in self.url)
+        return not self.url or PLACEHOLDER in self.url
 
     @property
     def issue_url(self) -> str:
@@ -102,7 +103,7 @@ def load_sources(path: Path = SOURCES_PATH) -> dict[str, DataSource]:
             expected_files=tuple(entry.get("expected_files", ())),
             sha256=str(entry.get("sha256", "")).lower(),
             size_bytes=int(entry.get("size_bytes", 0)),
-            ref=str(entry.get("ref", "main")),
+            subdir=str(entry.get("subdir", "")).strip("/"),
             issue=int(entry["issue"]) if entry.get("issue") else None,
             credit=str(entry.get("credit", "")),
         )
@@ -277,9 +278,11 @@ def _strip_prefix(names: list[str]) -> str:
     return ""
 
 
-def safe_extract(archive: Path, target: Path) -> list[Path]:
+def safe_extract(archive: Path, target: Path, subdir: str = "") -> list[Path]:
     """Extract ``archive`` into ``target``, dropping a single top-level folder.
 
+    With ``subdir`` (a folder path inside the archive, e.g.
+    ``adv_nav_data/Project1-data``) only that folder's contents are extracted.
     Members with absolute paths or ``..`` components are rejected. Files are
     unpacked into a temporary sibling folder first and then moved into place,
     so an interrupted extraction never leaves a half-written dataset.
@@ -292,9 +295,13 @@ def safe_extract(archive: Path, target: Path) -> list[Path]:
     try:
         with zipfile.ZipFile(archive) as bundle:
             names = bundle.namelist()
-            prefix = _strip_prefix(names)
+            prefix = f"{subdir.strip('/')}/" if subdir else _strip_prefix(names)
+            if subdir and not any(name.startswith(prefix) for name in names):
+                raise FetchError(f"{archive.name} has no folder {subdir}/")
             for info in bundle.infolist():
                 if info.filename.startswith("__MACOSX") or info.is_dir():
+                    continue
+                if not info.filename.startswith(prefix):
                     continue
                 raw = PurePosixPath(info.filename)
                 if raw.is_absolute() or ".." in raw.parts or "\\" in info.filename:
@@ -355,16 +362,6 @@ def _placeholder_message(source: DataSource) -> str:
     )
 
 
-def _load_mems_fetcher():
-    script_path = Path(__file__).with_name("fetch_ins_gnss_data.py")
-    spec = importlib.util.spec_from_file_location("fetch_ins_gnss_data", script_path)
-    if spec is None or spec.loader is None:
-        raise FetchError(f"could not import {script_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def fetch_dataset(
     source: DataSource,
     data_dir: Path,
@@ -373,19 +370,15 @@ def fetch_dataset(
     dry_run: bool = False,
     archive: Path | None = None,
     opener: Opener = urlopen,
+    keep_download: bool = False,
 ) -> int:
-    """Install one dataset into ``data_dir / source.name``. Returns an exit status."""
-    target = data_dir / source.name
+    """Install one dataset into ``data_dir / source.name``. Returns an exit status.
 
-    if source.provider == "github":
-        if archive is not None:
-            raise FetchError(f"{source.name} is fetched from GitHub; --archive is not supported")
-        if not force and not dry_run and dataset_is_current(source, target):
-            print(f"{source.name}: already present at {target} (use --force to re-download)")
-            return EXIT_OK
-        print(f"{source.name}: fetching from {source.url} ({source.ref})")
-        _load_mems_fetcher().fetch_datasets(target, source.ref, force, dry_run)
-        return EXIT_OK
+    ``keep_download`` leaves the downloaded archive in ``data_dir/.downloads`` so
+    that another dataset packed in the same archive can reuse it; a kept archive
+    whose checksum matches is reused instead of downloaded again.
+    """
+    target = data_dir / source.name
 
     if archive is None and not force and dataset_is_current(source, target):
         print(f"{source.name}: already present at {target} (use --force to re-download)")
@@ -415,12 +408,16 @@ def fetch_dataset(
         if dry_run:
             print(f"{source.name}: would download {source.archive}{size} into {target}")
             return EXIT_OK
-        print(f"{source.name}: downloading {source.archive}{size}")
-        zip_path = download_archive(candidates, data_dir / ".downloads" / source.archive, source.sha256, opener)
-        actual = sha256_of(zip_path)
-        origin, remove_after = source.url, True
+        zip_path = data_dir / ".downloads" / source.archive
+        if zip_path.is_file() and (actual := sha256_of(zip_path)) == source.sha256:
+            print(f"{source.name}: reusing downloaded {source.archive}")
+        else:
+            print(f"{source.name}: downloading {source.archive}{size}")
+            download_archive(candidates, zip_path, source.sha256, opener)
+            actual = sha256_of(zip_path)
+        origin, remove_after = source.url, not keep_download
 
-    safe_extract(zip_path, target)
+    safe_extract(zip_path, target, source.subdir)
     missing = [name for name in source.expected_files if not (target / name).exists()]
     if missing:
         raise FetchError(f"{source.name}: archive is missing expected files: {', '.join(missing)}")
@@ -453,7 +450,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-dir", type=Path, default=None, help=f"data folder (default: ${DATA_ENV_VAR} or ./data)")
     parser.add_argument("--force", action="store_true", help="re-download even if the data is present")
     parser.add_argument("--dry-run", action="store_true", help="show what would happen without downloading")
-    parser.add_argument("--archive", type=Path, help="install from a zip you already downloaded (one dataset only)")
+    parser.add_argument("--archive", type=Path, help="install from a zip you already downloaded")
     parser.add_argument("--sources", type=Path, default=SOURCES_PATH, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
@@ -470,11 +467,13 @@ def main(argv: list[str] | None = None) -> int:
     unknown = [name for name in names if name not in sources]
     if unknown:
         parser.error(f"unknown dataset(s): {', '.join(unknown)}; choose from {', '.join(sources)} or 'all'")
-    if args.archive is not None and len(names) != 1:
-        parser.error("--archive installs exactly one dataset; name it explicitly")
+    if args.archive is not None and len({sources[name].archive for name in names}) != 1:
+        parser.error("--archive installs datasets packed in one archive; name them explicitly")
 
     status = EXIT_OK
-    for name in names:
+    for index, name in enumerate(names):
+        # Keep a shared archive (the course bundle) until the last dataset that needs it.
+        later_archives = {sources[later].archive for later in names[index + 1:]}
         try:
             result = fetch_dataset(
                 sources[name],
@@ -482,6 +481,7 @@ def main(argv: list[str] | None = None) -> int:
                 force=args.force,
                 dry_run=args.dry_run,
                 archive=args.archive,
+                keep_download=sources[name].archive in later_archives,
             )
         except FetchError as error:
             print(f"{name}: error: {error}", file=sys.stderr)
