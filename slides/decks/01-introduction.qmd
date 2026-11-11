@@ -82,16 +82,17 @@ Course?")
 ## About me
 
 ::: {.incremental}
-- PhD candidate in mechanical engineering, Temple University: navigation without
-  GPS on small, low-power vehicles with MEMS-grade sensors
-- Before that: Penn State ARL, for the Office of Naval Research and the
-  submarine fleet
+- Senior Navigation Engineer at Mach Industries: working on autonomous navigation systems for aerial vehicles
+- Before that: 
+  - PhD in mechanical engineering, Temple University: navigation without GPS on small, low-power vehicles with MEMS-grade sensors
+  - Penn State ARL, for the Office of Naval Research and the submarine fleet
 - Philadelphia, US Eastern time (same as Worcester)
 - I aim to reply within 24 h on weekdays, 48 h on weekends
 - Minor debugging help: on the discussion boards, not one-on-one
 :::
 
 ::: {.notes}
+A little about me: I work on autonomous navigation systems for aerial vehicles and have a background in mechanical engineering and submarine navigation. I've spent my career hoping back and forth between industry and academia and have my sweet spot in applied research and development. I enjoy translating theoretical concepts into practical implementations that can be tested and deployed in real-world scenarios. I aim to bring that mindset into this course.
 Online students are spread over many time zones, so be patient with replies.
 Urgent: email or the Canvas discussion boards. Debugging support is in Python
 only, because the starter code is Python. (Intro chapter, "About Me" and
